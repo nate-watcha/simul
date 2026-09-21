@@ -92,3 +92,46 @@ class LayoutAdapterTest {
 
     private fun assertFalse(cond: Boolean, msg: String) = assertTrue(!cond, msg)
 }
+
+class LayoutAdapterTreeFormatTest {
+    /** `android layout` ≥ 1.0.16261425: preamble line, nested children, UPPERCASE vocab, full ids. */
+    private val tree = """
+        Installing layout instrumentation server...
+        [{"class":"android.widget.TextView","text":"구독","bounds":"[40,70][116,126]","center":"[78,98]"},
+         {"class":"android.widget.FrameLayout","resource-id":"com.frograms.wplay:id/menu_item_notice","content-desc":"공지사항","interactions":["FOCUSABLE"],"bounds":"[440,66][528,130]","center":"[484,98]",
+          "children":[{"class":"android.widget.ImageView","resource-id":"com.frograms.wplay:id/noticeButton","content-desc":"공지사항","interactions":["CLICKABLE","FOCUSABLE"],"bounds":"[440,66][504,130]","center":"[472,98]"}]},
+         {"class":"android.view.View","interactions":["CHECKABLE","CLICKABLE","FOCUSABLE"],"state":["CHECKED"],"bounds":"[40,156][152,252]","center":"[96,204]",
+          "children":[{"class":"android.widget.TextView","text":"전체","bounds":"[72,184][120,224]","center":"[96,204]"}]},
+         {"class":"android.view.View","interactions":["CLICKABLE","FOCUSABLE"],"bounds":"[144,1120][288,1232]","center":"[216,1176]",
+          "children":[{"class":"android.widget.TextView","text":"개별 구매","bounds":"[171,1181][261,1217]","center":"[216,1199]"}]},
+         {"class":"androidx.recyclerview.widget.RecyclerView","resource-id":"com.frograms.wplay:id/recycler_view","interactions":["FOCUSABLE","SCROLLABLE"],"bounds":"[0,260][720,1118]","center":"[360,689]"}]
+    """.trimIndent()
+
+    @Test
+    fun `tree output is flattened and normalised to the flat-format vocabulary`() {
+        val raw = LayoutAdapter.parseRawLayout(tree)
+        assertEquals(8, raw.size, "every nested node counts")
+        assertEquals(listOf("clickable", "focusable"), raw.first { it.text == null && it.center.x == 216 }.interactions)
+        assertEquals(listOf("checked"), raw.first { it.center.x == 96 && it.isInteractive }.state)
+        assertEquals("noticeButton", raw.first { it.contentDesc == "공지사항" && it.interactions.contains("clickable") }.resourceId)
+
+        val layout = LayoutAdapter.adapt(tree)
+        val tab = layout.elements.first { it.label == "개별 구매" }
+        assertTrue("clickable" in tab.interactions, "label from the child TextView attaches to the tappable parent")
+        assertEquals("recycler_view", layout.elements.first { it.resourceId == "recycler_view" }.resourceId)
+        assertTrue(layout.elements.any { it.label == "전체" && "checked" in it.state })
+    }
+
+    @Test
+    fun `flat legacy output still parses unchanged`() {
+        val flat = """[{"text":"찾기","center":"[504,1199]","key":1},{"interactions":["clickable","focusable"],"center":"[504,1176]","key":1}]"""
+        val layout = LayoutAdapter.adapt(flat)
+        assertEquals("찾기", layout.elements.single().label)
+    }
+
+    @Test
+    fun `garbage and preamble-only output yield no elements`() {
+        assertTrue(LayoutAdapter.parseRawLayout("Installing layout instrumentation server...\n").isEmpty())
+        assertTrue(LayoutAdapter.parseRawLayout("").isEmpty())
+    }
+}

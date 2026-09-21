@@ -8,8 +8,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlin.math.abs
 
 /**
- * Converts the flat, hierarchy-free `android layout` output into a merged list of logical
- * elements. Rationale is documented per step; thresholds are validated against real device data.
+ * Converts the `android layout` output (flat list or tree — see [parseRawLayout]) into a
+ * merged list of logical elements. Rationale is documented per step; thresholds are validated against real device data.
  */
 object LayoutAdapter {
 
@@ -21,24 +21,46 @@ object LayoutAdapter {
 
     // ---------------------------------------------------------------- parse
 
+    /**
+     * Both `android layout` output generations are accepted:
+     *  - ≤ 1.0.15498356: a flat JSON array, lowercase `interactions`/`state`, short `resource-id`
+     *  - ≥ 1.0.16261425: a status line first ("Installing layout instrumentation server..."),
+     *    then a tree — every node may carry `children` — with UPPERCASE `interactions`/`state`
+     *    and full `resource-id`s (`com.example:id/name`). Seen on the nightly runner: the
+     *    top level alone parsed to 15 nodes and the whole bottom nav was in the children.
+     * Everything is normalised to the old vocabulary so traces and evidence stay valid.
+     */
     fun parseRawLayout(rawJson: String): List<RawNode> {
+        // skip any non-JSON preamble the CLI prints on stdout
+        val start = rawJson.indexOf('[').takeIf { it >= 0 } ?: return emptyList()
         // malformed/truncated dump -> no elements, not a crash; callers poll again
-        val parsed = runCatching { json.parseToJsonElement(rawJson) }.getOrNull()
+        val parsed = runCatching { json.parseToJsonElement(rawJson.substring(start)) }.getOrNull()
         val arr = parsed as? JsonArray ?: return emptyList()
-        return arr.mapNotNull { el ->
-            val o = el as? JsonObject ?: return@mapNotNull null
-            val center = o["center"]?.jsonPrimitive?.contentOrNull?.let(::parsePoint) ?: return@mapNotNull null
-            RawNode(
-                interactions = o["interactions"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
-                state = o["state"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
-                text = o["text"]?.jsonPrimitive?.contentOrNull,
-                contentDesc = o["content-desc"]?.jsonPrimitive?.contentOrNull,
-                resourceId = o["resource-id"]?.jsonPrimitive?.contentOrNull,
-                center = center,
-                bounds = o["bounds"]?.jsonPrimitive?.contentOrNull?.let(::parseBounds),
-            )
+        val out = mutableListOf<RawNode>()
+        fun visit(el: kotlinx.serialization.json.JsonElement) {
+            val o = el as? JsonObject ?: return
+            val center = o["center"]?.jsonPrimitive?.contentOrNull?.let(::parsePoint)
+            if (center != null) {
+                out += RawNode(
+                    interactions = o["interactions"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull?.lowercase() } ?: emptyList(),
+                    state = o["state"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull?.lowercase() } ?: emptyList(),
+                    text = o["text"]?.jsonPrimitive?.contentOrNull,
+                    contentDesc = o["content-desc"]?.jsonPrimitive?.contentOrNull,
+                    resourceId = o["resource-id"]?.jsonPrimitive?.contentOrNull?.let(::shortResourceId),
+                    center = center,
+                    bounds = o["bounds"]?.jsonPrimitive?.contentOrNull?.let(::parseBounds),
+                )
+            }
+            (o["children"] as? JsonArray)?.forEach(::visit)
         }
+        arr.forEach(::visit)
+        return out
     }
+
+    private val fullIdPrefix = Regex("^[A-Za-z0-9_.]+:id/")
+
+    /** `com.example.app:id/recycler_view` -> `recycler_view` (what traces and scenarios use). */
+    fun shortResourceId(id: String): String = fullIdPrefix.replace(id, "")
 
     // ---------------------------------------------------------------- merge
 

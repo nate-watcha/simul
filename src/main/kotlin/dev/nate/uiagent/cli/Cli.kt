@@ -239,7 +239,8 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
             scenarios = outcomes,
         )
         RunSummaryJson.write(summary, file)
-        println("summary: ${file.relativeToOrSelf(cwd).path} (${outcomes.count { it.passed }}/${outcomes.size} passed)")
+        val shown = file.relativeToOrSelf(cwd).path.let { if (it.startsWith("..")) file.absolutePath else it }
+        println("summary: $shown (${outcomes.count { it.passed }}/${outcomes.size} passed)")
     }
     return if (anyFailed) 1 else 0
 }
