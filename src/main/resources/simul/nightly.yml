@@ -60,12 +60,27 @@ jobs:
         # run, so a drifting emulator can't masquerade as an app regression. Headless works on
         # a macOS runner as long as the runner service runs in the logged-in user session
         # (svc.sh installs it as a LaunchAgent). ~1–2 min, negligible next to the LLM phase.
+        timeout-minutes: 8
         run: |
+          for tool in adb emulator simul android; do
+            command -v "$tool" >/dev/null || { echo "::error::$tool not on the runner PATH — set PATH in the runner's .env"; exit 1; }
+          done
+          emulator -list-avds | grep -qx "$SIMUL_AVD" \
+            || { echo "::error::AVD '$SIMUL_AVD' not found; available: $(emulator -list-avds | tr '\n' ' ')"; exit 1; }
           adb devices | grep -q "^${ANDROID_SERIAL}" && adb -s "$ANDROID_SERIAL" emu kill && sleep 5 || true
           nohup emulator -avd "$SIMUL_AVD" -no-window -no-audio -no-boot-anim -no-snapshot-load -no-snapshot-save \
             -gpu swiftshader_indirect > "$RUNNER_TEMP/emulator.log" 2>&1 &
-          adb wait-for-device
-          adb shell 'while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 2; done'
+          EMU_PID=$!
+          for i in $(seq 1 90); do   # up to 3 min for the device, then 3 min for boot_completed
+            adb devices | grep -q "^${ANDROID_SERIAL}[[:space:]]*device" && break
+            kill -0 $EMU_PID 2>/dev/null || { echo "::error::emulator exited"; cat "$RUNNER_TEMP/emulator.log"; exit 1; }
+            sleep 2
+          done
+          adb devices | grep -q "^${ANDROID_SERIAL}[[:space:]]*device" || { echo "::error::no device after 3 min"; cat "$RUNNER_TEMP/emulator.log"; exit 1; }
+          for i in $(seq 1 90); do
+            [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+            sleep 2
+          done
           adb shell 'while [ "$(getprop init.svc.bootanim)" = "running" ]; do sleep 1; done'
           adb shell input keyevent KEYCODE_WAKEUP
 
@@ -100,10 +115,11 @@ jobs:
         run: |
           RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           TITLE="simul nightly $(date +%F) · ${GITHUB_REF_NAME}"
-          PHASES=$(ls $REPORTS/baseline.json $REPORTS/record.json $REPORTS/verify.json 2>/dev/null)
-          simul report $PHASES --title "$TITLE" --link "Run=$RUN_URL" --format md    --out $REPORTS/report.md
-          simul report $PHASES --title "$TITLE" --link "Run=$RUN_URL" --format slack --out $REPORTS/slack.json
-          simul report $PHASES --title "$TITLE" --format junit --out $REPORTS/junit.xml
+          # `|| true`: under bash -e a failing `ls` inside an assignment aborts the step silently
+          FILES=$(ls $REPORTS/baseline.json $REPORTS/record.json $REPORTS/verify.json 2>/dev/null || true)
+          simul report $FILES --title "$TITLE" --link "Run=$RUN_URL" --format md    --out $REPORTS/report.md
+          simul report $FILES --title "$TITLE" --link "Run=$RUN_URL" --format slack --out $REPORTS/slack.json
+          simul report $FILES --title "$TITLE" --format junit --out $REPORTS/junit.xml
           cat $REPORTS/report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload reports (screenshots, agent.jsonl, summaries)
@@ -136,4 +152,4 @@ jobs:
 
       - name: Gate — fail the job on regressions or flaky traces
         if: always()
-        run: simul report $(ls $REPORTS/baseline.json $REPORTS/record.json $REPORTS/verify.json 2>/dev/null) --check >/dev/null
+        run: simul report $(ls $REPORTS/baseline.json $REPORTS/record.json $REPORTS/verify.json 2>/dev/null || true) --check >/dev/null
