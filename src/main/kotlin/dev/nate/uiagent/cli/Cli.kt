@@ -40,6 +40,7 @@ fun cliMain(argv: Array<String>, cwd: File): Int = when (argv.firstOrNull()) {
         0
     }
     "run" -> runCommand(argv.drop(1), cwd)
+    "report" -> reportCommand(argv.drop(1), cwd)
     "list" -> listCommand(cwd)
     "status" -> statusCommand(cwd)
     "init" -> initCommand(argv.drop(1), cwd)
@@ -62,9 +63,12 @@ private fun printUsage() {
 
         usage:
           simul                               interactive mode (full-screen, TTY + .simul/ 필요)
-          simul init [--app <package>]        set up .simul/ + Claude skill (authoring guide 포함)
+          simul init [--app <package>] [--ci github]   set up .simul/ + Claude skill (+ nightly workflow)
           simul run <scenario.md>... [--mode replay|llm|auto] [--dry-run] [--url U]
           simul run --tag <tag> | --state <name> | --all [same options]
+                    [--summary <file.json> [--label <phase>]]   batch summary for `simul report`
+          simul report <summary.json>... [--format md|slack|junit] [--title T]
+                    [--link Name=URL]... [--out FILE] [--check]  join phases → CI/Slack report
           simul status                        scenarios × trace × last run × states, at a glance
           simul list
           simul state save <name>             snapshot current app data → .simul/states/<name>.tar
@@ -74,6 +78,12 @@ private fun printUsage() {
           auto (default)  replay if a trace exists, otherwise SKIP with a warning
           replay          play the committed trace deterministically; broken steps FAIL (no LLM)
           llm             interpret every step from scratch and (re)record the trace
+
+        nightly pipeline (see `simul init --ci github`):
+          simul run --all --mode replay --summary r/baseline.json   # committed traces
+          simul run --all --mode llm    --summary r/record.json     # re-record every scenario
+          simul run --all --mode replay --summary r/verify.json     # replay the fresh traces
+          simul report r/baseline.json r/record.json r/verify.json --format md --check
         """.trimIndent()
     )
 }
@@ -86,6 +96,8 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     var all = false
     var urlOverride: String? = null
     var stateFilter: String? = null
+    var summaryPath: String? = null
+    var label: String? = null
     val tags = mutableListOf<String>()
     val paths = mutableListOf<String>()
 
@@ -103,6 +115,8 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
             "--tag" -> tags += args.getOrNull(++i) ?: return err("--tag needs a value")
             "--state" -> stateFilter = args.getOrNull(++i) ?: return err("--state needs a value")
             "--url" -> urlOverride = args.getOrNull(++i) ?: return err("--url needs a value")
+            "--summary" -> summaryPath = args.getOrNull(++i) ?: return err("--summary needs a file path")
+            "--label" -> label = args.getOrNull(++i) ?: return err("--label needs a value")
             else -> if (a.startsWith("--")) return err("unknown option $a") else paths += a
         }
         i++
@@ -130,6 +144,9 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     val url = urlOverride ?: project.config.llmUrl
     var anyFailed = false
     var anyRan = false
+    val outcomes = mutableListOf<ScenarioOutcome>()
+    val batchStart = System.currentTimeMillis()
+    val startedAt = RunSummaryJson.stamp()
 
     val ops = AdbOps(statesDir = project.statesDir)
     // Force the configured emulator display for the whole run so traces recorded on one
@@ -170,11 +187,13 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
                 trace != null -> RunMode.REPLAY
                 else -> {
                     println("SKIPPED ${scenario.name}: no trace — authoring incomplete (record with --mode llm)")
+                    outcomes += outcomeWithout(project, md, scenario, "SKIPPED", "no trace")
                     continue
                 }
             }
             if (effective == RunMode.REPLAY && trace == null) {
                 println("SKIPPED ${scenario.name}: no trace to replay (record with --mode llm)")
+                outcomes += outcomeWithout(project, md, scenario, "SKIPPED", "no trace")
                 continue
             }
 
@@ -191,9 +210,12 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
                 println("CRASH ${scenario.name}: ${t.javaClass.simpleName}: ${t.message ?: ""}")
                 println("  stack trace → ${log.relativeTo(project.appRoot)}")
                 anyFailed = true
+                outcomes += outcomeWithout(project, md, scenario, "CRASH",
+                    "${t.javaClass.simpleName}: ${t.message ?: ""}".trim(), crashLog = log)
                 continue
             }
             if (!result.passed) anyFailed = true
+            outcomes += outcomeOf(project, md, scenario, result)
         }
     } finally {
         displayBefore?.let { before ->
@@ -204,6 +226,21 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     }
 
     if (!anyRan && !dryRun) println("warning: no scenario was executed (all skipped)")
+    if (summaryPath != null && !dryRun) {
+        val file = File(summaryPath).takeIf { it.isAbsolute } ?: File(cwd, summaryPath)
+        val summary = RunSummary(
+            label = label ?: mode.name.lowercase(),
+            mode = mode.name.lowercase(),
+            startedAt = startedAt,
+            durationMs = System.currentTimeMillis() - batchStart,
+            agentVersion = AGENT_VERSION,
+            appVersionName = ops.appVersionName(project.config.app),
+            device = ops.deviceName(),
+            scenarios = outcomes,
+        )
+        RunSummaryJson.write(summary, file)
+        println("summary: ${file.relativeToOrSelf(cwd).path} (${outcomes.count { it.passed }}/${outcomes.size} passed)")
+    }
     return if (anyFailed) 1 else 0
 }
 
@@ -256,7 +293,7 @@ internal fun executeScenario(
             log("  trace recorded: ${traceFile.path}")
         }
     }
-    return result
+    return result.copy(reportDir = reportDir)
 }
 
 // -------------------------------------------------------------------------- init
@@ -270,10 +307,12 @@ internal fun executeScenario(
  */
 internal fun initCommand(args: List<String>, cwd: File): Int {
     var app: String? = null
+    var ci: String? = null
     var i = 0
     while (i < args.size) {
         when (val a = args[i]) {
             "--app" -> app = args.getOrNull(++i) ?: return err("--app needs a value")
+            "--ci" -> ci = args.getOrNull(++i)?.takeIf { it == "github" } ?: return err("--ci needs a provider (github)")
             else -> return err("unknown option $a")
         }
         i++
@@ -297,10 +336,14 @@ internal fun initCommand(args: List<String>, cwd: File): Int {
           sizeClass: small   # small=720x1280@320(360dp) | medium(640dp) | large(1066dp)
     """.trimIndent() + "\n"
 
-    val files = listOf(
+    val files = listOfNotNull(
         File(cwd, ".simul/config.yaml") to config,
         File(cwd, ".claude/skills/simul-scenarios/SKILL.md") to skill,
         File(cwd, ".claude/skills/simul-scenarios/references/scenarios.md") to scenarios,
+        if (ci == "github") {
+            val wf = resource("nightly.yml") ?: return err("packaging error: /simul/nightly.yml missing")
+            File(cwd, ".github/workflows/simul-nightly.yml") to wf
+        } else null,
     )
     File(cwd, ".simul/scenarios").mkdirs()
     for ((file, content) in files) {
@@ -325,6 +368,15 @@ internal fun initCommand(args: List<String>, cwd: File): Int {
           3. simul run <그룹>/<이름>.md --mode llm   (녹화 후 trace를 md와 함께 커밋)
         """.trimIndent()
     )
+    if (ci == "github") {
+        println(
+            """
+              4. .github/workflows/simul-nightly.yml 의 TODO(빌드/설치 커맨드, AVD 이름)를 채우고
+                 self-hosted 러너(라벨 self-hosted+simul, simul·adb·emulator·llama-server 상주)를 붙인다.
+                 Slack 알림은 레포 secret SLACK_WEBHOOK_URL (incoming webhook) 하나면 된다.
+            """.trimIndent()
+        )
+    }
     return 0
 }
 

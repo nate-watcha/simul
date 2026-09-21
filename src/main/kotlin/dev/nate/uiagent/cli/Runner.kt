@@ -39,6 +39,8 @@ data class ScenarioRunResult(
     /** Trace to persist — full re-record (llm) or coord-corrected replay. Null if nothing to write. */
     val updatedTrace: TraceFile?,
     val durationMs: Long,
+    /** Where this run's report.json / screenshots / agent.jsonl were written (set by the CLI). */
+    val reportDir: File? = null,
 ) {
     val passed get() = status == StepStatus.PASSED
 }

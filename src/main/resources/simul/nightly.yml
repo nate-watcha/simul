@@ -1,0 +1,139 @@
+# simul nightly — installed by `simul init --ci github` (never overwritten; edit freely)
+#
+# Three passes over every scenario, then one report:
+#   baseline  replay the committed traces        → did the app drift from the baseline?
+#   record    re-record every scenario with LLM  → can the agent still perform it?
+#   verify    replay the fresh recordings        → is the new trace deterministic?
+# `simul report` joins them into per-scenario verdicts (stable / changed / regression /
+# flaky), posts them to the job summary and Slack, and a PR carries any re-recorded trace.
+#
+# Runner requirements (self-hosted — GitHub-hosted runners have neither):
+#   - `simul` on PATH            (Tester repo: ./gradlew installDist + scripts/simul symlink)
+#   - Android SDK: adb + emulator on PATH, ANDROID_HOME set, one phone AVD named $SIMUL_AVD
+#     (`android emulator create phone`, or an existing one from `android emulator list`);
+#     config.yaml `display:` pins size/density at run time, so the AVD's screen doesn't matter
+#   - llama-server (Qwen) reachable at the `llm.url` of .simul/config.yaml — a persistent service
+#   - runner labels: self-hosted + simul
+#   - gitignored app-state snapshots (account sessions): keep them in a directory on the runner
+#     and export SIMUL_STATES_DIR=<dir> in the runner's .env — they are copied into
+#     .simul/states/ before the run (a fresh checkout has none of them)
+# Secrets: SLACK_WEBHOOK_URL (optional) — Slack incoming webhook for the report.
+
+name: simul nightly
+
+on:
+  schedule:
+    - cron: "0 17 * * 0-4"       # 02:00 KST, Mon–Fri
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "scenario selector passed to simul run (--all, --tag smoke, --state member-basic, a path)"
+        default: "--all"
+
+concurrency:
+  group: simul-nightly           # one emulator → one run at a time
+  cancel-in-progress: false
+
+permissions:
+  contents: write                # trace PR branch
+  pull-requests: write
+
+jobs:
+  nightly:
+    runs-on: [self-hosted, simul]
+    timeout-minutes: 360
+    env:
+      ANDROID_SERIAL: emulator-5554
+      SIMUL_AVD: Small_Phone                        # TODO: your AVD (`emulator -list-avds`)
+      SCOPE: ${{ inputs.scope || '--all' }}
+      REPORTS: .simul/reports/nightly
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore local-only app states
+        if: env.SIMUL_STATES_DIR != ''
+        run: mkdir -p .simul/states && cp -n "$SIMUL_STATES_DIR"/*.tar .simul/states/ && ls -l .simul/states
+
+      - name: Boot a fresh emulator
+        # Cold boot every night and never save the snapshot: the device starts identical each
+        # run, so a drifting emulator can't masquerade as an app regression. Headless works on
+        # a macOS runner as long as the runner service runs in the logged-in user session
+        # (svc.sh installs it as a LaunchAgent). ~1–2 min, negligible next to the LLM phase.
+        run: |
+          adb devices | grep -q "^${ANDROID_SERIAL}" && adb -s "$ANDROID_SERIAL" emu kill && sleep 5 || true
+          nohup emulator -avd "$SIMUL_AVD" -no-window -no-audio -no-boot-anim -no-snapshot-load -no-snapshot-save \
+            -gpu swiftshader_indirect > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          adb wait-for-device
+          adb shell 'while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 2; done'
+          adb shell 'while [ "$(getprop init.svc.bootanim)" = "running" ]; do sleep 1; done'
+          adb shell input keyevent KEYCODE_WAKEUP
+
+      - name: Build and install the debug app
+        run: |
+          # TODO: adapt to your module / flavor; the WebView channel needs a debuggable build
+          ./gradlew :app:assembleDebug
+          adb install -r app/build/outputs/apk/debug/app-debug.apk
+
+      - name: LLM ready
+        run: |
+          LLM_URL=$(awk '/^llm:/{f=1;next} f&&/url:/{print $2;exit}' .simul/config.yaml)
+          curl -fsS "${LLM_URL:-http://localhost:8080}/v1/models" >/dev/null \
+            || { echo "::error::llama-server not reachable at ${LLM_URL:-http://localhost:8080} (config.yaml llm.url)"; exit 1; }
+          rm -rf "$REPORTS"; mkdir -p "$REPORTS"
+          simul status
+
+      - name: Baseline — replay committed traces
+        continue-on-error: true
+        run: simul run $SCOPE --mode replay --summary $REPORTS/baseline.json --label baseline
+
+      - name: Record — re-run every scenario with the LLM
+        continue-on-error: true
+        run: simul run $SCOPE --mode llm --summary $REPORTS/record.json --label record
+
+      - name: Verify — replay the fresh traces
+        continue-on-error: true
+        run: simul run $SCOPE --mode replay --summary $REPORTS/verify.json --label verify
+
+      - name: Report
+        if: always()
+        run: |
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          TITLE="simul nightly $(date +%F) · ${GITHUB_REF_NAME}"
+          PHASES=$(ls $REPORTS/baseline.json $REPORTS/record.json $REPORTS/verify.json 2>/dev/null)
+          simul report $PHASES --title "$TITLE" --link "Run=$RUN_URL" --format md    --out $REPORTS/report.md
+          simul report $PHASES --title "$TITLE" --link "Run=$RUN_URL" --format slack --out $REPORTS/slack.json
+          simul report $PHASES --title "$TITLE" --format junit --out $REPORTS/junit.xml
+          cat $REPORTS/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reports (screenshots, agent.jsonl, summaries)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simul-reports-${{ github.run_id }}
+          path: .simul/reports
+          retention-days: 14
+
+      - name: PR with re-recorded traces
+        if: always()
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: simul/nightly-traces
+          add-paths: .simul/scenarios/**/*.trace.json
+          commit-message: "simul: nightly re-recorded traces (${{ github.run_id }})"
+          title: "simul: re-recorded traces — nightly ${{ github.run_id }}"
+          body-path: .simul/reports/nightly/report.md
+          labels: simul
+
+      - name: Slack
+        if: always() && env.SLACK_WEBHOOK_URL != ''
+        run: |
+          curl -fsS -X POST -H 'Content-type: application/json' --data @$REPORTS/slack.json "$SLACK_WEBHOOK_URL"
+
+      - name: Stop the emulator
+        if: always()
+        run: adb -s "$ANDROID_SERIAL" emu kill || true
+
+      - name: Gate — fail the job on regressions or flaky traces
+        if: always()
+        run: simul report $(ls $REPORTS/baseline.json $REPORTS/record.json $REPORTS/verify.json 2>/dev/null) --check >/dev/null

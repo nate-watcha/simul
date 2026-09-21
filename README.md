@@ -23,6 +23,9 @@ simul run foo.md --mode llm      # authoring: LLM 실행 + <이름>.trace.json �
 simul run --all                  # CI: 기본 auto = 트레이스 재생(LLM 0회), 없으면 SKIP
 simul run foo.md --mode replay   # 순수 재생 — 깨진 스텝은 FAILED (replay는 LLM 0회 보장)
 simul run --tag billing          # 태그 필터 (--state <name>도 동일 형식)
+simul run --all --summary r.json --label verify   # 배치 요약 JSON (simul report 입력)
+simul report r/*.json --format md|slack|junit [--check]   # 나이틀리 3단계 병합 리포트 (아래)
+simul init --ci github           # .github/workflows/simul-nightly.yml 템플릿 설치
 simul list                       # 시나리오 목록 + 트레이스 유무/신선도
 simul state save <name>          # 현재 앱 데이터를 .simul/states/<name>.tar 스냅샷으로 저장
                                  #   → 시나리오의 setup.appState: <name>으로 로그인 등 전제 주입
@@ -32,6 +35,33 @@ simul "Tap the \"웹툰\" tab"     # ad-hoc 단일 커맨드 (규약 없이 동�
 ```
 
 종료 코드: 전부 PASSED=0, 실패=1.
+
+### 나이틀리 운영 (record → verify → report)
+
+PR 게이트는 replay만 돌리지만(LLM 0회), 나이틀리는 세 번 돈다 — `simul init --ci github`가
+깔아주는 워크플로가 이 순서다:
+
+```bash
+simul run --all --mode replay --summary r/baseline.json --label baseline   # 커밋된 trace 재생
+simul run --all --mode llm    --summary r/record.json   --label record     # 전 시나리오 재녹화
+simul run --all --mode replay --summary r/verify.json   --label verify     # 방금 녹화한 trace 재생
+simul report r/baseline.json r/record.json r/verify.json --format md --link "Run=$URL" \
+  --out report.md     # → $GITHUB_STEP_SUMMARY / PR 본문 ; --format slack → incoming webhook ; --check → exit 1 게이트
+```
+
+세 결과가 시나리오당 하나의 verdict로 접힌다:
+
+| baseline | record | verify | verdict | 뜻 |
+|---|---|---|---|---|
+| ✅ | ✅ | ✅ | ✅ stable | |
+| ❌ | ✅ | ✅ | 🔁 changed | 화면이 바뀌었고 새 녹화는 재생됨 → 재녹화 trace PR 리뷰·머지 |
+| ❌ | ❌ | – | ❌ regression | 커밋 trace도 새 녹화도 실패 → 앱 회귀 의심, 스크린샷부터 |
+| ✅ | ❌ | – | ⚠️ record flake | 앱은 커밋대로인데 에이전트가 못 함 → record 로그(문구·AMBIGUOUS) |
+| – | ✅ | ❌ | ⚠️ trace flake | 녹화는 됐는데 재생 불가 → 비결정 evidence(동적 라벨) |
+| ⏭ | ✅ | ✅ | 🆕 new | 첫 녹화 → 커밋 |
+
+`--check`는 regression/trace flake/crash에서만 exit 1 — changed/new는 사람이 PR로 판단한다.
+재녹화된 trace는 워크플로가 `simul/nightly-traces` 브랜치 PR로 올리고 본문에 리포트를 싣는다.
 
 ## 구조 (`dev.nate.uiagent`)
 

@@ -76,6 +76,10 @@ simul "'Settings' 눌러"                  # ad-hoc 한 스텝 실행 — 라벨
 
 - 기기 2대 이상이면 `ANDROID_SERIAL=emulator-5554 simul run ...`
 - 결과는 `.simul/reports/<run>/`(report.json, 스크린샷, agent.jsonl)에 쌓인다. 커밋하지 않는다.
+- 나이틀리(`.github/workflows/simul-nightly.yml`)는 baseline replay → LLM 재녹화 → 재생의
+  3단계를 `simul report`로 시나리오당 하나의 verdict(stable / changed / regression /
+  record flake / trace flake / new)로 접는다. 뜻과 조치는 scenarios.md §9. 워크플로가 올린
+  `simul/nightly-traces` PR은 "changed"만 머지 대상이고 "trace flake" trace는 머지하지 않는다.
 - 설정은 프로젝트 루트 `config.yaml` — 대상 패키지, LLM 엔드포인트, `display:` size class.
 
 ## replay가 깨졌을 때
@@ -85,7 +89,7 @@ simul "'Settings' 눌러"                  # ad-hoc 한 스텝 실행 — 라벨
    바꿨으면 `--mode llm`으로 재녹화하고, 아니면 앱 회귀로 보고한다.
 3. 다른 에뮬레이터에서만 깨지면 `config.yaml`의 `display:`와 로그의 "trace recorded at ..."
    경고를 확인한다.
-4. 자세한 증상별 조치는 scenarios.md §10.
+4. 자세한 증상별 조치는 scenarios.md §10. 나이틀리 리포트의 verdict별 조치는 §9.
 
 LLM은 replay 실패를 자동으로 덮어주지 않는다. 재녹화는 사람이 "화면 변경이 정당하다"고
 판단한 뒤에만 한다.

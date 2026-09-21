@@ -40,4 +40,23 @@ class InitCommandTest {
         assertEquals(0, initCommand(emptyList(), dir))
         assertTrue("# team edit" in File(dir, ".simul/config.yaml").readText())
     }
+
+    @Test
+    fun `--ci github installs the nightly workflow next to the scaffold`() {
+        val dir = tempDir()
+        assertEquals(0, initCommand(listOf("--app", "com.example.app", "--ci", "github"), dir))
+        val wf = File(dir, ".github/workflows/simul-nightly.yml").readText()
+        assertTrue(wf.startsWith("# simul nightly"), wf.take(40))
+        for (needle in listOf(
+            "--mode replay --summary \$REPORTS/baseline.json --label baseline",
+            "--mode llm --summary \$REPORTS/record.json --label record",
+            "--mode replay --summary \$REPORTS/verify.json --label verify",
+            "simul report", "--format slack", "GITHUB_STEP_SUMMARY", "peter-evans/create-pull-request", "--check",
+        )) assertTrue(needle in wf, "workflow must contain: $needle")
+        assertEquals(2, initCommand(listOf("--ci", "jenkins"), dir), "unknown provider is an error")
+        // rerun keeps the team's edited workflow
+        File(dir, ".github/workflows/simul-nightly.yml").appendText("# edited\n")
+        assertEquals(0, initCommand(listOf("--ci", "github"), dir))
+        assertTrue("# edited" in File(dir, ".github/workflows/simul-nightly.yml").readText())
+    }
 }

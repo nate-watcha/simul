@@ -299,7 +299,38 @@ display:
 
 ---
 
-## 9. 트러블슈팅
+## 9. 나이틀리 운영 — record → verify → report
+
+PR 게이트(`simul run --all`)는 replay만 한다. 나이틀리는 시나리오마다 세 번 돌아 "화면이
+바뀌었는가 / 에이전트가 아직 수행할 수 있는가 / 새 trace가 결정론적인가"를 한 번에 답한다.
+`simul init --ci github`가 `.github/workflows/simul-nightly.yml`을 깔아준다(self-hosted
+러너: 에뮬레이터 + llama-server 상주 전제).
+
+```bash
+simul run --all --mode replay --summary r/baseline.json --label baseline   # 커밋된 trace
+simul run --all --mode llm    --summary r/record.json   --label record     # 전 시나리오 재녹화
+simul run --all --mode replay --summary r/verify.json   --label verify     # 방금 녹화한 trace
+simul report r/baseline.json r/record.json r/verify.json --format md|slack|junit [--check]
+```
+
+시나리오별 verdict와 조치:
+
+| verdict | 조건 | 조치 |
+|---|---|---|
+| ✅ stable | 셋 다 PASSED | 없음 |
+| 🔁 changed | baseline ❌, record ✅, verify ✅ | 화면이 정당하게 바뀐 경우. 워크플로가 올린 trace PR의 diff를 리뷰하고 머지 |
+| ❌ regression | record ❌ (baseline도 ❌/없음) | 앱 회귀 의심. 스크린샷·agent.jsonl부터. 시나리오를 고쳐 통과시키지 말 것 |
+| ⚠️ record flake | baseline ✅, record ❌ | 앱은 커밋대로. record 로그에서 AMBIGUOUS·NOT FOUND·턴 초과를 본다 — 문구/앵커 문제 |
+| ⚠️ trace flake | record ✅, verify ❌ | 새 trace가 재생 불가 — evidence에 동적 라벨이 섞였거나 앱이 불안정. 그 trace는 머지하지 않는다 |
+| 🆕 new | baseline ⏭(trace 없음), record ✅ | 첫 녹화. 리뷰 후 커밋 |
+| 💥 crash | 하니스 크래시 | 앱 판정 아님. `.simul/reports/<name>-crash-*.log` |
+
+`--check`는 regression / trace flake / crash에서만 exit 1이다. changed·new는 경고로 남고
+사람이 PR에서 결정한다 — replay 실패를 자동으로 덮는 경로는 없다.
+
+---
+
+## 10. 트러블슈팅
 
 | 증상 | 원인 / 조치 |
 |---|---|
