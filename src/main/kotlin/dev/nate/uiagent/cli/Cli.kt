@@ -67,7 +67,7 @@ private fun printUsage() {
           simul run <scenario.md>... [--mode replay|llm|auto] [--dry-run] [--url U]
           simul run --tag <tag> | --state <name> | --all [same options]
                     [--summary <file.json> [--label <phase>]]   batch summary for `simul report`
-          simul report <summary.json>... [--format md|slack|junit] [--title T]
+          simul report <summary.json>... [--format md|slack|junit|html] [--title T]
                     [--link Name=URL]... [--out FILE] [--check]  join phases → CI/Slack report
           simul status                        scenarios × trace × last run × states, at a glance
           simul list

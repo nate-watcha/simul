@@ -24,7 +24,7 @@ simul run --all                  # CI: 기본 auto = 트레이스 재생(LLM 0�
 simul run foo.md --mode replay   # 순수 재생 — 깨진 스텝은 FAILED (replay는 LLM 0회 보장)
 simul run --tag billing          # 태그 필터 (--state <name>도 동일 형식)
 simul run --all --summary r.json --label verify   # 배치 요약 JSON (simul report 입력)
-simul report r/*.json --format md|slack|junit [--check]   # 나이틀리 3단계 병합 리포트 (아래)
+simul report r/*.json --format md|slack|junit|html [--check]   # 나이틀리 3단계 병합 리포트 (아래)
 simul init --ci github           # .github/workflows/simul-nightly.yml 템플릿 설치
 simul list                       # 시나리오 목록 + 트레이스 유무/신선도
 simul state save <name>          # 현재 앱 데이터를 .simul/states/<name>.tar 스냅샷으로 저장

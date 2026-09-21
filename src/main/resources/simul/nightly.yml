@@ -122,9 +122,18 @@ jobs:
           simul report $FILES --title "$TITLE" --link "Run=$RUN_URL" --format md    --out $REPORTS/report.md
           simul report $FILES --title "$TITLE" --link "Run=$RUN_URL" --format slack --out $REPORTS/slack.json
           simul report $FILES --title "$TITLE" --format junit --out $REPORTS/junit.xml
+          simul report $FILES --title "$TITLE" --link "Run=$RUN_URL" --format html  --out $REPORTS/report.html
           cat $REPORTS/report.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload reports (screenshots, agent.jsonl, summaries)
+      - name: Upload the HTML report (self-contained — download and open)
+        if: always() && steps.report.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: simul-report-html
+          path: .simul/reports/nightly/report.html
+          retention-days: 30
+
+      - name: Upload raw reports (screenshots, agent.jsonl, summaries)
         if: always()
         uses: actions/upload-artifact@v4
         with:

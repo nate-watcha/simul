@@ -7,7 +7,7 @@ import kotlinx.serialization.json.put
 import java.io.File
 
 /**
- * `simul report <summary.json>... [--format md|slack|junit] [--title T] [--link Name=URL]...
+ * `simul report <summary.json>... [--format md|slack|junit|html] [--title T] [--link Name=URL]...
  *                [--out FILE] [--check]`
  *
  * Joins the batch summaries of a pipeline into one report. The phases are recognised by
@@ -34,8 +34,8 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
     var i = 0
     while (i < args.size) {
         when (val a = args[i]) {
-            "--format" -> format = args.getOrNull(++i)?.takeIf { it in setOf("md", "slack", "junit") }
-                ?: return reportErr("invalid --format (use md|slack|junit)")
+            "--format" -> format = args.getOrNull(++i)?.takeIf { it in setOf("md", "slack", "junit", "html") }
+                ?: return reportErr("invalid --format (use md|slack|junit|html)")
             "--title" -> title = args.getOrNull(++i) ?: return reportErr("--title needs a value")
             "--out" -> out = args.getOrNull(++i) ?: return reportErr("--out needs a file path")
             "--check" -> check = true
@@ -60,6 +60,7 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
     val text = when (format) {
         "md" -> renderMarkdown(report)
         "slack" -> renderSlack(report)
+        "html" -> HtmlReport.render(report, cwd)
         else -> renderJunit(report)
     }
     if (out != null) {
