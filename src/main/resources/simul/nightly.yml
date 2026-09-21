@@ -65,6 +65,8 @@ jobs:
           for tool in adb emulator simul android; do
             command -v "$tool" >/dev/null || { echo "::error::$tool not on the runner PATH — set PATH in the runner's .env"; exit 1; }
           done
+          # the observation format depends on this — it is also stamped into traces and reports
+          echo "android CLI $(android --version 2>/dev/null | head -1) · simul $(simul --help | head -1)"
           emulator -list-avds | grep -qx "$SIMUL_AVD" \
             || { echo "::error::AVD '$SIMUL_AVD' not found; available: $(emulator -list-avds | tr '\n' ' ')"; exit 1; }
           adb devices | grep -q "^${ANDROID_SERIAL}" && adb -s "$ANDROID_SERIAL" emu kill && sleep 5 || true

@@ -84,7 +84,7 @@ class RunSummaryTest {
         val md = File(p.scenariosDir, "nav/basic.md").apply { writeText("---\nname: nav-basic\n---\n1. a\n") }
         val skipped = outcomeWithout(p, md, ScenarioMd.parse(md), "SKIPPED", "no trace")
         val crashed = outcomeWithout(p, md, ScenarioMd.parse(md), "CRASH", "OutOfMemoryError: boom", crashLog = File(p.reportsDir, "nav-basic-crash-1.log"))
-        val s = RunSummary("record", "llm", "2026-09-19T02:00:00+09:00", 5000, AGENT_VERSION, null, "emu", listOf(skipped, crashed))
+        val s = RunSummary("record", "llm", "2026-09-19T02:00:00+09:00", 5000, AGENT_VERSION, null, "emu", listOf(skipped, crashed), androidCli = "1.0.16261425")
 
         val file = File(p.reportsDir, "nightly/record.json")
         RunSummaryJson.write(s, file)

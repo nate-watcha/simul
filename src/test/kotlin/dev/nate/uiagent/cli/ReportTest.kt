@@ -24,7 +24,7 @@ class ReportTest {
 
     private fun summary(label: String, mode: String, vararg outs: ScenarioOutcome) = RunSummary(
         label = label, mode = mode, startedAt = "2026-09-19T02:00:00+09:00", durationMs = 60_000,
-        agentVersion = "0.2.0", appVersionName = "5.4.0", device = "sdk_gphone64_arm64", scenarios = outs.toList(),
+        agentVersion = "0.2.0", appVersionName = "5.4.0", device = "sdk_gphone64_arm64", scenarios = outs.toList(), androidCli = "1.0.16261425",
     )
 
     private fun verdict(baseline: String?, record: String?, verify: String?): VerdictKind {
@@ -109,7 +109,7 @@ class ReportTest {
         assertTrue("checkout/coupon.trace.json" in md, "must point at the re-recorded trace\n$md")
         assertTrue("- on screen: `Coupons` · `Register coupon`" in md, "failed steps list what the screen showed\n$md")
         assertTrue("[Run](https://github.com/o/r/actions/runs/1)" in md)
-        assertTrue("app 5.4.0" in md && "sdk_gphone64_arm64" in md)
+        assertTrue("app 5.4.0" in md && "sdk_gphone64_arm64" in md && "android CLI 1.0.16261425" in md, md)
         assertTrue("nav/a.md" !in md.substringAfter("### Needs attention"), "stable rows stay out of the attention list")
     }
 

@@ -116,6 +116,14 @@ class ScenarioRunner(
                 log("  warning: trace recorded at ${trace.display} but device is $current — set display: in .simul/config.yaml")
             }
         }
+        // The observation channel itself has a version: `android layout` output changed shape
+        // between CLI releases and silently starved a replay of half the screen once.
+        if (mode == RunMode.REPLAY && trace?.androidCli != null) {
+            val current = ops.androidCliVersion()
+            if (current != null && current != trace.androidCli) {
+                log("  warning: trace recorded with android CLI ${trace.androidCli} but this machine has $current — if grounding breaks, suspect the layout output format first")
+            }
+        }
 
         val reports = mutableListOf<StepReport>()
         val newSteps = mutableListOf<TraceStep>()
@@ -160,7 +168,8 @@ class ScenarioRunner(
             status != StepStatus.PASSED -> null
             mode == RunMode.LLM || coordDirty ->
                 TraceFile(scenario.name, AGENT_VERSION, ops.appVersionName(app) ?: trace?.appVersionName,
-                    newSteps, display = ops.displayProfile() ?: trace?.display)
+                    newSteps, display = ops.displayProfile() ?: trace?.display,
+                    androidCli = ops.androidCliVersion() ?: trace?.androidCli)
             else -> null
         }
         val result = ScenarioRunResult(
@@ -314,6 +323,7 @@ class ScenarioRunner(
                 put("agentVersion", AGENT_VERSION)
                 put("appVersionName", ops.appVersionName(app)?.let(::JsonPrimitive) ?: JsonNull)
                 put("device", ops.deviceName()?.let(::JsonPrimitive) ?: JsonNull)
+                put("androidCli", ops.androidCliVersion()?.let(::JsonPrimitive) ?: JsonNull)
             })
             put("steps", buildJsonArray {
                 r.steps.forEach { s ->

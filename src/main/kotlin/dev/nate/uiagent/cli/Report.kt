@@ -133,6 +133,7 @@ class PipelineReport(
     val appVersionName get() = phases.firstNotNullOfOrNull { it.summary.appVersionName }
     val device get() = phases.firstNotNullOfOrNull { it.summary.device }
     val agentVersion get() = phases.firstNotNullOfOrNull { it.summary.agentVersion.ifEmpty { null } }
+    val androidCli get() = phases.firstNotNullOfOrNull { it.summary.androidCli }
     val startedAt get() = phases.firstNotNullOfOrNull { it.summary.startedAt.ifEmpty { null } }
 
     /** `12 scenarios · ✅ 9 stable · 🔁 1 changed · ❌ 2 regression suspected` */
@@ -255,7 +256,7 @@ fun renderMarkdown(r: PipelineReport): String = buildString {
     appendLine("**${r.countsLine()}**")
     val env = listOfNotNull(
         r.appVersionName?.let { "app $it" }, r.device?.let { "device $it" },
-        r.agentVersion?.let { "simul $it" }, r.startedAt?.let { "started $it" },
+        r.agentVersion?.let { "simul $it" }, r.androidCli?.let { "android CLI $it" }, r.startedAt?.let { "started $it" },
     )
     if (env.isNotEmpty()) appendLine("<sub>${env.joinToString(" · ")}</sub>")
     if (r.links.isNotEmpty()) {
@@ -306,7 +307,7 @@ fun renderSlack(r: PipelineReport): String {
         put("type", "header")
         put("text", buildJsonObject { put("type", "plain_text"); put("text", "${r.overallEmoji} ${r.title} — ${r.headline()}".take(150)) })
     }
-    val env = listOfNotNull(r.appVersionName?.let { "app $it" }, r.device?.let { "device $it" }, r.agentVersion?.let { "simul $it" })
+    val env = listOfNotNull(r.appVersionName?.let { "app $it" }, r.device?.let { "device $it" }, r.agentVersion?.let { "simul $it" }, r.androidCli?.let { "android CLI $it" })
     blocks += section("*${slackEscape(r.countsLine())}*" + (if (env.isEmpty()) "" else "\n_${slackEscape(env.joinToString(" · "))}_"))
     // one block per scenario needing attention, capped — Slack allows 50 blocks per message
     val shown = r.attention.take(20)

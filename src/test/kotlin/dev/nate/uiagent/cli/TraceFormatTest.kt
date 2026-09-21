@@ -61,3 +61,17 @@ class TraceFormatTest {
         assertTrue("\"lastCoords\": [" in a)
     }
 }
+
+class TraceAndroidCliStampTest {
+    @Test
+    fun `android CLI version is stamped when known and omitted otherwise`() {
+        val with = TraceFile("s", AGENT_VERSION, null, emptyList(), display = "720x1280@320", androidCli = "1.0.16261425")
+        val text = TraceJson.render(with)
+        assertTrue("\"androidCli\": \"1.0.16261425\"" in text, text)
+        assertEquals(with, TraceJson.parse(text))
+
+        val without = TraceJson.render(TraceFile("s", AGENT_VERSION, null, emptyList()))
+        assertTrue("androidCli" !in without, "absent → omitted, old traces stay byte-identical")
+        assertEquals(null, TraceJson.parse(without).androidCli)
+    }
+}

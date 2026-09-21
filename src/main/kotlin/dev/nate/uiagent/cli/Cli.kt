@@ -237,6 +237,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
             appVersionName = ops.appVersionName(project.config.app),
             device = ops.deviceName(),
             scenarios = outcomes,
+            androidCli = ops.androidCliVersion(),
         )
         RunSummaryJson.write(summary, file)
         val shown = file.relativeToOrSelf(cwd).path.let { if (it.startsWith("..")) file.absolutePath else it }

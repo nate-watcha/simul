@@ -31,6 +31,8 @@ data class TraceFile(
     val steps: List<TraceStep>,
     /** Display the recording ran under ("720x1280@320") — replay warns on mismatch. */
     val display: String? = null,
+    /** `android` CLI version the recording observed with — replay warns on mismatch. */
+    val androidCli: String? = null,
 )
 
 data class TraceStep(
@@ -94,6 +96,7 @@ object TraceJson {
             put("agentVersion", t.agentVersion)
             put("appVersionName", t.appVersionName?.let(::JsonPrimitive) ?: JsonNull)
             t.display?.let { put("display", it) }
+            t.androidCli?.let { put("androidCli", it) }
         })
         put("steps", buildJsonArray { t.steps.forEach { add(stepJson(it)) } })
     }
@@ -144,6 +147,7 @@ object TraceJson {
             appVersionName = recorded?.get("appVersionName")?.let { it as? JsonPrimitive }?.contentOrNull,
             steps = (o["steps"] as? JsonArray)?.map { parseStep(it.jsonObject) } ?: emptyList(),
             display = recorded?.get("display")?.let { it as? JsonPrimitive }?.contentOrNull,
+            androidCli = recorded?.get("androidCli")?.let { it as? JsonPrimitive }?.contentOrNull,
         )
     }
 

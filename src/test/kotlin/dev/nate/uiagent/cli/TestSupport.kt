@@ -52,6 +52,8 @@ internal class FakeOps(private val versionName: String? = "5.4.0") : DeviceOps {
     override fun appVersionName(app: String?): String? = versionName
     override fun deviceName(): String? = "fake-device"
     override fun displayProfile(): String? = display
+    var androidCli: String? = "1.0.test"
+    override fun androidCliVersion(): String? = androidCli
 }
 
 /** Step executor driven by a lambda (which may drive the controller to simulate agent actions). */

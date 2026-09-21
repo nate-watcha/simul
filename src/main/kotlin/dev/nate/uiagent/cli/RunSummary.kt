@@ -37,6 +37,8 @@ data class RunSummary(
     val appVersionName: String?,
     val device: String?,
     val scenarios: List<ScenarioOutcome>,
+    /** `android` CLI version on the machine that ran the batch (observation format). */
+    val androidCli: String? = null,
 )
 
 /** PASSED | FAILED | SKIPPED | CRASH — the scenario-level result inside a batch. */
@@ -142,6 +144,7 @@ object RunSummaryJson {
             put("agentVersion", s.agentVersion)
             put("appVersionName", s.appVersionName?.let(::JsonPrimitive) ?: JsonNull)
             put("device", s.device?.let(::JsonPrimitive) ?: JsonNull)
+            s.androidCli?.let { put("androidCli", it) }
         })
         put("scenarios", buildJsonArray {
             s.scenarios.forEach { o ->
@@ -188,6 +191,7 @@ object RunSummaryJson {
             agentVersion = str(env, "agentVersion") ?: "",
             appVersionName = str(env, "appVersionName"),
             device = str(env, "device"),
+            androidCli = str(env, "androidCli"),
             scenarios = (o["scenarios"] as? JsonArray)?.map { el ->
                 val s = el.jsonObject
                 val steps = s["steps"] as? JsonObject

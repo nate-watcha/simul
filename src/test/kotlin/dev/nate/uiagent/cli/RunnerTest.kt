@@ -363,3 +363,24 @@ class FailedStepScreenTest {
         assertTrue("\"screen\"" in File(reportDir, "report.json").readText())
     }
 }
+
+class AndroidCliMismatchTest {
+    @Test
+    fun `replay warns when the trace was recorded under another android CLI version`() {
+        val screen = layout(el("로그인", id = 1, interactions = listOf("clickable")))
+        val dev = FakeDevice(screen, screen)
+        val listener = SwitchableListener()
+        val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
+        val ops = FakeOps().apply { androidCli = "1.0.16261425" }
+        val reportDir = File.createTempFile("uiagent-report", "").let { it.delete(); it.mkdirs(); it }
+        val lines = mutableListOf<String>()
+        val runner = ScenarioRunner(controller, listener, ops, neverCalledExecutor, reportDir, app = "com.example", log = lines::add)
+        val trace = TraceFile("t", AGENT_VERSION, null, listOf(TraceStep("Verify \"로그인\" is shown", emptyList(), listOf("로그인"))), androidCli = "1.0.15498356")
+
+        val result = runner.run(Scenario("t", emptyList(), null, listOf("Verify \"로그인\" is shown")), trace, RunMode.REPLAY)
+
+        assertEquals(StepStatus.PASSED, result.status)
+        assertTrue(lines.any { "android CLI 1.0.15498356" in it && "1.0.16261425" in it }, lines.joinToString("\n"))
+        assertTrue("\"androidCli\": \"1.0.16261425\"" in File(reportDir, "report.json").readText())
+    }
+}

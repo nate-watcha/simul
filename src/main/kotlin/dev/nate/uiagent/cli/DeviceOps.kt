@@ -16,6 +16,13 @@ interface DeviceOps {
     fun appVersionName(app: String?): String?
     fun deviceName(): String?
 
+    /**
+     * Version of the `android` CLI that produces every observation. Its `layout` output
+     * format has changed between releases (flat list → tree), so the version is stamped into
+     * traces and reports and a replay under a different version gets a warning.
+     */
+    fun androidCliVersion(): String? = null
+
     // ---- display profile enforcement (emulator-only safety net; see DisplayProfile) ----
 
     /** Current effective display as "WxH@dpi" (override if set, else physical); null if unreadable. */
@@ -28,6 +35,7 @@ interface DeviceOps {
 
 class AdbOps(
     private val adbBin: String = "adb",
+    private val androidBin: String = "android",
     /** Where `simul state save` snapshots live (`.simul/states`); null disables appState. */
     private val statesDir: File? = null,
 ) : DeviceOps {
@@ -94,6 +102,12 @@ class AdbOps(
                 ?.trim()
         }.getOrNull()
     }
+
+    override fun androidCliVersion(): String? = runCatching {
+        // stdout is the bare version; the "new version available" notice goes to stderr
+        runProcess(listOf(androidBin, "--version")).lineSequence()
+            .map { it.trim() }.firstOrNull { it.matches(Regex("\\d+(\\.\\d+)+")) }
+    }.getOrNull()
 
     override fun deviceName(): String? = runCatching {
         runProcess(listOf(adbBin, "shell", "getprop", "ro.product.model")).trim().ifEmpty { null }
