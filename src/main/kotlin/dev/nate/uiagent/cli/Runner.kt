@@ -30,7 +30,18 @@ data class StepReport(
     val durationMs: Long,
     val screenshots: List<String>,
     val stateEvidence: List<StateEvidence> = emptyList(),
+    /**
+     * What the screen exposed when the step FAILED — the labels/ids the harness could see —
+     * so a report answers "then what WAS there?" without the device (a replay that cannot
+     * ground its target has taken no action and therefore has no screenshot of its own).
+     */
+    val screen: List<String> = emptyList(),
 )
+
+/** The labels a scenario could reference on the current screen, deduplicated and capped. */
+fun screenLabels(elements: List<dev.nate.uiagent.LogicalElement>, cap: Int = 30): List<String> =
+    elements.mapNotNull { it.label ?: it.resourceId }.map { it.replace("\r\n", " ").replace('\n', ' ').trim() }
+        .filter { it.isNotEmpty() }.distinct().take(cap)
 
 data class ScenarioRunResult(
     val scenario: String,
@@ -128,7 +139,13 @@ class ScenarioRunner(
             } finally {
                 listener.delegate = null
             }
-            val done = report.copy(durationMs = System.currentTimeMillis() - s0)
+            var done = report.copy(durationMs = System.currentTimeMillis() - s0)
+            if (done.status == StepStatus.FAILED) {
+                // keep the failing screen in the report: its labels, and a screenshot when
+                // the step produced none itself (grounding failed before any gesture)
+                val shots = if (done.screenshots.isEmpty()) listOfNotNull(shoot("step$n-failed")) else done.screenshots
+                done = done.copy(screen = screenLabels(controller.currentElements), screenshots = shots)
+            }
             reports += done
             log("  step $n: ${renderResult(done)}")
             if (done.status == StepStatus.FAILED) failedAt = n
@@ -313,6 +330,7 @@ class ScenarioRunner(
                         put("reason", s.reason?.let(::JsonPrimitive) ?: JsonNull)
                         put("durationMs", s.durationMs)
                         put("screenshots", buildJsonArray { s.screenshots.forEach { add(JsonPrimitive(it)) } })
+                        if (s.screen.isNotEmpty()) put("screen", buildJsonArray { s.screen.forEach { add(JsonPrimitive(it)) } })
                     })
                 }
             })

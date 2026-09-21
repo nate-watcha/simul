@@ -16,8 +16,8 @@ class RunSummaryTest {
         return SimulProject(root)
     }
 
-    private fun step(i: Int, status: StepStatus, mode: String?, reason: String? = null, shots: List<String> = emptyList()) =
-        StepReport(i, "step $i \"x\"", status, mode, emptyList(), emptyList(), reason, 1000, shots)
+    private fun step(i: Int, status: StepStatus, mode: String?, reason: String? = null, shots: List<String> = emptyList(), screen: List<String> = emptyList()) =
+        StepReport(i, "step $i \"x\"", status, mode, emptyList(), emptyList(), reason, 1000, shots, screen = screen)
 
     @Test
     fun `outcome maps a failed run to its first failed step and screenshot under the report dir`() {
@@ -29,7 +29,7 @@ class RunSummaryTest {
             "nav-basic", StepStatus.FAILED,
             listOf(
                 step(1, StepStatus.PASSED, "replay"),
-                step(2, StepStatus.FAILED, "replay", "replay broken: evidence not on screen: \"b\"", listOf("screenshots/step2-1-tap-before.png", "screenshots/step2-1-tap-after.png")),
+                step(2, StepStatus.FAILED, "replay", "replay broken: evidence not on screen: \"b\"", listOf("screenshots/step2-1-tap-before.png", "screenshots/step2-1-tap-after.png"), screen = listOf("로그인", "닫기")),
                 step(3, StepStatus.SKIPPED, null),
             ),
             updatedTrace = null, durationMs = 9000, reportDir = reportDir,
@@ -44,6 +44,7 @@ class RunSummaryTest {
         val f = assertNotNull(o.failedStep)
         assertEquals(2, f.index)
         assertEquals(".simul/reports/nav-basic-20260919-020000/screenshots/step2-1-tap-after.png", f.screenshot)
+        assertEquals(listOf("로그인", "닫기"), f.screen)
         assertTrue(!o.traceUpdated)
     }
 

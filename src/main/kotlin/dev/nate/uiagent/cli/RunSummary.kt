@@ -64,7 +64,14 @@ data class ScenarioOutcome(
 }
 
 /** The step that broke a scenario: index, sentence, harness reason, last screenshot taken. */
-data class FailedStep(val index: Int, val text: String, val reason: String?, val screenshot: String?)
+data class FailedStep(
+    val index: Int,
+    val text: String,
+    val reason: String?,
+    val screenshot: String?,
+    /** Labels/ids visible when the step failed (see StepReport.screen). */
+    val screen: List<String> = emptyList(),
+)
 
 /** Build the outcome row for a scenario the runner executed. */
 fun outcomeOf(project: SimulProject, md: File, scenario: Scenario, r: ScenarioRunResult): ScenarioOutcome {
@@ -91,6 +98,7 @@ fun outcomeOf(project: SimulProject, md: File, scenario: Scenario, r: ScenarioRu
                 text = s.text,
                 reason = s.reason,
                 screenshot = s.screenshots.lastOrNull()?.let { shot -> reportRel?.let { "$it/$shot" } ?: shot },
+                screen = s.screen,
             )
         },
         reason = null,
@@ -157,6 +165,7 @@ object RunSummaryJson {
                             put("text", f.text)
                             put("reason", f.reason?.let(::JsonPrimitive) ?: JsonNull)
                             put("screenshot", f.screenshot?.let(::JsonPrimitive) ?: JsonNull)
+                            if (f.screen.isNotEmpty()) put("screen", buildJsonArray { f.screen.forEach { add(JsonPrimitive(it)) } })
                         })
                     }
                     o.reason?.let { put("reason", it) }
@@ -201,6 +210,7 @@ object RunSummaryJson {
                             text = str(it, "text") ?: "",
                             reason = str(it, "reason"),
                             screenshot = str(it, "screenshot"),
+                            screen = (it["screen"] as? JsonArray)?.mapNotNull { e -> e.jsonPrimitive.contentOrNull } ?: emptyList(),
                         )
                     },
                     reason = str(s, "reason"),

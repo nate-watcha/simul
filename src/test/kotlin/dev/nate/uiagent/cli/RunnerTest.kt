@@ -334,3 +334,32 @@ class RunnerTest {
         assertTrue(logged.any { "observing initial screen" in it }, "$logged")
     }
 }
+
+class FailedStepScreenTest {
+    private val tabA = el("웹툰", interactions = listOf("clickable"), center = Point(360, 1176), id = 0)
+    private val gate = layout(el("로그인", id = 5, interactions = listOf("clickable")), el(resourceId = "close", id = 6))
+
+    @Test
+    fun `a broken replay step records the labels on screen and takes a screenshot`() {
+        val dev = FakeDevice(gate, gate)
+        val listener = SwitchableListener()
+        val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
+        val reportDir = File.createTempFile("uiagent-report", "").let { it.delete(); it.mkdirs(); it }
+        val ops = object : DeviceOps by FakeOps() {
+            override fun screenshot(dest: File): Boolean { dest.parentFile.mkdirs(); dest.writeText("png"); return true }
+        }
+        val runner = ScenarioRunner(controller, listener, ops, neverCalledExecutor, reportDir, app = "com.example")
+        val scenario = Scenario("t", emptyList(), null, listOf("Tap the \"웹툰\" tab"))
+        val trace = TraceFile("t", AGENT_VERSION, null, listOf(
+            TraceStep("Tap the \"웹툰\" tab", listOf(TraceAction("tap", target = TraceTarget(null, "웹툰", tabA.center))), listOf("웹툰")),
+        ))
+
+        val result = runner.run(scenario, trace, RunMode.REPLAY)
+
+        val step = result.steps.single()
+        assertEquals(StepStatus.FAILED, step.status)
+        assertEquals(listOf("로그인", "close"), step.screen, "labels then resourceIds of what was actually on screen")
+        assertEquals(listOf("screenshots/step1-failed.png"), step.screenshots)
+        assertTrue("\"screen\"" in File(reportDir, "report.json").readText())
+    }
+}

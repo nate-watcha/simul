@@ -18,7 +18,7 @@ class ReportTest {
         name = path.substringAfterLast('/').removeSuffix(".md"), path = path, tags = listOf("smoke"),
         status = status, mode = mode, durationMs = 12_300, reportDir = ".simul/reports/x-20260919-020000",
         traceUpdated = traceUpdated, passedSteps = 2, failedSteps = if (failedAt != null) 1 else 0, skippedSteps = 0,
-        failedStep = failedAt?.let { FailedStep(it, "Tap the \"Apply\" button", reason ?: "replay broken: evidence not on screen", "shots/step$it-1-tap-after.png") },
+        failedStep = failedAt?.let { FailedStep(it, "Tap the \"Apply\" button", reason ?: "replay broken: evidence not on screen", "shots/step$it-1-tap-after.png", listOf("Coupons", "Register coupon")) },
         reason = skipReason,
     )
 
@@ -107,6 +107,7 @@ class ReportTest {
         assertTrue("### Needs attention" in md)
         assertTrue("step 3 `Tap the \"Apply\" button` — replay broken: evidence not on screen" in md, md)
         assertTrue("checkout/coupon.trace.json" in md, "must point at the re-recorded trace\n$md")
+        assertTrue("- on screen: `Coupons` · `Register coupon`" in md, "failed steps list what the screen showed\n$md")
         assertTrue("[Run](https://github.com/o/r/actions/runs/1)" in md)
         assertTrue("app 5.4.0" in md && "sdk_gphone64_arm64" in md)
         assertTrue("nav/a.md" !in md.substringAfter("### Needs attention"), "stable rows stay out of the attention list")
@@ -122,6 +123,7 @@ class ReportTest {
         assertTrue(blocks.size in 4..6, "header + counts + 2 attention + context, got ${blocks.size}")
         val text = blocks.joinToString { it.toString() }
         assertTrue("checkout/coupon.md" in text && "evidence not on screen" in text, text)
+        assertTrue("on screen: Coupons · Register coupon" in text, text)
         assertTrue("<https://github.com/o/r/actions/runs/1|Run>" in text, text)
         assertTrue("\"&lt;" !in renderSlack(r) || "<" !in renderSlack(r).substringAfter("Apply"), "mrkdwn control chars must be escaped")
     }

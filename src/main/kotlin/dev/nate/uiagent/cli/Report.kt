@@ -281,6 +281,7 @@ fun renderMarkdown(r: PipelineReport): String = buildString {
                 val line = failureLine(o) ?: continue
                 appendLine("- **${r.phases[i].label}** $line")
                 o.failedStep?.screenshot?.let { appendLine("  - screenshot: `$it`") }
+                o.failedStep?.screen?.takeIf { it.isNotEmpty() }?.let { appendLine("  - on screen: " + it.joinToString(" · ") { l -> "`$l`" }) }
                 o.reportDir?.let { appendLine("  - report: `$it`") }
             }
             row.outcomes.filterNotNull().firstOrNull { it.traceUpdated }?.let {
@@ -314,6 +315,9 @@ fun renderSlack(r: PipelineReport): String {
         for ((i, o) in row.outcomes.withIndex()) {
             val line = o?.let(::failureLine) ?: continue
             lines += "> _${slackEscape(r.phases[i].label)}_ ${slackEscape(line)}"
+            o.failedStep?.screen?.takeIf { it.isNotEmpty() }?.let { sc ->
+                lines += "> on screen: " + slackEscape(sc.take(12).joinToString(" · ")) + (if (sc.size > 12) " …" else "")
+            }
         }
         blocks += section(lines.joinToString("\n"))
     }
