@@ -24,21 +24,30 @@ object LayoutAdapter {
     /**
      * Both `android layout` output generations are accepted:
      *  - ≤ 1.0.15498356: a flat JSON array, lowercase `interactions`/`state`, short `resource-id`
-     *  - ≥ 1.0.16261425: a status line first ("Installing layout instrumentation server..."),
-     *    then a tree — every node may carry `children` — with UPPERCASE `interactions`/`state`
-     *    and full `resource-id`s (`com.example:id/name`). Seen on the nightly runner: the
-     *    top level alone parsed to 15 nodes and the whole bottom nav was in the children.
+     *  - ≥ 1.0.16251017 (layout V2, first seen 1.0.16261425): status lines first ("Unpacking
+     *    embedded installation...", "Installing layout instrumentation server..."), then a tree —
+     *    every node may carry `children` — with UPPERCASE `interactions`/`state` and full
+     *    `resource-id`s (`com.example:id/name`). Seen on the nightly runner: the top level alone
+     *    parsed to 15 nodes and the whole bottom nav was in the children. 1.0.16406183 kept this
+     *    shape unchanged (verified node-for-node against 1.0.16261425 on the same screen).
+     * The default dump already drops pure containers; `--full` adds `hidden`/`off-screen`
+     * booleans, and nodes flagged with either are skipped here so a full dump grounds the same
+     * as a default one. Text after the array (the CLI's "A new version ... is available" notice
+     * when it lands on stdout) is ignored.
      * Everything is normalised to the old vocabulary so traces and evidence stay valid.
      */
     fun parseRawLayout(rawJson: String): List<RawNode> {
-        // skip any non-JSON preamble the CLI prints on stdout
+        // skip any non-JSON preamble / postamble the CLI prints on stdout
         val start = rawJson.indexOf('[').takeIf { it >= 0 } ?: return emptyList()
+        val end = rawJson.lastIndexOf(']').takeIf { it > start } ?: return emptyList()
         // malformed/truncated dump -> no elements, not a crash; callers poll again
-        val parsed = runCatching { json.parseToJsonElement(rawJson.substring(start)) }.getOrNull()
+        val parsed = runCatching { json.parseToJsonElement(rawJson.substring(start, end + 1)) }.getOrNull()
         val arr = parsed as? JsonArray ?: return emptyList()
         val out = mutableListOf<RawNode>()
         fun visit(el: kotlinx.serialization.json.JsonElement) {
             val o = el as? JsonObject ?: return
+            // `--full` only: invisible subtrees must not become tap targets
+            if (o["hidden"].isTrue() || o["off-screen"].isTrue()) return
             val center = o["center"]?.jsonPrimitive?.contentOrNull?.let(::parsePoint)
             if (center != null) {
                 out += RawNode(
@@ -56,6 +65,9 @@ object LayoutAdapter {
         arr.forEach(::visit)
         return out
     }
+
+    private fun kotlinx.serialization.json.JsonElement?.isTrue(): Boolean =
+        (this as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull == "true"
 
     private val fullIdPrefix = Regex("^[A-Za-z0-9_.]+:id/")
 

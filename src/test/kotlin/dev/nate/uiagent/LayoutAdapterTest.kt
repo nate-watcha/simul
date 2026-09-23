@@ -129,9 +129,43 @@ class LayoutAdapterTreeFormatTest {
         assertEquals("찾기", layout.elements.single().label)
     }
 
+    /** 1.0.16406183: two status lines, the same tree, and the update notice after the array. */
+    private val v16406183 = """
+        Unpacking embedded installation...
+        Installing layout instrumentation server...
+        [{"class":"android.widget.TextView","text":"구독","bounds":"[75,155][217,260]","center":"[146,207]"},
+         {"class":"android.view.View","interactions":["CLICKABLE","FOCUSABLE"],"bounds":"[288,2854][576,3064]","center":"[432,2959]",
+          "children":[{"class":"android.widget.TextView","text":"개별 구매","bounds":"[349,2967][516,3035]","center":"[432,3001]"}]},
+         {"class":"android.widget.ImageView","content-desc":"WX \u003c절친클럽\u003e","interactions":["CLICKABLE","FOCUSABLE"],"bounds":"[75,2298][454,2511]","center":"[264,2404]"}]
+
+        A new version of Android CLI is available (1.0.99999999).
+        Please run 'android update' to install it.
+    """.trimIndent()
+
+    @Test
+    fun `1_0_16406183 output with status lines and a trailing update notice parses like 1_0_16261425`() {
+        assertEquals(4, LayoutAdapter.parseRawLayout(v16406183).size)
+        val layout = LayoutAdapter.adapt(v16406183)
+        assertEquals(listOf("구독", "WX <절친클럽>", "개별 구매"), layout.elements.map { it.label })
+        assertTrue("clickable" in layout.elements.first { it.label == "개별 구매" }.interactions)
+    }
+
+    @Test
+    fun `--full dump nodes flagged hidden or off-screen are skipped with their subtrees`() {
+        val full = """
+            [{"class":"android.widget.FrameLayout","bounds":"[0,0][1440,3120]","center":"[720,1560]","children":[
+              {"class":"android.widget.Button","text":"보이는 버튼","interactions":["CLICKABLE"],"bounds":"[0,0][100,100]","center":"[50,50]"},
+              {"class":"android.widget.Button","text":"숨은 버튼","hidden":true,"interactions":["CLICKABLE"],"bounds":"[0,0][100,100]","center":"[50,50]",
+               "children":[{"class":"android.widget.TextView","text":"숨은 자식","bounds":"[0,0][100,100]","center":"[50,50]"}]},
+              {"class":"android.widget.Button","text":"스크롤 밖","off-screen":true,"interactions":["CLICKABLE"],"bounds":"[0,4000][100,4100]","center":"[50,4050]"}]}]
+        """.trimIndent()
+        assertEquals(listOf("보이는 버튼"), LayoutAdapter.adapt(full).elements.map { it.label })
+    }
+
     @Test
     fun `garbage and preamble-only output yield no elements`() {
         assertTrue(LayoutAdapter.parseRawLayout("Installing layout instrumentation server...\n").isEmpty())
         assertTrue(LayoutAdapter.parseRawLayout("").isEmpty())
+        assertTrue(LayoutAdapter.parseRawLayout("[{\"center\":\"[1,1]\"").isEmpty(), "truncated dump")
     }
 }
