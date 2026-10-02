@@ -1,7 +1,9 @@
 package dev.nate.uiagent.cli
 
-import dev.nate.uiagent.agent.ChatClient
+import ai.koog.prompt.executor.model.PromptExecutor
+import ai.koog.prompt.llm.LLModel
 import dev.nate.uiagent.agent.ScenarioSession
+import dev.nate.uiagent.agent.SimulLlm
 import dev.nate.uiagent.device.DeviceController
 
 /**
@@ -21,14 +23,20 @@ interface StepExecutor {
 data class StepVerdict(val passed: Boolean, val reason: String)
 
 /**
- * All steps of one scenario share ONE LLM conversation ([ScenarioSession]): the model keeps
- * its own action/diff history across steps, and because the transcript is append-only the
- * llama.cpp prefix cache re-evaluates only each step's new tokens (command + new results)
- * instead of re-reading a full layout every step. Verdicts remain per step via report().
+ * All steps of one scenario share ONE LLM conversation ([ScenarioSession], Koog ChatMemory):
+ * the model keeps its own action/diff history across steps, and because the transcript is
+ * append-only the llama.cpp prefix cache re-evaluates only each step's new tokens (command +
+ * new results) instead of re-reading a full layout every step. Verdicts remain per step via
+ * report().
+ *
+ * [executor] is resolved on the first step that needs the model: the runner builds this
+ * executor before it knows whether a step will need the LLM at all (replay never does), so
+ * key validation is deferred to the first LLM step.
  */
 class SessionStepExecutor(
     private val controller: DeviceController,
-    private val client: ChatClient,
+    private val executor: () -> PromptExecutor,
+    private val model: LLModel = SimulLlm.model(),
     private val maxIterations: Int = 12,
     private val log: (String) -> Unit = {},
 ) : StepExecutor {
@@ -36,7 +44,7 @@ class SessionStepExecutor(
     private var session: ScenarioSession? = null
 
     override fun runStep(stepText: String, initialLayout: String?, criterion: String?): StepVerdict {
-        val s = session ?: ScenarioSession(client, controller, maxIterations, log)
+        val s = session ?: ScenarioSession(executor(), controller, maxIterations, log, model)
             .also { session = it }
         val v = s.runStep(stepText, initialLayout, criterion)
         return StepVerdict(v.passed, v.reason)

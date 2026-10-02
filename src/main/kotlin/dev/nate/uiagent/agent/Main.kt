@@ -40,7 +40,7 @@ private class FileDevice(private val path: String) : Device {
 
 fun main(argv: Array<String>) {
     var url = "http://100.99.171.25:8080"
-    var model = HttpChatClient.DEFAULT_MODEL
+    var model = SimulLlm.DEFAULT_MODEL
     var apiKey: String? = System.getenv("SIMUL_LLM_API_KEY")?.ifEmpty { null }
     var maxIterations = 12
     var layoutFile: String? = null
@@ -95,7 +95,8 @@ fun main(argv: Array<String>) {
     trace.event("command") { it["text"] = command }
     val t0 = System.currentTimeMillis()
     val initialLayout = controller.fullLayout()
-    val session = ScenarioSession(HttpChatClient(url, model, apiKey), controller, maxIterations, log = { println("  $it") })
+    val session = ScenarioSession(SimulLlm.executor(url, apiKey), controller, maxIterations,
+        log = { println("  $it") }, model = SimulLlm.model(model))
 
     // `COMMAND :: CRITERION` — same contract as scenario steps (criterion delivered post-action)
     val sep = command.indexOf(" :: ")

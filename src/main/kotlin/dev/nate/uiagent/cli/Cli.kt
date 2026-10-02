@@ -1,13 +1,10 @@
 package dev.nate.uiagent.cli
 
-import dev.nate.uiagent.agent.ChatClient
-import dev.nate.uiagent.agent.ChatMessage
 import dev.nate.uiagent.device.AdbDevice
 import dev.nate.uiagent.device.DeviceController
 import dev.nate.uiagent.Trace
 import dev.nate.uiagent.web.CdpClient
 import dev.nate.uiagent.web.WebAwareDevice
-import kotlinx.serialization.json.JsonArray
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -251,17 +248,6 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     return if (anyFailed) 1 else 0
 }
 
-/**
- * A [ChatClient] that resolves the real client on first use. Scenario execution builds the
- * executor before it knows whether a step will need the model at all (auto/replay modes
- * never do), so key validation is deferred to the first LLM call.
- */
-private fun lazyClient(llm: LlmConfig): ChatClient = object : ChatClient {
-    private val real by lazy { llm.client() }
-    override fun complete(messages: List<ChatMessage>, tools: JsonArray, temperature: Double) =
-        real.complete(messages, tools, temperature)
-}
-
 internal fun executeScenario(
     project: SimulProject,
     scenario: Scenario,
@@ -289,7 +275,8 @@ internal fun executeScenario(
 
     // turn lines nest under the runner's step line in the live log
     // replay never builds a client — the key stays optional for CI that only replays
-    val executor = SessionStepExecutor(controller, lazyClient(llm), project.config.maxTurns, log = { log("    $it") })
+    val executor = SessionStepExecutor(controller, { llm.client() }, llm.llmModel(), project.config.maxTurns,
+        log = { log("    $it") })
     // steps are logged live by the runner — a scenario can run for minutes
     val runner = ScenarioRunner(controller, listener, ops, executor, reportDir, project.config.app, log = log)
 

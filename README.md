@@ -70,7 +70,7 @@ simul report r/baseline.json r/record.json r/verify.json --format md --link "Run
 |---|---|
 | (root) | `Core.kt` 공용 타입(geometry, `LogicalElement/Layout`), `LayoutAdapter.kt` dump(flat/트리)→논리 요소 트리 병합, `Trace.kt` JSONL 트레이스, `Process.kt` |
 | `device` | `Device`/`AdbDevice` 관찰·제스처, `DeviceController` grounding·가드·diff 검증·wait-for-stable(+replay용 fastObserve), `Layout.kt` 모델용 렌더링/diff, `SwipeGeometry` |
-| `agent` | 자체 LLM 스택: `Chat.kt` OpenAI-호환 클라이언트, `Session.kt` 시나리오당 단일 대화 + tool 디스패치, `Agent.kt` 시스템 프롬프트, ad-hoc `main` |
+| `agent` | Koog 1.3 기반 LLM 스택: `Llm.kt` OpenAI-호환 executor/모델/고정 파라미터, `Tools.kt` 디바이스 툴 + 기준 게이트, `Session.kt` GraphAIAgent + ChatMemory(시나리오당 단일 대화), `Agent.kt` 시스템 프롬프트, ad-hoc `main` |
 | `cli` | `simul` CLI, `.simul/` 규약, 시나리오 러너(스텝 격리·라이브 로그), Record & Replay(`TraceFormat`/`Recorder`/`Replayer`), 리포트 |
 | `web` | WebView 관찰 채널: `CdpClient`(devtools socket discover + Runtime.evaluate), `WebLayout`(요소 추출 JS·좌표 변환), `WebAwareDevice`(관찰 병합) |
 

@@ -1,6 +1,8 @@
 package dev.nate.uiagent.cli
 
-import dev.nate.uiagent.agent.HttpChatClient
+import ai.koog.prompt.executor.model.PromptExecutor
+import ai.koog.prompt.llm.LLModel
+import dev.nate.uiagent.agent.SimulLlm
 import java.io.File
 
 /** Version of this tool, written into traces and checked against config `agentVersion`. */
@@ -73,7 +75,7 @@ class SimulProject(val appRoot: File) {
  */
 data class LlmConfig(
     val url: String = DEFAULT_URL,
-    val model: String = HttpChatClient.DEFAULT_MODEL,
+    val model: String = SimulLlm.DEFAULT_MODEL,
     val apiKey: String? = null,
     /** Name of the env var `apiKey: ${VAR}` pointed at, when it resolved to nothing. */
     val missingKeyEnv: String? = null,
@@ -83,10 +85,13 @@ data class LlmConfig(
         "llm.apiKey references \$$it but it is not set in the environment"
     }
 
-    fun client(): HttpChatClient {
+    /** The Koog executor for this endpoint. Throws (never silently drops the key) when `${VAR}` is unset. */
+    fun client(): PromptExecutor {
         keyProblem()?.let { throw IllegalStateException(it) }
-        return HttpChatClient(url, model, apiKey)
+        return SimulLlm.executor(url, apiKey)
     }
+
+    fun llmModel(): LLModel = SimulLlm.model(model)
 
     companion object {
         const val DEFAULT_URL = "http://localhost:8080"
@@ -103,7 +108,7 @@ data class LlmConfig(
             }
             return LlmConfig(
                 url = MiniYaml.string(y, "llm", "url") ?: DEFAULT_URL,
-                model = MiniYaml.string(y, "llm", "model") ?: HttpChatClient.DEFAULT_MODEL,
+                model = MiniYaml.string(y, "llm", "model") ?: SimulLlm.DEFAULT_MODEL,
                 apiKey = key,
                 missingKeyEnv = ref.takeIf { it != null && key == null },
             )

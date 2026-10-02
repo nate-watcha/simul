@@ -342,7 +342,7 @@ class Tui(private val project: SimulProject, private val cwd: File) {
         val cdp = CdpClient()
         val controller = DeviceController(
             WebAwareDevice(AdbDevice(), cdp, cfg.app), Trace.DISABLED)
-        val session = ScenarioSession(cfg.llm.client(), controller, cfg.maxTurns)
+        val session = ScenarioSession(cfg.llm.client(), controller, cfg.maxTurns, model = cfg.llm.llmModel())
         val reader = LineReaderBuilder.builder().terminal(terminal).build()
         println("ad-hoc — natural-language commands against the live device. :labels = current screen, :q = back")
         var first = true
