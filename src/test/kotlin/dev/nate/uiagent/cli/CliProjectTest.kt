@@ -44,7 +44,7 @@ class CliProjectTest {
         val p = assertNotNull(SimulProject.find(nested))
         assertEquals(root.canonicalFile, p.appRoot.canonicalFile)
         assertEquals("com.example.app", p.config.app)
-        assertEquals("http://localhost:8080", p.config.llmUrl)
+        assertEquals("http://localhost:8080", p.config.llm.url)
         assertNull(p.versionWarning(), "0.2.0 satisfies >=0.2")
     }
 

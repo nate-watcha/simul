@@ -1,7 +1,6 @@
 package dev.nate.uiagent.cli
 
 import dev.nate.uiagent.Trace
-import dev.nate.uiagent.agent.HttpChatClient
 import dev.nate.uiagent.agent.ScenarioSession
 import dev.nate.uiagent.device.AdbDevice
 import dev.nate.uiagent.device.DeviceController
@@ -79,7 +78,7 @@ class Tui(private val project: SimulProject, private val cwd: File) {
         val sb = StringBuilder("\u001B[2J\u001B[H")
         val cfg = project.config
         sb.appendLine(bold(" simul · ${project.appRoot.name} ").padEnd(w - 40) +
-            dim("app: ${cfg.app ?: "?"} · display: ${cfg.display?.let { "on" } ?: "off"} · llm: ${cfg.llmUrl.removePrefix("http://")}"))
+            dim("app: ${cfg.app ?: "?"} · display: ${cfg.display?.let { "on" } ?: "off"} · llm: ${cfg.llm.url.removePrefix("http://")}${if (cfg.llm.apiKey != null) " (key)" else ""}"))
         sb.appendLine(dim("─".repeat(w)))
 
         // viewport: everything except header(2) + states(2) + optional message(2) + footer(2)
@@ -256,7 +255,7 @@ class Tui(private val project: SimulProject, private val cwd: File) {
                         log.add("  SKIPPED ${scenario.name}: no trace"); results.add(scenario.name to StepStatus.SKIPPED); return@forEachIndexed
                     }
                     val res = try {
-                        executeScenario(project, scenario, trace, mode, project.config.llmUrl, traceFile, ops, log::add)
+                        executeScenario(project, scenario, trace, mode, project.config.llm, traceFile, ops, log::add)
                     } catch (t: Throwable) {
                         runCatching { writeCrashLog(project.reportsDir, scenario.name, t) }
                         log.add("  CRASH: ${t.javaClass.simpleName}"); null
@@ -333,12 +332,17 @@ class Tui(private val project: SimulProject, private val cwd: File) {
      * natural-language command → verdict; `:labels` shows what the current screen exposes
      * (exactly what scenario steps can reference); `:q` returns to the list.
      */
-    private fun adhocRepl() = onNormalScreen {
+    private fun adhocRepl() {
+        project.config.llm.keyProblem()?.let { message = red(it); return }
+        onNormalScreen { adhocLoop() }
+    }
+
+    private fun adhocLoop() {
         val cfg = project.config
         val cdp = CdpClient()
         val controller = DeviceController(
             WebAwareDevice(AdbDevice(), cdp, cfg.app), Trace.DISABLED)
-        val session = ScenarioSession(HttpChatClient(cfg.llmUrl), controller, cfg.maxTurns)
+        val session = ScenarioSession(cfg.llm.client(), controller, cfg.maxTurns)
         val reader = LineReaderBuilder.builder().terminal(terminal).build()
         println("ad-hoc — natural-language commands against the live device. :labels = current screen, :q = back")
         var first = true

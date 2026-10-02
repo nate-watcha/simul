@@ -12,12 +12,14 @@
 #   - Android SDK: adb + emulator on PATH, ANDROID_HOME set, one phone AVD named $SIMUL_AVD
 #     (`android emulator create phone`, or an existing one from `android emulator list`);
 #     config.yaml `display:` pins size/density at run time, so the AVD's screen doesn't matter
-#   - llama-server (Qwen) reachable at the `llm.url` of .simul/config.yaml — a persistent service
+#   - an OpenAI-compatible LLM reachable at the `llm.url` of .simul/config.yaml — a persistent
+#     llama-server (Qwen), or a hosted API (then `llm.apiKey: ${SIMUL_LLM_API_KEY}` + the secret below)
 #   - runner labels: self-hosted + simul
 #   - gitignored app-state snapshots (account sessions): keep them in a directory on the runner
 #     and export SIMUL_STATES_DIR=<dir> in the runner's .env — they are copied into
 #     .simul/states/ before the run (a fresh checkout has none of them)
 # Secrets: SLACK_WEBHOOK_URL (optional) — Slack incoming webhook for the report.
+#          SIMUL_LLM_API_KEY (optional) — LLM API key; only the record phase needs it, replays never do.
 
 name: simul nightly
 
@@ -48,6 +50,7 @@ jobs:
       SCOPE: ${{ inputs.scope || '--all' }}
       REPORTS: .simul/reports/nightly
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      SIMUL_LLM_API_KEY: ${{ secrets.SIMUL_LLM_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -95,8 +98,9 @@ jobs:
       - name: LLM ready
         run: |
           LLM_URL=$(awk '/^llm:/{f=1;next} f&&/url:/{print $2;exit}' .simul/config.yaml)
-          curl -fsS "${LLM_URL:-http://localhost:8080}/v1/models" >/dev/null \
-            || { echo "::error::llama-server not reachable at ${LLM_URL:-http://localhost:8080} (config.yaml llm.url)"; exit 1; }
+          AUTH=(); [ -n "$SIMUL_LLM_API_KEY" ] && AUTH=(-H "Authorization: Bearer $SIMUL_LLM_API_KEY")
+          curl -fsS "${AUTH[@]}" "${LLM_URL:-http://localhost:8080}/v1/models" >/dev/null \
+            || { echo "::error::LLM not reachable at ${LLM_URL:-http://localhost:8080} (config.yaml llm.url / SIMUL_LLM_API_KEY)"; exit 1; }
           rm -rf "$REPORTS"; mkdir -p "$REPORTS"
           simul status
 

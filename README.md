@@ -2,7 +2,8 @@
 
 자연어 커맨드/시나리오를 받아 연결된 에뮬레이터에서 수행한다.
 
-- **판단**: 로컬 llama-server(OpenAI 호환) + 자체 tool-calling 루프. 판정 근거는 액션이 만든 LAYOUT DIFF
+- **판단**: OpenAI 호환 엔드포인트(기본은 로컬 llama-server, `llm.apiKey`로 호스티드 API도 가능) +
+  자체 tool-calling 루프. 판정 근거는 액션이 만든 LAYOUT DIFF
 - **관찰**: `android layout` 출력 + WebView 내부는 CDP로 병합 (스크린샷/vision 없음)
 - **조작**: `adb shell input ...` — 웹 요소도 병합 시 화면 좌표로 변환되어 동일 경로
 
@@ -67,7 +68,7 @@ simul report r/baseline.json r/record.json r/verify.json --format md --link "Run
 
 | 패키지 | 역할 |
 |---|---|
-| (root) | `Core.kt` 공용 타입(geometry, `LogicalElement/Layout`), `LayoutAdapter.kt` flat dump→논리 요소 병합, `Trace.kt` JSONL 트레이스, `Process.kt` |
+| (root) | `Core.kt` 공용 타입(geometry, `LogicalElement/Layout`), `LayoutAdapter.kt` dump(flat/트리)→논리 요소 트리 병합, `Trace.kt` JSONL 트레이스, `Process.kt` |
 | `device` | `Device`/`AdbDevice` 관찰·제스처, `DeviceController` grounding·가드·diff 검증·wait-for-stable(+replay용 fastObserve), `Layout.kt` 모델용 렌더링/diff, `SwipeGeometry` |
 | `agent` | 자체 LLM 스택: `Chat.kt` OpenAI-호환 클라이언트, `Session.kt` 시나리오당 단일 대화 + tool 디스패치, `Agent.kt` 시스템 프롬프트, ad-hoc `main` |
 | `cli` | `simul` CLI, `.simul/` 규약, 시나리오 러너(스텝 격리·라이브 로그), Record & Replay(`TraceFormat`/`Recorder`/`Replayer`), 리포트 |

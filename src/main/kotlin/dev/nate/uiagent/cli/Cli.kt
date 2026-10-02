@@ -1,10 +1,13 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.agent.ChatClient
+import dev.nate.uiagent.agent.ChatMessage
 import dev.nate.uiagent.device.AdbDevice
 import dev.nate.uiagent.device.DeviceController
 import dev.nate.uiagent.Trace
 import dev.nate.uiagent.web.CdpClient
 import dev.nate.uiagent.web.WebAwareDevice
+import kotlinx.serialization.json.JsonArray
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -141,7 +144,9 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     }
     if (files.isEmpty()) return err("no scenarios matched")
 
-    val url = urlOverride ?: project.config.llmUrl
+    val llm = project.config.llm.let { if (urlOverride != null) it.copy(url = urlOverride) else it }
+    // The key is only needed when the LLM actually runs; replay must work without the secret.
+    if (mode != RunMode.REPLAY && !dryRun) llm.keyProblem()?.let { return err(it) }
     var anyFailed = false
     var anyRan = false
     val outcomes = mutableListOf<ScenarioOutcome>()
@@ -204,7 +209,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
             // A harness/environment crash (OOM, classpath swapped under a live JVM, adb
             // vanishing) must not kill the rest of the batch — record it and move on.
             val result = try {
-                executeScenario(project, scenario, trace, effective, url, traceFile, ops)
+                executeScenario(project, scenario, trace, effective, llm, traceFile, ops)
             } catch (t: Throwable) {
                 val log = writeCrashLog(project.reportsDir, scenario.name, t)
                 println("CRASH ${scenario.name}: ${t.javaClass.simpleName}: ${t.message ?: ""}")
@@ -246,12 +251,23 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     return if (anyFailed) 1 else 0
 }
 
+/**
+ * A [ChatClient] that resolves the real client on first use. Scenario execution builds the
+ * executor before it knows whether a step will need the model at all (auto/replay modes
+ * never do), so key validation is deferred to the first LLM call.
+ */
+private fun lazyClient(llm: LlmConfig): ChatClient = object : ChatClient {
+    private val real by lazy { llm.client() }
+    override fun complete(messages: List<ChatMessage>, tools: JsonArray, temperature: Double) =
+        real.complete(messages, tools, temperature)
+}
+
 internal fun executeScenario(
     project: SimulProject,
     scenario: Scenario,
     trace: TraceFile?,
     mode: RunMode,
-    url: String,
+    llm: LlmConfig,
     traceFile: File,
     ops: DeviceOps,
     log: (String) -> Unit = ::println,
@@ -272,9 +288,10 @@ internal fun executeScenario(
     )
 
     // turn lines nest under the runner's step line in the live log
-    val llm = SessionStepExecutor(controller, url, project.config.maxTurns, log = { log("    $it") })
+    // replay never builds a client — the key stays optional for CI that only replays
+    val executor = SessionStepExecutor(controller, lazyClient(llm), project.config.maxTurns, log = { log("    $it") })
     // steps are logged live by the runner — a scenario can run for minutes
-    val runner = ScenarioRunner(controller, listener, ops, llm, reportDir, project.config.app, log = log)
+    val runner = ScenarioRunner(controller, listener, ops, executor, reportDir, project.config.app, log = log)
 
     log("── ${scenario.name} [${mode.name.lowercase()}] ${"─".repeat(30)}")
     val result = try {
@@ -330,7 +347,11 @@ internal fun initCommand(args: List<String>, cwd: File): Int {
         agentVersion: ">=$AGENT_VERSION"
         app: ${app ?: "your.app.package   # TODO: set the application id under test"}
         llm:
-          url: http://localhost:8080   # llama-server (OpenAI-compatible)
+          url: http://localhost:8080   # OpenAI-compatible endpoint: local llama-server or a hosted API
+          model: qwen                  # model name sent with every request
+          # apiKey: ${'$'}{OPENAI_API_KEY}  # endpoints that need a key: ${'$'}{VAR} reads the environment —
+          #                            # never a literal here (this file is committed). Without this
+          #                            # line SIMUL_LLM_API_KEY is used when set.
         defaults:
           maxTurns: 12
           scrollLimit: 3
@@ -434,8 +455,12 @@ private fun traceStatus(md: File, traceFile: File): String = when {
 private fun adhocCommand(argv: Array<String>, cwd: File): Int {
     val args = argv.toMutableList()
     val project = SimulProject.find(cwd)
-    if ("--url" !in args) {
-        args += listOf("--url", project?.config?.llmUrl ?: SimulConfig.DEFAULT_URL)
+    val llm = project?.config?.llm ?: LlmConfig()
+    if ("--url" !in args) args += listOf("--url", llm.url)
+    if ("--model" !in args) args += listOf("--model", llm.model)
+    if ("--api-key" !in args) {
+        llm.keyProblem()?.let { return err(it) }
+        llm.apiKey?.let { args += listOf("--api-key", it) }
     }
     if ("--app" !in args) {
         project?.config?.app?.let { args += listOf("--app", it) }

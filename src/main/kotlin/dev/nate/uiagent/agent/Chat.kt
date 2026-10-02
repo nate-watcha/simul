@@ -43,9 +43,15 @@ interface ChatClient {
     fun complete(messages: List<ChatMessage>, tools: JsonArray, temperature: Double): ChatResponse
 }
 
+/**
+ * @param apiKey sent as `Authorization: Bearer <key>` when non-null. A local llama-server
+ *   ignores the header; hosted OpenAI-compatible endpoints require it. The key never
+ *   appears in logs, traces or error messages.
+ */
 class HttpChatClient(
     private val baseUrl: String,
-    private val model: String = "qwen",
+    private val model: String = DEFAULT_MODEL,
+    private val apiKey: String? = null,
     private val timeout: Duration = Duration.ofSeconds(300),
 ) : ChatClient {
 
@@ -53,19 +59,27 @@ class HttpChatClient(
 
     override fun complete(messages: List<ChatMessage>, tools: JsonArray, temperature: Double): ChatResponse {
         val body = encodeRequest(model, messages, tools, temperature)
-        val req = HttpRequest.newBuilder(URI.create("$baseUrl/v1/chat/completions"))
+        val req = HttpRequest.newBuilder(URI.create("${baseUrl.trimEnd('/')}/v1/chat/completions"))
             .timeout(timeout)
             .header("Content-Type", "application/json")
+            .apply { apiKey?.let { header("Authorization", "Bearer $it") } }
             .POST(HttpRequest.BodyPublishers.ofString(body))
             .build()
         val resp = http.send(req, HttpResponse.BodyHandlers.ofString())
         if (resp.statusCode() != 200) {
-            throw RuntimeException("llm http ${resp.statusCode()}: ${resp.body().take(300)}")
+            val hint = when (resp.statusCode()) {
+                401, 403 -> if (apiKey == null) " (endpoint wants an API key — set llm.apiKey in .simul/config.yaml or SIMUL_LLM_API_KEY)"
+                            else " (API key rejected)"
+                else -> ""
+            }
+            throw RuntimeException("llm http ${resp.statusCode()}$hint: ${resp.body().take(300)}")
         }
         return ChatResponse(parseAssistantMessage(resp.body()))
     }
 
     companion object {
+        const val DEFAULT_MODEL = "qwen"
+
         fun encodeRequest(model: String, messages: List<ChatMessage>, tools: JsonArray, temperature: Double): String =
             buildJsonObject {
                 put("model", model)

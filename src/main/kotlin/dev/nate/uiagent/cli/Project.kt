@@ -1,5 +1,6 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.agent.HttpChatClient
 import java.io.File
 
 /** Version of this tool, written into traces and checked against config `agentVersion`. */
@@ -60,25 +61,73 @@ class SimulProject(val appRoot: File) {
     }
 }
 
+/**
+ * The `llm:` block of config.yaml — an OpenAI-compatible endpoint. A local llama-server
+ * needs only [url]; a hosted API also needs [model] and an API key.
+ *
+ * Keys never live in config.yaml literally (the file is committed): `apiKey: ${VAR}` reads the
+ * environment at load time, and with no `apiKey` at all `SIMUL_LLM_API_KEY` is consulted. A
+ * `${VAR}` that is unset is remembered in [missingKeyEnv] and only becomes an error when a
+ * client is actually built ([client]) — replay runs never touch the LLM and must not need
+ * the secret.
+ */
+data class LlmConfig(
+    val url: String = DEFAULT_URL,
+    val model: String = HttpChatClient.DEFAULT_MODEL,
+    val apiKey: String? = null,
+    /** Name of the env var `apiKey: ${VAR}` pointed at, when it resolved to nothing. */
+    val missingKeyEnv: String? = null,
+) {
+    /** Human-readable problem that would make [client] throw, or null. */
+    fun keyProblem(): String? = missingKeyEnv?.let {
+        "llm.apiKey references \$$it but it is not set in the environment"
+    }
+
+    fun client(): HttpChatClient {
+        keyProblem()?.let { throw IllegalStateException(it) }
+        return HttpChatClient(url, model, apiKey)
+    }
+
+    companion object {
+        const val DEFAULT_URL = "http://localhost:8080"
+        const val DEFAULT_KEY_ENV = "SIMUL_LLM_API_KEY"
+        private val ENV_REF = Regex("""\$\{([A-Za-z_][A-Za-z0-9_]*)}""")
+
+        fun fromYaml(y: Map<String, Any>, env: (String) -> String? = System::getenv): LlmConfig {
+            val rawKey = MiniYaml.string(y, "llm", "apiKey")?.trim()?.ifEmpty { null }
+            val ref = rawKey?.let { ENV_REF.matchEntire(it)?.groupValues?.get(1) }
+            val key = when {
+                rawKey == null -> env(DEFAULT_KEY_ENV)?.ifEmpty { null }
+                ref != null -> env(ref)?.ifEmpty { null }
+                else -> rawKey
+            }
+            return LlmConfig(
+                url = MiniYaml.string(y, "llm", "url") ?: DEFAULT_URL,
+                model = MiniYaml.string(y, "llm", "model") ?: HttpChatClient.DEFAULT_MODEL,
+                apiKey = key,
+                missingKeyEnv = ref.takeIf { it != null && key == null },
+            )
+        }
+    }
+}
+
 /** Parsed `.simul/config.yaml` with defaults for every field. */
 data class SimulConfig(
     val agentVersion: String?,
     val app: String?,
-    val llmUrl: String,
+    val llm: LlmConfig,
     val maxTurns: Int,
     val scrollLimit: Int,
     /** Emulator display to force for the whole run (trace portability across devices). */
     val display: DisplayProfile? = null,
 ) {
     companion object {
-        const val DEFAULT_URL = "http://localhost:8080"
-
-        fun load(file: File): SimulConfig {
+        fun load(file: File, env: (String) -> String? = System::getenv): SimulConfig {
             val y = if (file.isFile) MiniYaml.parse(file.readText()) else emptyMap()
             return SimulConfig(
                 agentVersion = MiniYaml.string(y, "agentVersion"),
                 app = MiniYaml.string(y, "app"),
-                llmUrl = MiniYaml.string(y, "llm", "url") ?: DEFAULT_URL,
+                llm = LlmConfig.fromYaml(y, env),
                 maxTurns = MiniYaml.string(y, "defaults", "maxTurns")?.toIntOrNull() ?: 12,
                 scrollLimit = MiniYaml.string(y, "defaults", "scrollLimit")?.toIntOrNull() ?: 3,
                 display = DisplayProfile.fromConfig(

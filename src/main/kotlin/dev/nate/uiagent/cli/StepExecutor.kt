@@ -1,7 +1,6 @@
 package dev.nate.uiagent.cli
 
 import dev.nate.uiagent.agent.ChatClient
-import dev.nate.uiagent.agent.HttpChatClient
 import dev.nate.uiagent.agent.ScenarioSession
 import dev.nate.uiagent.device.DeviceController
 
@@ -29,10 +28,9 @@ data class StepVerdict(val passed: Boolean, val reason: String)
  */
 class SessionStepExecutor(
     private val controller: DeviceController,
-    url: String,
+    private val client: ChatClient,
     private val maxIterations: Int = 12,
     private val log: (String) -> Unit = {},
-    private val client: ChatClient = HttpChatClient(url),
 ) : StepExecutor {
 
     private var session: ScenarioSession? = null

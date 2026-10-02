@@ -18,7 +18,9 @@ import kotlin.system.exitProcess
  *   ./gradlew runAgent --args="\"...\" --layout-file layout.json"   (offline: static layout, no-op gestures)
  *
  * Options:
- *   --url URL            llama-server base url (default http://100.99.171.25:8080)
+ *   --url URL            OpenAI-compatible base url (default http://100.99.171.25:8080)
+ *   --model NAME         model name sent in requests (default qwen)
+ *   --api-key KEY        bearer token for hosted endpoints (default: $SIMUL_LLM_API_KEY if set)
  *   --max-iterations N   max LLM turns (default 12)
  *   --layout-file F      static layout instead of a live device; gestures are no-ops
  *   --app ID             app package id, used to pick the right WebView devtools socket
@@ -38,6 +40,8 @@ private class FileDevice(private val path: String) : Device {
 
 fun main(argv: Array<String>) {
     var url = "http://100.99.171.25:8080"
+    var model = HttpChatClient.DEFAULT_MODEL
+    var apiKey: String? = System.getenv("SIMUL_LLM_API_KEY")?.ifEmpty { null }
     var maxIterations = 12
     var layoutFile: String? = null
     var appId: String? = null
@@ -49,6 +53,8 @@ fun main(argv: Array<String>) {
     while (i < argv.size) {
         when (val a = argv[i]) {
             "--url" -> url = argv[++i]
+            "--model" -> model = argv[++i]
+            "--api-key" -> apiKey = argv[++i]
             "--max-iterations" -> maxIterations = argv[++i].toInt()
             "--layout-file" -> layoutFile = argv[++i]
             "--app" -> appId = argv[++i]
@@ -82,14 +88,14 @@ fun main(argv: Array<String>) {
     val command = positional.joinToString(" ")
 
     println("command : $command")
-    println("url     : $url")
+    println("url     : $url  (model $model${if (apiKey != null) ", api key set" else ""})")
     println("device  : ${if (layoutFile != null) "file($layoutFile, dry gestures)" else "adb/emulator"}")
     println("─".repeat(60))
 
     trace.event("command") { it["text"] = command }
     val t0 = System.currentTimeMillis()
     val initialLayout = controller.fullLayout()
-    val session = ScenarioSession(HttpChatClient(url), controller, maxIterations, log = { println("  $it") })
+    val session = ScenarioSession(HttpChatClient(url, model, apiKey), controller, maxIterations, log = { println("  $it") })
 
     // `COMMAND :: CRITERION` — same contract as scenario steps (criterion delivered post-action)
     val sep = command.indexOf(" :: ")

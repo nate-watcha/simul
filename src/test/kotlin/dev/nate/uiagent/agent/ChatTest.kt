@@ -1,7 +1,10 @@
 package dev.nate.uiagent.agent
 
+import com.sun.net.httpserver.HttpServer
+import java.net.InetSocketAddress
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ChatTest {
@@ -45,5 +48,31 @@ class ChatTest {
         val body = HttpChatClient.encodeRequest("qwen", listOf(ChatMessage("system", "s")),
             ScenarioSession.TOOLS, 0.0)
         assertTrue(""""chat_template_kwargs":{"enable_thinking":false}""" in body, body.take(200))
+    }
+
+    /** Serve one canned reply and capture the Authorization header of the request. */
+    private fun withServer(body: (url: String, seenAuth: () -> String?) -> Unit) {
+        var auth: String? = null
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1/chat/completions") { ex ->
+            auth = ex.requestHeaders.getFirst("Authorization")
+            val reply = """{"choices":[{"message":{"role":"assistant","content":"ok"}}]}""".toByteArray()
+            ex.sendResponseHeaders(200, reply.size.toLong())
+            ex.responseBody.use { it.write(reply) }
+        }
+        server.start()
+        try { body("http://127.0.0.1:${server.address.port}") { auth } } finally { server.stop(0) }
+    }
+
+    @Test
+    fun `api key goes out as a bearer token`() = withServer { url, seenAuth ->
+        HttpChatClient(url, "m", apiKey = "sk-123").complete(listOf(ChatMessage("user", "hi")), ScenarioSession.TOOLS, 0.0)
+        assertEquals("Bearer sk-123", seenAuth())
+    }
+
+    @Test
+    fun `no api key - no Authorization header (local llama-server)`() = withServer { url, seenAuth ->
+        HttpChatClient(url, "m").complete(listOf(ChatMessage("user", "hi")), ScenarioSession.TOOLS, 0.0)
+        assertNull(seenAuth())
     }
 }
