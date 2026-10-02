@@ -26,6 +26,11 @@
 | `bounds`, `center` | 화면 좌표 | 에이전트 내부용. 시나리오에서 쓰지 않는다 |
 | `off-screen` | 트리에는 있지만 화면 밖 | 스크롤이 필요하다는 신호 |
 
+요소는 트리다. 에이전트는 자식을 부모 아래 들여쓰기해서 본다 — 카드의 제목·부제·버튼은 카드
+아래에, 목록 항목은 목록 아래에 놓인다. 라벨 없는 탭·행이 텍스트 자식을 하나만 가지면 그
+텍스트가 그 요소의 라벨이 된다(`Tap "감상하기"`는 버튼을 지목한다). 텍스트가 여럿인 카드는
+라벨 없이 남고 텍스트들이 자식으로 보인다.
+
 스텝의 따옴표 문자열은 `text`, `contentDesc`, `resourceId` 세 속성에 동등하게 매칭된다.
 `Tap the "Settings" tab`과 `Tap the "tab_settings" tab`은 같은 방식으로 동작한다.
 
@@ -57,54 +62,34 @@ WebView 내부(debug 빌드)는 CDP로 읽어 같은 목록에 병합된다 — 
 
 ## 2. 무엇을 테스트할까
 
-시나리오는 코드베이스를 아는 개발자가 추가한다. 라이브러리가 보장하는 것과 우리가 검증할
-것의 경계는 한 가지 질문으로 정한다:
+시나리오는 **유저 여정**을 테스트한다. 코드 분기·경계값·위젯 동작은 테스트하지 않는다.
 
-> 우리 저장소의 diff로 이 동작이 깨질 수 있는가?
+> 유저가 앱을 탐색해 원하는 결과를 이루는가?
 
-깨질 수 없으면 라이브러리의 몫이니 테스트하지 않는다. 깨질 수 있으면 우리 몫이다.
-네비게이션 라이브러리가 back stack에 push하는 것 자체는 우리 diff로 못 깨뜨리지만, 탭
-전환 시 스크롤 위치가 복원되는 것은 `saveState`/`restoreState` 플래그를 빼거나
-`rememberSaveable`을 `remember`로 바꾸는 순간 깨진다. 후자는 테스트하되, 검증하는 것은
-라이브러리가 아니라 *우리가 조건을 만족시켰는가*다.
+- **시나리오 하나 = 여정 하나.** 진입(유저가 앱을 켜는 이유) → 탐색(실제 유저 경로) →
+  결과(그 이유가 충족됐는지 `Verify` 또는 `::` 기준으로 고정). 결과 확인이 없으면
+  여정이 아니다.
+- **여정 목록 = 유저가 이 앱을 켜는 이유 목록.** 가입·로그인, 콘텐츠 찾기, 재생, 결제,
+  설정 변경. 막히면 앱을 못 쓰는 여정부터.
+- **이유마다 가장 흔한 경로 하나.** 다른 경로는 유저가 실제로 많이 쓸 때만.
+- **상태 variant는 결과가 달라질 때만.** 게스트가 보관함에 가면 로그인 유도 — 별도 시나리오.
+  결과가 같으면 만들지 않는다.
+- **엣지 케이스는 유닛 테스트로.** 위젯 동작은 여정에 등장할 때 그 안에서 검증된다.
+- **라이브러리 vs 우리 코드 경계는 묻지 않는다.** 통합 경계(Compose ↔ Fragment, 네이티브 ↔
+  WebView)는 핵심 여정이 한 번씩 지나가면 된다.
 
-이 질문에 따라 테스트 밀도가 셋으로 갈린다:
+```
+"보고 싶은 작품을 찾아 재생한다"
+  런치 → 검색 탭 → 검색어 입력 → 결과 탭 → Verify 플레이어 화면
+"쿠폰을 등록한다"
+  설정 → 쿠폰 메뉴 → 코드 입력 → 적용 :: 등록된 쿠폰이 목록에 보임
+```
 
-1. **라이브러리 기능을 우리가 설정한 것** (상태 save/restore, singleTop, 딥링크 매칭)
-   → 배선 확인용 대표 케이스 1개씩. 단 상태 홀더가 화면 유형마다 다르면(LazyColumn 화면,
-   Fragment 화면, 중첩 그래프를 가진 탭) 유형별로 하나씩.
-2. **우리가 짠 로직** (탭 back 순서, 조건부 UI 숨김, 재선택 동작, 프로필 전환 시 메뉴 변경)
-   → 엣지 케이스까지. 순수 로직은 유닛 테스트로, UI에 얽힌 것만 시나리오로.
-3. **통합 경계** (Compose ↔ Fragment, 네이티브 ↔ WebView, 화면 위 오버레이) → 어느 쪽
-   소유도 아니라 가장 잘 깨지고 가장 늦게 발견된다. E2E 시나리오가 존재하는 진짜 이유다.
-
-밀도는 케이스 개수를 정하지, 테스트 여부를 정하지 않는다. 1번도 대표 케이스는 반드시
-둔다 — 플래그를 뺐을 때 잡아야 하니까.
-
----
-
-## 3. 조합 폭발 다루기
-
-사용자 상태(게스트/회원/구독/제한 프로필/region)와 화면을 곱하면 케이스가 폭발한다.
-
-- **디렉토리 = 화면(feature).** `scenarios/bottom_nav/`, `scenarios/checkout/`. 그룹
-  실행의 단위다. 상태는 여러 화면에 걸치므로 디렉토리가 아니라 시나리오의 전제
-  (`setup.appState`)와 태그(`state:guest`, `region:jp`)로 붙인다.
-- **동작 테스트와 분기 테스트를 구분하라.** 동작("탭을 누르면 이동한다")은 상태와
-  무관하니 기본 상태 1개로 한 번만. 분기("게스트면 로그인 버튼", "특정 region이면 탭
-  하나 없음")는 그 상태의 존재 자체가 검증 대상이니 상태당 1개 — 그 상태에서 동작
-  테스트를 반복하지 않는다. 바텀 네비라면 `basic` + `guest_library` +
-  `restricted_profile` + `region_variant` 네 개면 되지, 상태×탭 전수 조합이 아니다.
-- **상태→화면 영향 매트릭스를 한 번 그려라.** "이 상태가 이 화면의 동작을 바꾸는가"가
-  No면 그 variant는 만들지 않는다.
-- **size class는 시나리오가 아니라 실행 매트릭스로.** config `display:`를 바꿔 같은
-  시나리오를 폰/태블릿 프로필로 다시 돌린다. 전부가 아니라 smoke 태그만 태블릿에서
-  돌리는 식으로.
-- **pairwise 조합은 결제·홈 같은 고위험 화면에만.**
+시나리오 수의 기준은 코드 커버리지가 아니라 여정 목록이다.
 
 ---
 
-## 4. 진입 전략
+## 3. 진입 전략
 
 ```yaml
 setup:
@@ -112,12 +97,13 @@ setup:
   # deeplink: example://settings/coupons  # 딥링크 진입 (config의 app 패키지로 고정)
 ```
 
-네비게이션 테스트와 화면 기능 테스트를 분리하라:
+진입은 여정이 실제로 시작되는 곳에서 한다:
 
-- **journey 시나리오 (화면당 소수)** — `launch: true`로 시작해 실제 사용자 경로로
-  이동한다. "그 화면까지 도달할 수 있는가" 자체가 검증 대상이다.
-- **화면 기능 시나리오 (다수)** — `setup.deeplink`로 바로 진입해 화면 안의 동작만
-  검증한다. 네비게이션이 바뀌어도 깨지지 않고, 실패가 화면 문제로 격리되며, 스텝이 짧다.
+- **런치 진입 (기본)** — `launch: true`로 시작해 실제 유저 경로로 이동한다. 대부분의 여정은
+  앱을 켜는 데서 시작하고, "그 화면까지 도달할 수 있는가"가 여정의 일부다.
+- **딥링크 진입** — 유저가 실제로 푸시·공유 링크로 들어오는 여정, 또는 긴 여정을 앞 시나리오가
+  이미 보장한 지점부터 이어 쓸 때 `setup.deeplink`로 들어간다. 화면 기능을 열거하는 용도로
+  쓰지 않는다.
 - **도착 확인 시나리오** (`deeplink/` 그룹) — 액션 없이 도착 화면의 랜드마크 하나만
   Verify한다. 앱이 URI를 못 받으면 하니스가 setup 단계에서 실패시키고, 받았지만 아무
   화면도 안 열면 Verify가 잡는다. `:id` 같은 파라미터가 있는 스킴은 실데이터가 있어야
@@ -154,7 +140,7 @@ setup:
 
 ---
 
-## 5. 시나리오 형식
+## 4. 시나리오 형식
 
 ```markdown
 ---
@@ -177,7 +163,7 @@ setup:
 
 ---
 
-## 6. 스텝 작성 규칙
+## 5. 스텝 작성 규칙
 
 스텝은 `Tap` / `Type` / `Scroll` / `Go back` / `Verify`로 시작하는 영어 문장이고, 화면의
 라벨은 **보이는 그대로** 따옴표로 쓴다. 규칙은 전부 판정 방식에서 나오니 먼저 그걸 보자.
@@ -244,7 +230,7 @@ replay는 이 evidence의 존재 여부로 스텝을 PASS/FAIL한다. 따라서 
 
 ---
 
-## 7. 워크플로
+## 6. 워크플로
 
 ```
 1. 시나리오 md 작성
@@ -269,74 +255,10 @@ replay가 깨지면 그것이 테스트 결과다. 화면이 정당하게 바뀌
 
 ---
 
-## 8. 실행과 설정
-
-```
-simul run --all | --tag <t> | --state <s> | <path>   [--mode llm|replay|auto] [--dry-run]
-```
-
-- exit code: 전부 PASSED면 0 — CI 게이트로 쓴다.
-- **display 강제**: config `display:`가 실행 동안 `wm size`/`density`를 고정해 어떤
-  에뮬레이터에서든 trace가 재생된다. 에뮬레이터 전용이고 종료 시 원상 복원된다. trace에
-  녹화 프로필이 스탬프된다.
-- 기기 2대 이상: `ANDROID_SERIAL=emulator-5554 simul run --all`
-- 웹뷰 관찰은 debug 빌드(`setWebContentsDebuggingEnabled`) 전제.
-- 리포트: `.simul/reports/<run>/` — report.json, 스크린샷, agent.jsonl. **커밋하지 않는다.**
-
-```yaml
-# config.yaml
-agentVersion: ">=0.2"
-app: com.example.app          # 대상 패키지 (setup/딥링크 고정/웹뷰 CDP 매칭)
-llm:
-  url: http://localhost:8080  # OpenAI 호환 엔드포인트
-defaults:
-  maxTurns: 12                # 스텝당 LLM 최대 턴
-  scrollLimit: 3
-display:
-  sizeClass: small            # small=720x1280@320(360dp) | medium(640dp) | large(1066dp)
-                              # 앱 디자인 시스템의 size class 경계와 맞춘다
-```
-
----
-
-## 9. 나이틀리 운영 — record → verify → report
-
-PR 게이트(`simul run --all`)는 replay만 한다. 나이틀리는 시나리오마다 세 번 돌아 "화면이
-바뀌었는가 / 에이전트가 아직 수행할 수 있는가 / 새 trace가 결정론적인가"를 한 번에 답한다.
-`simul init --ci github`가 `.github/workflows/simul-nightly.yml`을 깔아준다(self-hosted
-러너: 에뮬레이터 + llama-server 상주 전제).
-
-```bash
-simul run --all --mode replay --summary r/baseline.json --label baseline   # 커밋된 trace
-simul run --all --mode llm    --summary r/record.json   --label record     # 전 시나리오 재녹화
-simul run --all --mode replay --summary r/verify.json   --label verify     # 방금 녹화한 trace
-simul report r/baseline.json r/record.json r/verify.json --format md|slack|junit [--check]
-```
-
-시나리오별 verdict와 조치:
-
-| verdict | 조건 | 조치 |
-|---|---|---|
-| ✅ stable | 셋 다 PASSED | 없음 |
-| 🔁 changed | baseline ❌, record ✅, verify ✅ | 화면이 정당하게 바뀐 경우. 워크플로가 올린 trace PR의 diff를 리뷰하고 머지 |
-| ❌ regression | record ❌ (baseline도 ❌/없음) | 앱 회귀 의심. 스크린샷·agent.jsonl부터. 시나리오를 고쳐 통과시키지 말 것 |
-| ⚠️ record flake | baseline ✅, record ❌ | 앱은 커밋대로. record 로그에서 AMBIGUOUS·NOT FOUND·턴 초과를 본다 — 문구/앵커 문제 |
-| ⚠️ trace flake | record ✅, verify ❌ | 새 trace가 재생 불가 — evidence에 동적 라벨이 섞였거나 앱이 불안정. 그 trace는 머지하지 않는다 |
-| 🆕 new | baseline ⏭(trace 없음), record ✅ | 첫 녹화. 리뷰 후 커밋 |
-| 💥 crash | 하니스 크래시 | 앱 판정 아님. `.simul/reports/<name>-crash-*.log` |
-
-`--check`는 regression / trace flake / crash에서만 exit 1이다. changed·new는 경고로 남고
-사람이 PR에서 결정한다 — replay 실패를 자동으로 덮는 경로는 없다.
-
----
-
-## 10. 트러블슈팅
+## 7. 트러블슈팅
 
 | 증상 | 원인 / 조치 |
 |---|---|
 | `no element matching '...'` | 라벨 오타, 화면 밖, 또는 앱이 노출 안 함. 리포트 스크린샷·agent.jsonl로 당시 관찰을 확인하고, `android layout`이나 `simul "'라벨' 눌러"` ad-hoc으로 화면이 실제로 뭘 노출하는지 본다 |
 | `AMBIGUOUS: N elements match` | 라벨 중복. 더 구체적 라벨, 또는 앱에 testTag 요구 |
-| `WebView present but not inspectable` | release 빌드거나 debugging 미적용 |
 | replay `evidence not on screen` | 화면이 실제로 달라짐. 정당한 변경이면 재녹화, 아니면 앱 회귀 |
-| 다른 에뮬레이터에서 replay 깨짐 | config `display:` 유무와 로그의 "trace recorded at ..." 경고 확인 |
-| 스텝이 너무 오래 걸림 | 로그의 setup/observing/turn 라인으로 구간 확인. LLM 서버 상태(thinking 여부·백엔드)가 지배적 |
