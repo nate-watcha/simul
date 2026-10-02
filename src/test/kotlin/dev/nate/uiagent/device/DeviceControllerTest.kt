@@ -71,6 +71,22 @@ class DeviceControllerTest {
     }
 
     @Test
+    fun `fullLayout renders children indented under their parent`() {
+        idSeq = 0
+        val list = el(resourceId = "recycler_view", interactions = listOf("scrollable"))
+        val item = el("감상하기", interactions = listOf("clickable")).copy(parentId = list.id)
+        val tab = el("보관함", interactions = listOf("clickable"))
+        val l = layout(list, item, tab)
+        val c = controller(FakeDevice(l, l))
+        assertEquals(
+            "{\"label\":\"recycler_view\",\"resourceId\":\"recycler_view\",\"interactions\":[\"scrollable\"]}\n" +
+                "  {\"label\":\"감상하기\",\"interactions\":[\"clickable\"]}\n" +
+                "{\"label\":\"보관함\",\"interactions\":[\"clickable\"]}",
+            c.fullLayout(),
+        )
+    }
+
+    @Test
     fun `tap with unknown label acts as guard - no gesture, error message`() {
         idSeq = 0
         val l = layout(el("보관함", interactions = listOf("clickable")))

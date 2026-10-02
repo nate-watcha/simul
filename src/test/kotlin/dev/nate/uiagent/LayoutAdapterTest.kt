@@ -1,5 +1,7 @@
 package dev.nate.uiagent
 
+import dev.nate.uiagent.LayoutAdapter.flatten
+import dev.nate.uiagent.device.renderFullLayout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -54,7 +56,7 @@ class LayoutAdapterTest {
         // Coordinate-hallucination guard: center/bounds stay harness-side. The one exception
         // is the synthetic "@x..y.." handle of label-less elements — that IS the tap handle.
         val layout = LayoutAdapter.adapt(fixture)
-        val rendered = dev.nate.uiagent.device.renderFullLayout(layout.elements)
+        val rendered = renderFullLayout(layout.elements)
         assertFalse(rendered.contains("center"), "center must not leak to the model")
         assertFalse(rendered.contains("bounds"), "bounds must not leak to the model")
         assertFalse(rendered.contains("3506402"), "unstable key must not leak")
@@ -76,11 +78,12 @@ class LayoutAdapterTest {
     }
 
     @Test
-    fun `ids are sequential from zero and top-to-bottom`() {
+    fun `ids are sequential from zero in document order and a flat dump has no nesting`() {
         val layout = LayoutAdapter.adapt(fixture)
         assertEquals(layout.elements.indices.toList(), layout.elements.map { it.id })
-        // First element (id 0) is the top-most: 설정 at y=98.
-        assertEquals("설정", layout.elements.first().label)
+        // Document order, not (y,x): the first node of the dump is the 보관함 tab target.
+        assertEquals(listOf("보관함", null, "recycler_view", "구독 시작하기", "설정"), layout.elements.map { it.label ?: it.resourceId })
+        assertTrue(layout.elements.all { it.parentId == null }, "legacy flat output is a forest of roots")
     }
 
     @Test
@@ -108,18 +111,25 @@ class LayoutAdapterTreeFormatTest {
     """.trimIndent()
 
     @Test
-    fun `tree output is flattened and normalised to the flat-format vocabulary`() {
-        val raw = LayoutAdapter.parseRawLayout(tree)
+    fun `tree output keeps its nesting and is normalised to the flat-format vocabulary`() {
+        val roots = LayoutAdapter.parseRawLayout(tree)
+        assertEquals(5, roots.size)
+        val raw = roots.flatten()
         assertEquals(8, raw.size, "every nested node counts")
         assertEquals(listOf("clickable", "focusable"), raw.first { it.text == null && it.center.x == 216 }.interactions)
         assertEquals(listOf("checked"), raw.first { it.center.x == 96 && it.isInteractive }.state)
         assertEquals("noticeButton", raw.first { it.contentDesc == "공지사항" && it.interactions.contains("clickable") }.resourceId)
 
         val layout = LayoutAdapter.adapt(tree)
-        val tab = layout.elements.first { it.label == "개별 구매" }
-        assertTrue("clickable" in tab.interactions, "label from the child TextView attaches to the tappable parent")
+        val tab = layout.elements.single { it.label == "개별 구매" }
+        assertTrue("clickable" in tab.interactions, "the child TextView's label is absorbed by the tappable parent")
+        assertNull(tab.parentId)
         assertEquals("recycler_view", layout.elements.first { it.resourceId == "recycler_view" }.resourceId)
-        assertTrue(layout.elements.any { it.label == "전체" && "checked" in it.state })
+        assertTrue(layout.elements.single { it.label == "전체" }.let { "checked" in it.state && "clickable" in it.interactions })
+        // toolbar: focusable FrameLayout + clickable ImageView share the desc -> only the ImageView, at the top level
+        val notice = layout.elements.single { it.label == "공지사항" }
+        assertEquals("noticeButton", notice.resourceId)
+        assertNull(notice.parentId)
     }
 
     @Test
@@ -144,9 +154,9 @@ class LayoutAdapterTreeFormatTest {
 
     @Test
     fun `1_0_16406183 output with status lines and a trailing update notice parses like 1_0_16261425`() {
-        assertEquals(4, LayoutAdapter.parseRawLayout(v16406183).size)
+        assertEquals(4, LayoutAdapter.parseRawLayout(v16406183).flatten().size)
         val layout = LayoutAdapter.adapt(v16406183)
-        assertEquals(listOf("구독", "WX <절친클럽>", "개별 구매"), layout.elements.map { it.label })
+        assertEquals(listOf("구독", "개별 구매", "WX <절친클럽>"), layout.elements.map { it.label })
         assertTrue("clickable" in layout.elements.first { it.label == "개별 구매" }.interactions)
     }
 
@@ -159,7 +169,9 @@ class LayoutAdapterTreeFormatTest {
                "children":[{"class":"android.widget.TextView","text":"숨은 자식","bounds":"[0,0][100,100]","center":"[50,50]"}]},
               {"class":"android.widget.Button","text":"스크롤 밖","off-screen":true,"interactions":["CLICKABLE"],"bounds":"[0,4000][100,4100]","center":"[50,4050]"}]}]
         """.trimIndent()
-        assertEquals(listOf("보이는 버튼"), LayoutAdapter.adapt(full).elements.map { it.label })
+        val layout = LayoutAdapter.adapt(full)
+        assertEquals(listOf("보이는 버튼"), layout.elements.map { it.label })
+        assertNull(layout.elements.single().parentId, "the pruned root container is not a parent")
     }
 
     @Test
@@ -167,5 +179,119 @@ class LayoutAdapterTreeFormatTest {
         assertTrue(LayoutAdapter.parseRawLayout("Installing layout instrumentation server...\n").isEmpty())
         assertTrue(LayoutAdapter.parseRawLayout("").isEmpty())
         assertTrue(LayoutAdapter.parseRawLayout("[{\"center\":\"[1,1]\"").isEmpty(), "truncated dump")
+    }
+}
+
+class LayoutTreeTest {
+    /** Layout V2 shapes from the real app: a list row card (several texts + a button) and bottom-nav items. */
+    private val listAndNav = """
+        [{"class":"androidx.recyclerview.widget.RecyclerView","resource-id":"com.x:id/recycler_view","interactions":["FOCUSABLE","SCROLLABLE"],"bounds":"[0,260][720,600]","center":"[360,430]","children":[
+           {"class":"android.view.View","interactions":["SCROLLABLE"],"bounds":"[0,260][720,600]","center":"[360,430]","children":[
+             {"class":"android.view.View","interactions":["CLICKABLE","FOCUSABLE"],"bounds":"[0,260][720,600]","center":"[360,430]","children":[
+               {"class":"android.widget.TextView","text":"타짜","bounds":"[40,300][200,340]","center":"[120,320]"},
+               {"class":"android.widget.TextView","text":"2006 · 범죄","bounds":"[40,350][200,380]","center":"[120,365]"},
+               {"class":"android.view.View","interactions":["CLICKABLE","FOCUSABLE"],"bounds":"[40,500][200,560]","center":"[120,530]","children":[
+                 {"class":"android.widget.TextView","text":"감상하기","bounds":"[60,510][180,550]","center":"[120,530]"}]}]}]}]},
+         {"class":"android.view.View","interactions":["CLICKABLE","FOCUSABLE"],"bounds":"[0,1120][144,1232]","center":"[72,1176]","children":[
+           {"class":"android.widget.TextView","text":"구독","bounds":"[40,1181][104,1217]","center":"[72,1199]"}]},
+         {"class":"android.view.View","interactions":["CLICKABLE","FOCUSABLE"],"state":["SELECTED"],"bounds":"[144,1120][288,1232]","center":"[216,1176]","children":[
+           {"class":"android.widget.TextView","text":"개별 구매","bounds":"[171,1181][261,1217]","center":"[216,1199]"}]}]
+    """.trimIndent()
+
+    @Test
+    fun `elements are pre-order with parentId links and render indented by depth`() {
+        val layout = LayoutAdapter.adapt(listAndNav)
+        assertEquals(listOf(null, 0, 1, 2, 2, 2, null, null), layout.elements.map { it.parentId })
+        assertEquals(layout.elements.indices.toList(), layout.elements.map { it.id })
+        assertEquals(
+            """
+            {"label":"recycler_view","resourceId":"recycler_view","interactions":["focusable","scrollable"]}
+              {"label":"@x360y430","interactions":["scrollable"]}
+                {"label":"@x360y430","interactions":["clickable","focusable"]}
+                  {"label":"타짜","kind":"label"}
+                  {"label":"2006 · 범죄","kind":"label"}
+                  {"label":"감상하기","interactions":["clickable","focusable"]}
+            {"label":"구독","interactions":["clickable","focusable"]}
+            {"label":"개별 구매","interactions":["clickable","focusable"],"state":["selected"]}
+            """.trimIndent(),
+            renderFullLayout(layout.elements),
+        )
+    }
+
+    @Test
+    fun `a card with several texts stays anonymous while a single-text card absorbs its label`() {
+        val cards = """
+            [{"class":"android.view.View","interactions":["CLICKABLE"],"bounds":"[0,0][720,300]","center":"[360,150]","children":[
+               {"class":"android.widget.TextView","text":"제목","center":"[100,40]"},
+               {"class":"android.widget.TextView","text":"부제","center":"[100,90]"}]},
+             {"class":"android.view.View","interactions":["CLICKABLE"],"bounds":"[0,300][720,600]","center":"[360,450]","children":[
+               {"class":"android.widget.TextView","text":"단독 제목","center":"[100,340]"}]}]
+        """.trimIndent()
+        val layout = LayoutAdapter.adapt(cards)
+        assertEquals(listOf("@x360y150", "제목", "부제", "단독 제목"), layout.elements.map { it.label ?: "@x${it.center.x}y${it.center.y}" })
+        assertEquals(listOf(null, 0, 0, null), layout.elements.map { it.parentId })
+        assertEquals(listOf(null, "label", "label", null), layout.elements.map { it.kind })
+    }
+
+    @Test
+    fun `a pruned container hands its children to the grandparent`() {
+        val nested = """
+            [{"class":"android.view.View","interactions":["CLICKABLE"],"center":"[360,150]","children":[
+               {"class":"android.widget.LinearLayout","center":"[360,150]","children":[
+                 {"class":"android.widget.TextView","text":"안쪽 텍스트","center":"[100,40]"}]}]}]
+        """.trimIndent()
+        val layout = LayoutAdapter.adapt(nested)
+        // the hoisted single text child is then absorbed by the clickable
+        assertEquals(listOf("안쪽 텍스트"), layout.elements.map { it.label })
+        assertTrue("clickable" in layout.elements.single().interactions)
+    }
+
+    @Test
+    fun `a text child labels its own parent even when a sibling interactive is geometrically closer`() {
+        val siblings = """
+            [{"class":"android.view.View","interactions":["CLICKABLE"],"center":"[100,100]","children":[
+               {"class":"android.widget.TextView","text":"내 라벨","center":"[100,140]"}]},
+             {"class":"android.view.View","interactions":["CLICKABLE"],"center":"[100,150]"}]
+        """.trimIndent()
+        val layout = LayoutAdapter.adapt(siblings)
+        assertEquals("내 라벨", layout.elements.first { it.center == Point(100, 100) }.label)
+        assertNull(layout.elements.first { it.center == Point(100, 150) }.label)
+    }
+
+    @Test
+    fun `an absorbed text child that carries a resourceId stays nested as evidence`() {
+        // kloud: clickable row > TextView(tvDeleteHistory "삭제") — traces record tvDeleteHistory as appeared evidence
+        val row = """
+            [{"class":"android.view.View","interactions":["CLICKABLE"],"bounds":"[0,0][720,100]","center":"[360,50]","children":[
+               {"class":"android.widget.TextView","resource-id":"com.x:id/tvDeleteHistory","text":"삭제","center":"[650,50]"}]},
+             {"class":"android.view.View","interactions":["CLICKABLE"],"bounds":"[0,100][720,200]","center":"[360,150]","children":[
+               {"class":"android.widget.TextView","text":"구독","center":"[360,150]"}]}]
+        """.trimIndent()
+        val layout = LayoutAdapter.adapt(row)
+        assertEquals(listOf("삭제", "삭제", "구독"), layout.elements.map { it.label })
+        assertEquals(listOf(null, "tvDeleteHistory", null), layout.elements.map { it.resourceId })
+        assertEquals(listOf(null, 0, null), layout.elements.map { it.parentId })
+        assertEquals("label", layout.elements[1].kind)
+    }
+
+    @Test
+    fun `a nearby text with a different label is kept instead of being consumed`() {
+        // header text near a row that already took its own child's label: the old geometric pass
+        // consumed it (label lost); it must survive as a label element
+        val near = """
+            [{"class":"android.widget.TextView","text":"최근 검색한 항목","center":"[340,60]"},
+             {"class":"android.view.View","interactions":["CLICKABLE"],"bounds":"[0,0][720,120]","center":"[360,60]","children":[
+               {"class":"android.widget.TextView","text":"삭제","center":"[650,60]"}]},
+             {"class":"android.widget.TextView","text":"삭제","center":"[360,70]"}]
+        """.trimIndent()
+        val layout = LayoutAdapter.adapt(near)
+        // "삭제" duplicate of the row's label is consumed; the header stays
+        assertEquals(listOf("최근 검색한 항목", "삭제"), layout.elements.map { it.label })
+        assertEquals(listOf("label", null), layout.elements.map { it.kind })
+    }
+
+    @Test
+    fun `empty layout renders a sentinel`() {
+        assertEquals("(no elements)", renderFullLayout(emptyList()))
     }
 }

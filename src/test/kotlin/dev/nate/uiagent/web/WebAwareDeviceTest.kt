@@ -64,7 +64,7 @@ class WebAwareDeviceTest {
     }
 
     @Test
-    fun `web elements merge into the native list, resorted with fresh ids`() {
+    fun `web elements nest under the native webview node with fresh pre-order ids`() {
         val native = LogicalLayout(listOf(
             nativeEl(0, resourceId = "webview", y = 696).copy(interactions = listOf("focusable", "scrollable")),
             nativeEl(1, label = "닫기", y = 104),
@@ -75,12 +75,36 @@ class WebAwareDeviceTest {
         assertEquals(3, merged.elements.size)
         assertTrue(merged.hasWeb)
         assertNull(merged.webNote)
-        // sorted top-to-bottom: 닫기(104) < webview container(696) < button(center y 160+(454+24)*2=1116)
-        assertEquals(listOf("닫기", null, "구독 시작하기"), merged.elements.map { it.label })
+        // native document order, the page's elements right after the webview node as its children
+        assertEquals(listOf(null, "구독 시작하기", "닫기"), merged.elements.map { it.label })
         assertEquals(listOf(0, 1, 2), merged.elements.map { it.id })
+        assertEquals(listOf(null, 0, null), merged.elements.map { it.parentId })
         val button = merged.elements.first { it.label == "구독 시작하기" }
         assertEquals(Origin.WEB, button.origin)
-        assertEquals(Point(360, 1116), button.center)
+        assertEquals(Point(360, 1116), button.center) // center y 160+(454+24)*2
+    }
+
+    @Test
+    fun `web elements sit at the top level when no webview node is exposed`() {
+        val native = LogicalLayout(listOf(nativeEl(0, label = "닫기", y = 104)))
+        val cdp = FakeCdp(CdpClient.Discovery(listOf(target)), extractRadioAndButton)
+        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        // web siblings keep reading order: 베이직 (y 392) before 구독 시작하기 (y 1116)
+        assertEquals(listOf("닫기", "베이직", "구독 시작하기"), merged.elements.map { it.label })
+        assertTrue(merged.elements.all { it.parentId == null })
+    }
+
+    @Test
+    fun `a native overlay whose scaffolding was dropped re-parents to the webview node`() {
+        val native = LogicalLayout(listOf(
+            nativeEl(0, resourceId = "webview", y = 696).copy(interactions = listOf("focusable", "scrollable")),
+            nativeEl(1, y = 500).copy(parentId = 0),                      // anonymous a11y scaffolding: dropped
+            nativeEl(2, label = "네", resourceId = "positive", y = 723).copy(parentId = 1), // dialog button: kept
+        ))
+        val cdp = FakeCdp(CdpClient.Discovery(listOf(target)), extractOk)
+        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        assertEquals(listOf(null, "네", "구독 시작하기"), merged.elements.map { it.label })
+        assertEquals(listOf(null, 0, 0), merged.elements.map { it.parentId })
     }
 
     private val extractRadioAndButton = CdpClient.Eval.Ok(
@@ -108,7 +132,7 @@ class WebAwareDeviceTest {
         val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
 
         // projection nodes gone; CDP versions (with real state) and the container remain
-        assertEquals(listOf("닫기", "베이직", null, "구독 시작하기"), merged.elements.map { it.label })
+        assertEquals(listOf("닫기", null, "베이직", "구독 시작하기"), merged.elements.map { it.label })
         val basic = merged.elements.first { it.label == "베이직" }
         assertEquals(Origin.WEB, basic.origin)
         assertEquals(listOf("checked"), basic.state)

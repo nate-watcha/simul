@@ -3,7 +3,10 @@ package dev.nate.uiagent.web
 import dev.nate.uiagent.Bounds
 import dev.nate.uiagent.LogicalElement
 import dev.nate.uiagent.LogicalLayout
+import dev.nate.uiagent.Origin
+import dev.nate.uiagent.depthsOf
 import dev.nate.uiagent.device.Device
+import dev.nate.uiagent.pruneReparent
 
 /**
  * Device decorator that merges WebView content (via CDP) into native observations. Gestures
@@ -70,16 +73,31 @@ class WebAwareDevice(
         // is the gesture target for scrolling web pages.
         val webIds = webElements.mapNotNull { it.resourceId }.toHashSet()
         val webLabels = webElements.mapNotNull { it.label }.toHashSet()
-        val keptNative = native.elements.filterNot { e ->
-            rect.containsCenter(e) && "scrollable" !in e.interactions && when {
+        val keptNative = pruneReparent(native.elements) { e ->
+            !(rect.containsCenter(e) && "scrollable" !in e.interactions && when {
                 e.resourceId != null -> e.resourceId in webIds
                 e.label != null -> e.label in webLabels || e.label.take(80) in webLabels
                 else -> true // anonymous non-scrollable node inside the webview: a11y scaffolding
-            }
+            })
         }
-        val merged = (keptNative + webElements)
-            .sortedWith(compareBy({ it.center.y }, { it.center.x }))
-            .mapIndexed { i, e -> e.copy(id = i) }
+        // The page's elements nest under the native WebView node when the screen still exposes
+        // one (its resource-id can vanish once Chrome projects a11y nodes — then they sit at the
+        // top level). Web siblings keep reading order; the rest is the native tree's order.
+        val web = webElements.sortedWith(compareBy({ it.center.y }, { it.center.x }))
+        val hostIdx = keptNative.indexOfFirst(::isWebViewNode)
+        val combined = if (hostIdx < 0) keptNative + web else {
+            val depths = depthsOf(keptNative)
+            var end = hostIdx + 1
+            while (end < keptNative.size && depths[end] > depths[hostIdx]) end++
+            val hostId = keptNative[hostIdx].id
+            keptNative.subList(0, end) + web.map { it.copy(parentId = hostId) } + keptNative.subList(end, keptNative.size)
+        }
+        // Re-id in pre-order; parents precede children, so the old→new map is ready when needed.
+        val newId = HashMap<Int, Int>()
+        val merged = combined.mapIndexed { i, e ->
+            if (e.origin == Origin.NATIVE) newId[e.id] = i
+            e.copy(id = i, parentId = e.parentId?.let { newId[it] })
+        }
         return LogicalLayout(merged)
     }
 

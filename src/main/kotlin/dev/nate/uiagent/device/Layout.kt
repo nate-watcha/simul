@@ -1,19 +1,19 @@
 package dev.nate.uiagent.device
 
 import dev.nate.uiagent.LogicalElement
-import kotlinx.serialization.json.JsonArray
+import dev.nate.uiagent.depthsOf
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
-import dev.nate.uiagent.prettyJson
 
 /**
  * Model-facing rendering and diffing. Elements are referenced by LABEL, not by a
  * numeric id: ids are re-assigned every observation, so they drift in the conversation
  * history, while labels stay meaningful. Elements without any label get a synthetic
- * positional handle ("@x360y1176") that doubles as the tap target.
+ * positional handle ("@x360y1176") that doubles as the tap target. The full layout is one
+ * element per line, indented by nesting depth (a card's texts and buttons under the card);
+ * diff lines are flat.
  */
 
 /** The stable, model-facing handle of an element: label, else resourceId, else "@x..y..". */
@@ -39,20 +39,14 @@ internal fun elementJson(e: LogicalElement): String = buildJsonObject {
     e.kind?.let { put("kind", it) }
 }.toString()
 
-/** The full layout as shown to the model (initial message and the layout() tool). */
+/**
+ * The full layout as shown to the model (initial message and the layout() tool): one
+ * [elementJson] per line, two spaces of indentation per nesting level.
+ */
 fun renderFullLayout(elements: List<LogicalElement>): String {
-    val arr: JsonArray = buildJsonArray {
-        elements.forEach { e ->
-            add(buildJsonObject {
-                put("label", handleOf(e))
-                e.resourceId?.let { put("resourceId", it) }
-                if (e.interactions.isNotEmpty()) putJsonArray("interactions") { e.interactions.forEach { add(JsonPrimitive(it)) } }
-                if (e.state.isNotEmpty()) putJsonArray("state") { e.state.forEach { add(JsonPrimitive(it)) } }
-                e.kind?.let { put("kind", it) }
-            })
-        }
-    }
-    return prettyJson.encodeToString(JsonArray.serializer(), arr)
+    if (elements.isEmpty()) return "(no elements)"
+    val depths = depthsOf(elements)
+    return elements.mapIndexed { i, e -> "  ".repeat(depths[i]) + elementJson(e) }.joinToString("\n")
 }
 
 // -------------------------------------------------------------------- diff
