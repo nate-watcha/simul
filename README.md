@@ -67,7 +67,9 @@ phase 역할은 라벨이 아니라 **mode와 순서**로 정해진다: 첫 llm 
   gif는 시나리오당 수 MB라 인라인하지 않고 `--out` 옆 `media/<시나리오>-<phase>.gif`로 복사해 참조한다 —
   **아티팩트는 `report.html` + `media/` 폴더를 함께** 올린다. 스크린샷 썸네일은 data URI라 폴더 밖이어도 보인다.
 - `--format md`: GitHub 잡 서머리·PR 본문용. 표 + "Needs attention"에 실패 사유·스크린샷·리포트 폴더·gif 경로.
-- `--format slack`: Block Kit payload(incoming webhook). 주의 항목 20개까지.
+- `--format slack`: Block Kit payload(incoming webhook 또는 `chat.postMessage`). 주의 항목 20개까지. 메시지엔 이미지를
+  못 붙이므로 gif는 워크플로가 **그 메시지의 스레드에 파일로** 올린다(실패한 replay만, `files.getUploadURLExternal` →
+  업로드 → `files.completeUploadExternal` + `thread_ts`; 봇 스코프 `files:write` 필요) — kloud `simul-nightly.yml` 참조.
 - `--format junit`: phase=testsuite, 시나리오=testcase.
 - 입력 summary.json의 시나리오 항목에 `gif`가 있어야 html에 gif가 붙는다 — 즉 **replay에 `--gif`를 붙인 런만**.
   gif는 `adb shell screenrecord`(180s 세그먼트 자동 이어붙임) → `run.mp4` → ffmpeg(2-pass 팔레트, 360px·10fps)
