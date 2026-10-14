@@ -63,8 +63,9 @@ private fun printUsage() {
 
         usage:
           simul                               interactive mode (full-screen, TTY + .simul/ 필요)
-          simul init [--app <package>] [--ci github]   set up .simul/ + Claude skill (+ nightly workflow)
+          simul init [--app <package>]        set up .simul/ + the scenario-authoring Claude skill
           simul run <scenario.md>... [--mode replay|llm|auto] [--dry-run] [--url U]
+                    [--gif | --video]                     record the screen → run.gif / run.mp4 in the report dir
           simul run --tag <tag> | --state <name> | --all [same options]
                     [--summary <file.json> [--label <phase>]]   batch summary for `simul report`
           simul report <summary.json>... [--format md|slack|junit|html] [--title T]
@@ -79,10 +80,11 @@ private fun printUsage() {
           replay          play the committed trace deterministically; broken steps FAIL (no LLM)
           llm             interpret every step from scratch and (re)record the trace
 
-        nightly pipeline (see `simul init --ci github`):
-          simul run --all --mode replay --summary r/baseline.json   # committed traces
-          simul run --all --mode llm    --summary r/record.json     # re-record every scenario
-          simul run --all --mode replay --summary r/verify.json     # replay the fresh traces
+        nightly pipeline (wire these into your CI — see the README):
+          simul run --all --mode replay --gif --summary r/baseline.json   # committed traces
+          simul run --all --mode llm          --summary r/record.json     # re-record every scenario
+          simul run --all --mode replay --gif --summary r/verify.json     # replay the fresh traces
+          simul report r/baseline.json r/record.json r/verify.json --format html --out r/report.html
           simul report r/baseline.json r/record.json r/verify.json --format md --check
         """.trimIndent()
     )
@@ -98,6 +100,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     var stateFilter: String? = null
     var summaryPath: String? = null
     var label: String? = null
+    var video = VideoOutput.NONE
     val tags = mutableListOf<String>()
     val paths = mutableListOf<String>()
 
@@ -117,6 +120,8 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
             "--url" -> urlOverride = args.getOrNull(++i) ?: return err("--url needs a value")
             "--summary" -> summaryPath = args.getOrNull(++i) ?: return err("--summary needs a file path")
             "--label" -> label = args.getOrNull(++i) ?: return err("--label needs a value")
+            "--gif" -> video = VideoOutput.GIF
+            "--video" -> video = VideoOutput.MP4
             else -> if (a.startsWith("--")) return err("unknown option $a") else paths += a
         }
         i++
@@ -126,20 +131,31 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
         ?: return err("no .simul/ directory found from $cwd upwards — run inside an app repo with the .simul convention")
     project.versionWarning()?.let { println(it) }
 
-    val files: List<File> = when {
-        paths.isNotEmpty() -> paths.map { p ->
+    // A `states:` scenario is several runs — one variant per state, each with its own trace.
+    val targets: List<Pair<File, Scenario>> = when {
+        paths.isNotEmpty() -> paths.flatMap { p ->
             val direct = File(cwd, p).takeIf { it.isFile } ?: File(p).takeIf { it.isFile && it.isAbsolute }
-            direct ?: File(project.scenariosDir, p).takeIf { it.isFile }
-            ?: return err("scenario not found: $p")
+            val md = direct ?: File(project.scenariosDir, p).takeIf { it.isFile }
+                ?: return err("scenario not found: $p")
+            val variants = try { ScenarioMd.parse(md).variants() } catch (e: IllegalArgumentException) {
+                return err("${md.relativeToOrSelf(cwd)}: ${e.message}")
+            }
+            variants.filter { stateFilter == null || it.precondition == stateFilter }.map { md to it }
         }
-        all || tags.isNotEmpty() || stateFilter != null -> project.scenarios().filter { md ->
-            val sc = ScenarioMd.parse(md)
-            (tags.isEmpty() || sc.tags.any { it in tags }) &&
-                (stateFilter == null || sc.precondition == stateFilter)
+        all || tags.isNotEmpty() || stateFilter != null -> {
+            var broken = false
+            val found = project.scenarioVariants { md, why ->
+                System.err.println("error: ${md.relativeTo(project.scenariosDir)}: $why"); broken = true
+            }
+            if (broken) return 2
+            found.filter { (_, sc) ->
+                (tags.isEmpty() || sc.tags.any { it in tags }) &&
+                    (stateFilter == null || sc.precondition == stateFilter)
+            }
         }
         else -> return err("nothing to run: give a scenario path, --tag <tag>, or --all")
     }
-    if (files.isEmpty()) return err("no scenarios matched")
+    if (targets.isEmpty()) return err("no scenarios matched")
 
     val llm = project.config.llm.let { if (urlOverride != null) it.copy(url = urlOverride) else it }
     // The key is only needed when the LLM actually runs; replay must work without the secret.
@@ -171,15 +187,15 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     }
 
     try {
-        for (md in files) {
-            val scenario = ScenarioMd.parse(md)
-            val traceFile = project.traceFileFor(md)
+        for ((md, scenario) in targets) {
+            val traceFile = project.traceFileFor(md, scenario)
             val trace = traceFile.takeIf { it.isFile }?.let { runCatching { TraceJson.read(it) }.getOrNull() }
 
             if (dryRun) {
                 val planned = if (mode == RunMode.AUTO) (if (trace != null) "replay" else "skip (no trace)") else mode.name.lowercase()
-                println("${scenario.name} (${md.relativeToOrSelf(project.scenariosDir)})")
-                println("  mode: $planned  trace: ${traceStatus(md, traceFile)}  tags: ${scenario.tags}")
+                println("${scenario.name} (${scenarioPath(project, md, scenario)})")
+                println("  mode: $planned  trace: ${traceStatus(md, traceFile)}  tags: ${scenario.tags}" +
+                    (scenario.state?.let { "  state: $it" } ?: ""))
                 scenario.steps.forEachIndexed { idx, s -> println("  ${idx + 1}. $s") }
                 continue
             }
@@ -206,7 +222,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
             // A harness/environment crash (OOM, classpath swapped under a live JVM, adb
             // vanishing) must not kill the rest of the batch — record it and move on.
             val result = try {
-                executeScenario(project, scenario, trace, effective, llm, traceFile, ops)
+                executeScenario(project, scenario, trace, effective, llm, traceFile, ops, video = video)
             } catch (t: Throwable) {
                 val log = writeCrashLog(project.reportsDir, scenario.name, t)
                 println("CRASH ${scenario.name}: ${t.javaClass.simpleName}: ${t.message ?: ""}")
@@ -257,6 +273,7 @@ internal fun executeScenario(
     traceFile: File,
     ops: DeviceOps,
     log: (String) -> Unit = ::println,
+    video: VideoOutput = VideoOutput.NONE,
 ): ScenarioRunResult {
     val stamp = SimpleDateFormat("yyyyMMdd-HHmmss").format(Date())
     val reportDir = File(project.reportsDir, "${scenario.name}-$stamp")
@@ -281,15 +298,33 @@ internal fun executeScenario(
     val runner = ScenarioRunner(controller, listener, ops, executor, reportDir, project.config.app, log = log)
 
     log("── ${scenario.name} [${mode.name.lowercase()}] ${"─".repeat(30)}")
+    // The screen recording spans setup through the last step — the whole journey, as a
+    // teammate would watch it. It stops in `finally`: a crashed run must not leave
+    // screenrecord running on the device for the rest of its time limit.
+    val recorder = if (video != VideoOutput.NONE) ScreenRecorder().also { it.start() } else null
+    var media: List<File> = emptyList()
     val result = try {
         runner.run(scenario, trace, mode)
     } finally {
         cdp.close() // release the adb port forwards this run created
+        recorder?.let { media = it.stop(File(reportDir, "run.mp4")) }
     }
 
     log("${result.status}: ${scenario.name}  (${result.durationMs}ms, report: ${reportDir.path})")
     // what the recording cost: model time vs. the scenario's wall time, and the tokens it took
     result.llm?.let { log("  ${it.summary(totalMs = result.durationMs)}") }
+
+    if (recorder != null) {
+        fun rel(f: File) = f.relativeToOrSelf(project.appRoot).path
+        recorder.problem?.let { log("  video: $it") }
+        media.forEach { log("  video: ${rel(it)}") }
+        if (video == VideoOutput.GIF && media.size == 1) {
+            val gif = File(reportDir, "run.gif")
+            val failure = Gif.convert(media[0], gif)
+            if (failure == null) { media = media + gif; log("  gif: ${rel(gif)}") }
+            else log("  gif: $failure")
+        }
+    }
 
     result.updatedTrace?.let { updated ->
         TraceJson.write(updated, traceFile)
@@ -301,7 +336,7 @@ internal fun executeScenario(
             log("  trace recorded: ${traceFile.path}")
         }
     }
-    return result.copy(reportDir = reportDir)
+    return result.copy(reportDir = reportDir, media = media)
 }
 
 // -------------------------------------------------------------------------- init
@@ -316,12 +351,10 @@ internal fun executeScenario(
  */
 internal fun initCommand(args: List<String>, cwd: File): Int {
     var app: String? = null
-    var ci: String? = null
     var i = 0
     while (i < args.size) {
         when (val a = args[i]) {
             "--app" -> app = args.getOrNull(++i) ?: return err("--app needs a value")
-            "--ci" -> ci = args.getOrNull(++i)?.takeIf { it == "github" } ?: return err("--ci needs a provider (github)")
             else -> return err("unknown option $a")
         }
         i++
@@ -350,15 +383,11 @@ internal fun initCommand(args: List<String>, cwd: File): Int {
           sizeClass: small   # small=720x1280@320(360dp) | medium(640dp) | large(1066dp)
     """.trimIndent() + "\n"
 
-    val files = listOfNotNull(
+    val files = listOf(
         File(cwd, ".simul/config.yaml") to config,
         File(cwd, ".claude/skills/simul-scenarios/SKILL.md") to skill,
         File(cwd, ".claude/skills/simul-scenarios/references/setup.md") to setup,
         File(cwd, ".claude/skills/simul-scenarios/references/external.md") to external,
-        if (ci == "github") {
-            val wf = resource("nightly.yml") ?: return err("packaging error: /simul/nightly.yml missing")
-            File(cwd, ".github/workflows/simul-nightly.yml") to wf
-        } else null,
     )
     File(cwd, ".simul/scenarios").mkdirs()
     for ((file, content) in files) {
@@ -381,17 +410,9 @@ internal fun initCommand(args: List<String>, cwd: File): Int {
           1. .simul/config.yaml 의 app / llm.url 확인
           2. .claude/skills/simul-scenarios/SKILL.md 읽고 첫 시나리오 작성 → .simul/scenarios/<그룹>/<이름>.md
           3. simul run <그룹>/<이름>.md --mode llm   (녹화 후 trace를 md와 함께 커밋)
+          4. CI: `simul run --all` (replay만, LLM 0회) — 나이틀리 3단계·리포트는 simul README 참조
         """.trimIndent()
     )
-    if (ci == "github") {
-        println(
-            """
-              4. .github/workflows/simul-nightly.yml 의 TODO(빌드/설치 커맨드, AVD 이름)를 채우고
-                 self-hosted 러너(라벨 self-hosted+simul, simul·adb·emulator·llama-server 상주)를 붙인다.
-                 Slack 알림은 레포 secret SLACK_WEBHOOK_URL (incoming webhook) 하나면 된다.
-            """.trimIndent()
-        )
-    }
     return 0
 }
 
@@ -427,10 +448,9 @@ private fun listCommand(cwd: File): Int {
         println("no scenarios under ${project.scenariosDir.path}")
         return 0
     }
-    for (md in files) {
-        val s = ScenarioMd.parse(md)
+    for ((md, s) in project.scenarioVariants { f, why -> println("${f.relativeTo(project.scenariosDir).path}  ERROR: $why") }) {
         val tags = if (s.tags.isEmpty()) "" else "  tags=${s.tags.joinToString(",")}"
-        println("${md.relativeTo(project.scenariosDir).path}  steps=${s.steps.size}  trace=${traceStatus(md, project.traceFileFor(md))}$tags")
+        println("${scenarioPath(project, md, s)}  steps=${s.steps.size}  trace=${traceStatus(md, project.traceFileFor(md, s))}$tags")
     }
     return 0
 }

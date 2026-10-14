@@ -50,6 +50,32 @@ class HtmlReportTest {
     }
 
     @Test
+    fun `a phase recorded with --gif shows the gif beside its steps, copied into media next to the html`() {
+        val root = root()
+        val rel = reportDir(root, "tabs", """{"step":1,"text":"Tap \"Home\"","status":"PASSED","mode":"replay","actions":[],"evidence":[],"reason":null,"durationMs":1000,"screenshots":[]}""")
+        File(root, "$rel/run.gif").writeBytes(byteArrayOf(0x47, 0x49, 0x46, 0x38, 0x39, 0x61))
+        val baseline = ScenarioOutcome("tabs", "nav/tabs.md", emptyList(), "PASSED", "replay", 8000, rel, false, 1, 0, 0, null, null, gif = "$rel/run.gif")
+        val record = ScenarioOutcome("tabs", "nav/tabs.md", emptyList(), "PASSED", "llm", 30_000, rel, true, 1, 0, 0, null, null)
+        val r = PipelineReport.build("n", listOf(
+            RunSummary("baseline", "replay", "", 1, "0.2.0", null, null, listOf(baseline)),
+            RunSummary("record", "llm", "", 1, "0.2.0", null, null, listOf(record)),
+        ))
+        val outDir = File(root, "out").apply { mkdirs() }
+
+        val html = HtmlReport.render(r, root, mediaDir = File(outDir, "media"))
+
+        val copied = File(outDir, "media/nav_tabs.md-baseline.gif")
+        assertTrue(copied.isFile && copied.length() == 6L, "gif copied next to the html")
+        assertTrue("<div class=body><ol class=steps>" in html, "steps and gif share one row")
+        assertTrue("<figure class=gif><img src=\"media/nav_tabs.md-baseline.gif\"" in html, html)
+        assertEquals(1, Regex("<figure class=gif>").findAll(html).count(), "the record phase (no gif) shows none")
+        assertTrue("data:image/gif" !in html, "gifs are linked, never inlined")
+
+        // without a media dir (stdout), the page points at the gif where it lies under the root
+        assertTrue("<img src=\"$rel/run.gif\"" in HtmlReport.render(r, root))
+    }
+
+    @Test
     fun `thumbnail downsizes to the requested width and unreadable files yield null`() {
         val root = root()
         val png = File(root, "shot.png").also { ImageIO.write(BufferedImage(720, 1280, BufferedImage.TYPE_INT_ARGB), "png", it) }
@@ -67,5 +93,6 @@ class HtmlReportTest {
         RunSummaryJson.write(RunSummary("verify", "replay", "", 1000, "0.2.0", null, null, listOf(ok)), File(root, "v.json"))
         assertEquals(0, reportCommand(listOf("v.json", "--format", "html", "--out", "r.html"), root))
         assertTrue(File(root, "r.html").readText().contains("✅ stable") || File(root, "r.html").readText().contains("✅ passed"))
+        assertTrue(!File(root, "media").exists(), "no gifs → no media dir")
     }
 }

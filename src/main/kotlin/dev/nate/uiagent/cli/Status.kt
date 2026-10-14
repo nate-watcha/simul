@@ -29,6 +29,8 @@ data class ScenarioStatus(
     /** setup.appState name, or "guest" for clearData, or null. */
     val precondition: String?,
     val lastRun: LastRun?,
+    /** The variant of a `states:` scenario this row is (its trace/report identity); null otherwise. */
+    val state: String? = null,
 )
 
 data class LastRun(
@@ -42,9 +44,8 @@ data class LastRun(
 data class StateFile(val name: String, val sizeBytes: Long, val modifiedAt: Long)
 
 fun collectStatus(project: SimulProject): StatusReport {
-    val scenarios = project.scenarios().map { md ->
-        val s = ScenarioMd.parse(md)
-        val traceFile = project.traceFileFor(md)
+    val scenarios = project.scenarioVariants().map { (md, s) ->
+        val traceFile = project.traceFileFor(md, s)
         ScenarioStatus(
             relPath = md.relativeTo(project.scenariosDir).path,
             name = s.name,
@@ -57,6 +58,7 @@ fun collectStatus(project: SimulProject): StatusReport {
             },
             precondition = s.precondition,
             lastRun = latestRun(project.reportsDir, s.name),
+            state = s.state,
         )
     }
     val states = (project.statesDir.listFiles { f -> f.isFile && f.extension == "tar" } ?: emptyArray())

@@ -61,11 +61,12 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
     val text = when (format) {
         "md" -> renderMarkdown(report)
         "slack" -> renderSlack(report)
-        "html" -> HtmlReport.render(report, cwd)
+        // gifs are copied next to the html (media/) — too big to inline, and the artifact is a folder anyway
+        "html" -> HtmlReport.render(report, cwd, mediaDir = out?.let { File(resolve(it, cwd).absoluteFile.parentFile, "media") })
         else -> renderJunit(report)
     }
     if (out != null) {
-        val f = File(out).takeIf { it.isAbsolute } ?: File(cwd, out)
+        val f = resolve(out, cwd)
         f.absoluteFile.parentFile?.mkdirs()
         f.writeText(text)
         System.err.println("report: ${f.relativeToOrSelf(cwd).path} — ${report.headline()}")
@@ -74,6 +75,8 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
     }
     return if (check && report.overall == Severity.FAIL) 1 else 0
 }
+
+private fun resolve(path: String, cwd: File): File = File(path).takeIf { it.isAbsolute } ?: File(cwd, path)
 
 private fun reportErr(msg: String): Int {
     System.err.println("error: $msg")
@@ -298,9 +301,10 @@ fun renderMarkdown(r: PipelineReport): String = buildString {
                 o.failedStep?.screenshot?.let { appendLine("  - screenshot: `$it`") }
                 o.failedStep?.screen?.takeIf { it.isNotEmpty() }?.let { appendLine("  - on screen: " + it.joinToString(" · ") { l -> "`$l`" }) }
                 o.reportDir?.let { appendLine("  - report: `$it`") }
+                o.gif?.let { appendLine("  - gif: `$it`") }
             }
             row.outcomes.filterNotNull().firstOrNull { it.traceUpdated }?.let {
-                appendLine("- trace updated by **${r.phases[row.outcomes.indexOf(it)].label}** — see the diff of `.simul/scenarios/${it.path.removeSuffix(".md")}.trace.json`")
+                appendLine("- trace updated by **${r.phases[row.outcomes.indexOf(it)].label}** — see the diff of `.simul/scenarios/${traceRelPath(it.path)}`")
             }
         }
     }

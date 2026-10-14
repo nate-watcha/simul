@@ -56,6 +56,8 @@ data class ScenarioRunResult(
     val durationMs: Long,
     /** Where this run's report.json / screenshots / agent.jsonl were written (set by the CLI). */
     val reportDir: File? = null,
+    /** Screen recording of the run (`run.mp4`, and `run.gif` when asked for), set by the CLI. */
+    val media: List<File> = emptyList(),
 ) {
     val passed get() = status == StepStatus.PASSED
 

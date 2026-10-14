@@ -24,6 +24,26 @@ setup:
 - 스냅샷 tar에는 테스트 계정 토큰이 들어간다. 커밋 여부는 팀 보안 기준으로 정하고,
   만료되면 `state save`를 다시 한다.
 
+## 여러 상태를 한 파일로: `states:`
+
+같은 흐름을 여러 상태에서 돌릴 때는 `setup.appState` 대신 frontmatter에 `states:`를 쓴다
+(둘을 같이 쓰면 파싱 에러). 상태마다 별도의 실행 단위가 된다.
+
+```yaml
+states: [member, nosub, guest]
+setup:
+  launch: true
+```
+
+- 상태 이름 = `.simul/states/<이름>.tar` 스냅샷 이름. 실행 전 pm clear → 스냅샷 복원 → launch.
+  `guest`만 예외로 스냅샷이 없어도 되며, 그때는 pm clear만 한다(신규 설치).
+- 실행 단위 이름은 `<name>@<state>`, trace는 `<파일명>@<state>.trace.json`으로 md 옆에
+  상태 수만큼 생긴다. `simul status`/`simul list`/리포트에도 상태별로 한 줄씩 나온다.
+- `simul run <path>`는 모든 상태를 돌리고, `--state <이름>`을 붙이면 그 상태만 돈다.
+- 스텝 아래 `:: <state> → 기준` 줄은 그 상태에만 적용되고, 접두 없는 `::`(같은 줄이든 아래
+  줄이든)는 모든 상태에 적용된다. 한 상태에 접두 기준이 있으면 그 상태에서는 접두 없는
+  기준을 대신한다 — "기본 기대"를 접두 없이 쓰고, 다른 상태에만 접두로 덮어쓴다.
+
 ## 진입
 
 ```yaml

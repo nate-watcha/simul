@@ -18,7 +18,7 @@ data class StepSpec(val command: String, val criterion: String?) {
     val isVerify: Boolean get() = command.startsWith("Verify", ignoreCase = true)
 
     companion object {
-        private const val SEPARATOR = " :: "
+        const val SEPARATOR = " :: "
 
         fun parse(text: String): StepSpec {
             val idx = text.indexOf(SEPARATOR)

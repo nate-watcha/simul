@@ -28,8 +28,25 @@ class SimulProject(val appRoot: File) {
             .sortedBy { it.relativeTo(scenariosDir).path }
             .toList()
 
-    /** The committed trace sits next to the scenario: `<name>.trace.json`. */
-    fun traceFileFor(md: File): File = File(md.parentFile, md.nameWithoutExtension + ".trace.json")
+    /**
+     * The committed trace sits next to the scenario: `<name>.trace.json` — or, for a scenario
+     * that declares `states:`, one per state: `<name>@<state>.trace.json`.
+     */
+    fun traceFileFor(md: File, state: String? = null): File =
+        File(md.parentFile, md.nameWithoutExtension + (state?.let { "@$it" } ?: "") + ".trace.json")
+
+    fun traceFileFor(md: File, scenario: Scenario): File = traceFileFor(md, scenario.state)
+
+    /**
+     * Every runnable scenario — each `states:` scenario expanded to its variants — paired with
+     * its markdown file. A file that fails to parse is reported, not thrown, so one authoring
+     * mistake cannot take a whole `--all` batch down with it.
+     */
+    fun scenarioVariants(onError: (File, String) -> Unit = { _, _ -> }): List<Pair<File, Scenario>> =
+        scenarios().flatMap { md ->
+            runCatching { ScenarioMd.parse(md).variants().map { md to it } }
+                .getOrElse { onError(md, it.message ?: it.toString()); emptyList() }
+        }
 
     /** Warning if this binary does not satisfy the config's `agentVersion` requirement. */
     fun versionWarning(): String? {

@@ -53,7 +53,11 @@ class AdbOps(
         setup.appState?.let { name ->
             requireNotNull(app) { "setup.appState requires `app` in config.yaml" }
             val tar = File(statesDir ?: error("appState needs a .simul project"), "$name.tar")
-            require(tar.isFile) { "app state '$name' not found: ${tar.path} — create it with `simul state save $name`" }
+            if (!tar.isFile) {
+                // `guest` without a snapshot is a fresh install — the pm clear above is the whole restore
+                require(name == Scenario.GUEST) { "app state '$name' not found: ${tar.path} — create it with `simul state save $name`" }
+                return@let
+            }
             // debuggable builds only: restore the app-data snapshot under the app's own uid
             runProcess(listOf(adbBin, "push", tar.path, "/data/local/tmp/simul-state.tar"))
             runProcess(listOf(adbBin, "shell", "run-as", app, "sh", "-c", "'tar xf /data/local/tmp/simul-state.tar'"))

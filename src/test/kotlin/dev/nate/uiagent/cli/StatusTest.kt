@@ -115,4 +115,23 @@ class StatusTest {
         assertTrue("guest-a" in text, text)
         assertTrue("member-b" !in text && "misc-c" !in text, text)
     }
+
+    @Test
+    fun `a states scenario is one row per state with its own trace and last run`() {
+        val p = project()
+        val f = File(p.scenariosDir, "billing/play.md").apply { parentFile.mkdirs() }
+        f.writeText("---\nname: play\nstates: [member, guest]\n---\n1. Tap the \"a\" button\n   :: member → \"b\" is shown\n")
+        p.traceFileFor(f, "member").writeText("{}")
+        p.traceFileFor(f, "member").setLastModified(f.lastModified() + 10_000)
+        report(p, "play@guest", "20260101-000000", "FAILED")
+
+        val rows = collectStatus(p).scenarios.filter { it.relPath == "billing/play.md" }
+        assertEquals(listOf("member", "guest"), rows.map { it.state })
+        assertEquals(listOf("play@member", "play@guest"), rows.map { it.name })
+        assertEquals(listOf("member", "guest"), rows.map { it.precondition })
+        assertEquals(TraceState.OK, rows[0].trace)
+        assertEquals(TraceState.NONE, rows[1].trace)
+        assertNull(rows[0].lastRun)
+        assertEquals(false, rows[1].lastRun?.passed)
+    }
 }

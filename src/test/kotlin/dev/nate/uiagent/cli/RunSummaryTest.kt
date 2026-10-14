@@ -47,6 +47,24 @@ class RunSummaryTest {
         assertEquals(".simul/reports/nav-basic-20260919-020000/screenshots/step2-1-tap-after.png", f.screenshot)
         assertEquals(listOf("로그인", "닫기"), f.screen)
         assertTrue(!o.traceUpdated)
+        assertEquals(null, o.gif, "no recording → no gif field")
+    }
+
+    @Test
+    fun `a recorded gif travels through the outcome and the summary json, relative to the app root`() {
+        val p = project()
+        val md = File(p.scenariosDir, "nav/basic.md").apply { writeText("---\nname: nav-basic\n---\n1. a\n") }
+        val reportDir = File(p.reportsDir, "nav-basic-20260919-020000")
+        val result = ScenarioRunResult("nav-basic", StepStatus.PASSED, listOf(step(1, StepStatus.PASSED, "replay")), null, 9000,
+            reportDir = reportDir, media = listOf(File(reportDir, "run.mp4"), File(reportDir, "run.gif")))
+
+        val o = outcomeOf(p, md, ScenarioMd.parse(md), result)
+        assertEquals(".simul/reports/nav-basic-20260919-020000/run.gif", o.gif)
+
+        val file = File(p.reportsDir, "nightly/verify.json")
+        RunSummaryJson.write(RunSummary("verify", "replay", "", 1, AGENT_VERSION, null, null, listOf(o)), file)
+        assertTrue("\"gif\": \".simul/reports/nav-basic-20260919-020000/run.gif\"" in file.readText())
+        assertEquals(o.gif, RunSummaryJson.read(file).scenarios.single().gif)
     }
 
     @Test

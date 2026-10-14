@@ -25,8 +25,8 @@ simul run --all                  # CI: 기본 auto = 트레이스 재생(LLM 0�
 simul run foo.md --mode replay   # 순수 재생 — 깨진 스텝은 FAILED (replay는 LLM 0회 보장)
 simul run --tag billing          # 태그 필터 (--state <name>도 동일 형식)
 simul run --all --summary r.json --label verify   # 배치 요약 JSON (simul report 입력)
+simul run foo.md --mode replay --gif   # 화면 녹화 → 리포트 폴더에 run.gif + run.mp4 (TUI에선 v)
 simul report r/*.json --format md|slack|junit|html [--check]   # 나이틀리 3단계 병합 리포트 (아래)
-simul init --ci github           # .github/workflows/simul-nightly.yml 템플릿 설치
 simul list                       # 시나리오 목록 + 트레이스 유무/신선도
 simul state save <name>          # 현재 앱 데이터를 .simul/states/<name>.tar 스냅샷으로 저장
                                  #   → 시나리오의 setup.appState: <name>으로 로그인 등 전제 주입
@@ -37,18 +37,41 @@ simul "Tap the \"웹툰\" tab"     # ad-hoc 단일 커맨드 (규약 없이 동�
 
 종료 코드: 전부 PASSED=0, 실패=1.
 
-### 나이틀리 운영 (record → verify → report)
+### 나이틀리 운영 (baseline → record → verify → report)
 
-PR 게이트는 replay만 돌리지만(LLM 0회), 나이틀리는 세 번 돈다 — `simul init --ci github`가
-깔아주는 워크플로가 이 순서다:
+PR 게이트는 replay만 돌리고(LLM 0회, `simul run --all`) 끝이다. 나이틀리는 세 번 돌고 한 번 묶는다.
+워크플로 파일은 **앱 레포가 가진다** — 이 레포는 커맨드만 제공하고, 조립 순서는 이것이다:
 
 ```bash
-simul run --all --mode replay --summary r/baseline.json --label baseline   # 커밋된 trace 재생
-simul run --all --mode llm    --summary r/record.json   --label record     # 전 시나리오 재녹화
-simul run --all --mode replay --summary r/verify.json   --label verify     # 방금 녹화한 trace 재생
-simul report r/baseline.json r/record.json r/verify.json --format md --link "Run=$URL" \
-  --out report.md     # → $GITHUB_STEP_SUMMARY / PR 본문 ; --format slack → incoming webhook ; --check → exit 1 게이트
+R=.simul/reports/nightly; rm -rf $R; mkdir -p $R
+simul run --all --mode replay --gif --summary $R/baseline.json --label baseline   # 커밋된 trace 재생 (+화면 녹화)
+simul run --all --mode llm          --summary $R/record.json   --label record     # 전 시나리오 재녹화 (LLM 키 필요)
+simul run --all --mode replay --gif --summary $R/verify.json   --label verify     # 방금 녹화한 trace 재생 (+화면 녹화)
+
+J="$R/baseline.json $R/record.json $R/verify.json"     # 없는 파일은 빼도 된다 — 있는 phase만으로 판정
+simul report $J --title "simul nightly $(date +%F)" --link "Run=$RUN_URL" --format html  --out $R/report.html
+simul report $J --title "..." --link "Run=$RUN_URL" --format md    --out $R/report.md     # $GITHUB_STEP_SUMMARY / PR 본문
+simul report $J --title "..." --link "Run=$RUN_URL" --format slack --out $R/slack.json    # curl -d @slack.json $SLACK_WEBHOOK_URL
+simul report $J --format junit --out $R/junit.xml                                        # 테스트 리포터용
+simul report $J --check >/dev/null                                                       # 게이트: regression/trace flake/crash → exit 1
 ```
+
+각 `simul run`은 실패해도 다음 단계를 막지 않게 돌린다(GitHub Actions면 `continue-on-error: true`).
+phase 역할은 라벨이 아니라 **mode와 순서**로 정해진다: 첫 llm 런이 record, 그 직전 replay가 baseline,
+직후 replay가 verify.
+
+**리포트가 담는 것**
+
+- `--format html`: verdict 표 + 시나리오별 상세. 시나리오를 펼치면 phase마다 **왼쪽에 스텝 목록
+  (PASSED/FAILED, 사유, 실패 화면의 라벨과 스크린샷 썸네일), 오른쪽에 그 replay의 gif**가 같이 보인다.
+  gif는 시나리오당 수 MB라 인라인하지 않고 `--out` 옆 `media/<시나리오>-<phase>.gif`로 복사해 참조한다 —
+  **아티팩트는 `report.html` + `media/` 폴더를 함께** 올린다. 스크린샷 썸네일은 data URI라 폴더 밖이어도 보인다.
+- `--format md`: GitHub 잡 서머리·PR 본문용. 표 + "Needs attention"에 실패 사유·스크린샷·리포트 폴더·gif 경로.
+- `--format slack`: Block Kit payload(incoming webhook). 주의 항목 20개까지.
+- `--format junit`: phase=testsuite, 시나리오=testcase.
+- 입력 summary.json의 시나리오 항목에 `gif`가 있어야 html에 gif가 붙는다 — 즉 **replay에 `--gif`를 붙인 런만**.
+  gif는 `adb shell screenrecord`(180s 세그먼트 자동 이어붙임) → `run.mp4` → ffmpeg(2-pass 팔레트, 360px·10fps)
+  → `run.gif`. 러너에 ffmpeg이 없으면 mp4만 남고 리포트엔 gif가 빠진다(FAILED 아님).
 
 세 결과가 시나리오당 하나의 verdict로 접힌다:
 
@@ -56,13 +79,24 @@ simul report r/baseline.json r/record.json r/verify.json --format md --link "Run
 |---|---|---|---|---|
 | ✅ | ✅ | ✅ | ✅ stable | |
 | ❌ | ✅ | ✅ | 🔁 changed | 화면이 바뀌었고 새 녹화는 재생됨 → 재녹화 trace PR 리뷰·머지 |
-| ❌ | ❌ | – | ❌ regression | 커밋 trace도 새 녹화도 실패 → 앱 회귀 의심, 스크린샷부터 |
+| ❌ | ❌ | – | ❌ regression | 커밋 trace도 새 녹화도 실패 → 앱 회귀 의심, baseline gif/스크린샷부터 |
 | ✅ | ❌ | – | ⚠️ record flake | 앱은 커밋대로인데 에이전트가 못 함 → record 로그(문구·AMBIGUOUS) |
 | – | ✅ | ❌ | ⚠️ trace flake | 녹화는 됐는데 재생 불가 → 비결정 evidence(동적 라벨) |
 | ⏭ | ✅ | ✅ | 🆕 new | 첫 녹화 → 커밋 |
 
 `--check`는 regression/trace flake/crash에서만 exit 1 — changed/new는 사람이 PR로 판단한다.
-재녹화된 trace는 워크플로가 `simul/nightly-traces` 브랜치 PR로 올리고 본문에 리포트를 싣는다.
+record가 다시 쓴 `.simul/scenarios/**/*.trace.json`은 워크플로가 PR로 올리고(예: peter-evans/create-pull-request,
+본문에 `report.md`) 사람이 diff를 보고 머지한다.
+
+**러너 요구사항** (self-hosted — 호스티드 러너엔 에뮬레이터도 LLM도 없다)
+
+- PATH에 `simul`(이 레포 `./gradlew installDist` + `scripts/simul`), `adb`·`emulator`·`android`(CLI), `ffmpeg`(gif용, 선택)
+- 에뮬레이터 1대: 매번 콜드 부팅·스냅샷 저장 안 함(기기 드리프트가 앱 회귀로 둔갑하지 않게), `ANDROID_SERIAL` 고정.
+  화면은 config.yaml `display:`가 실행 중 강제하므로 AVD 해상도는 무관
+- debug 빌드 설치(WebView 채널이 debuggable 전제), `.simul/config.yaml llm.url`에 닿는 OpenAI 호환 LLM —
+  키는 `llm.apiKey: ${VAR}` + 러너 시크릿. **replay 두 단계는 키 없이 돈다**
+- 로그인 등 상태 스냅샷(`.simul/states/*.tar`, gitignored)은 러너 로컬 디렉터리에서 체크아웃 뒤 복사
+- 끝나면 `adb emu kill`; 아티팩트로 `report.html + media/`(30일)와 `.simul/reports/` 전체(스크린샷·agent.jsonl·mp4, 14일)
 
 ## 구조 (`dev.nate.uiagent`)
 

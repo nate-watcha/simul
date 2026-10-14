@@ -5,6 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 class CliProjectTest {
 
@@ -92,5 +93,75 @@ class CliProjectTest {
         File(root, ".simul/config.yaml").writeText("agentVersion: \">=9.9\"\n")
         val p = SimulProject.find(root)!!
         assertNotNull(p.versionWarning())
+    }
+
+    // ------------------------------------------------------------------ states
+
+    private fun statefulProject(): File {
+        val root = makeProject()
+        File(root, ".simul/scenarios/billing/play-from-detail.md").apply { parentFile.mkdirs() }.writeText(
+            """
+            ---
+            name: play-from-detail
+            tags: [player]
+            states: [member, nosub, guest]
+            setup:
+              launch: true
+            ---
+            1. Tap the "btn_play" button
+               :: member → the "screen:player" screen should be shown
+               :: nosub → the "screen:subscribe" screen should be shown
+               :: guest → the "btn_login" button should be shown
+            """.trimIndent()
+        )
+        return root
+    }
+
+    private fun capture(block: () -> Unit): String {
+        val out = java.io.ByteArrayOutputStream()
+        val old = System.out
+        System.setOut(java.io.PrintStream(out, true))
+        try { block() } finally { System.setOut(old) }
+        return out.toString()
+    }
+
+    @Test
+    fun `a states scenario runs once per state, each keyed on its own trace file`() {
+        val root = statefulProject()
+        val p = SimulProject.find(root)!!
+        val md = File(p.scenariosDir, "billing/play-from-detail.md")
+        val variants = p.scenarioVariants().filter { it.first == md }.map { it.second }
+        assertEquals(listOf("play-from-detail@member", "play-from-detail@nosub", "play-from-detail@guest"), variants.map { it.name })
+        assertEquals(
+            File(p.scenariosDir, "billing/play-from-detail@member.trace.json"),
+            p.traceFileFor(md, variants[0]),
+        )
+        assertEquals(File(p.scenariosDir, "billing/play-from-detail.trace.json"), p.traceFileFor(md), "stateless naming is unchanged")
+        assertEquals("billing/play-from-detail.md@member", scenarioPath(p, md, variants[0]))
+        assertEquals("billing/play-from-detail@member.trace.json", traceRelPath("billing/play-from-detail.md@member"))
+        assertEquals("checkout/coupon.trace.json", traceRelPath("checkout/coupon.md"))
+
+        val text = capture { assertEquals(0, cliMain(arrayOf("run", "billing/play-from-detail.md", "--dry-run"), root)) }
+        assertTrue("play-from-detail@member (billing/play-from-detail.md@member)" in text, text)
+        assertTrue("play-from-detail@guest" in text, text)
+        assertTrue("the \"screen:subscribe\" screen should be shown" in text, text)
+        assertTrue("the \"btn_login\" button should be shown" in text, text)
+    }
+
+    @Test
+    fun `--state picks one variant of a states scenario`() {
+        val root = statefulProject()
+        val text = capture { assertEquals(0, cliMain(arrayOf("run", "--state", "nosub", "--dry-run"), root)) }
+        assertTrue("play-from-detail@nosub" in text, text)
+        assertTrue("play-from-detail@member" !in text && "play-from-detail@guest" !in text, text)
+        assertTrue("browse-greenbook" !in text, "the stateless scenario declares no precondition\n$text")
+    }
+
+    @Test
+    fun `a broken scenario file fails the batch with its reason instead of crashing`() {
+        val root = statefulProject()
+        File(root, ".simul/scenarios/bad.md").writeText("---\nname: bad\n---\n1. Tap \"a\"\n   :: member → \"b\"\n")
+        assertEquals(2, cliMain(arrayOf("run", "--all", "--dry-run"), root))
+        assertEquals(2, cliMain(arrayOf("run", "bad.md", "--dry-run"), root))
     }
 }

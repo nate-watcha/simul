@@ -17,12 +17,15 @@ import java.util.Base64
 import javax.imageio.ImageIO
 
 /**
- * `simul report --format html`: one self-contained page — verdict table, then every scenario
- * expanded into its steps per phase, with the screenshots of failed steps inlined as
- * thumbnails (data URIs) so the file can be opened anywhere the artifact lands: no report
- * dir, no device, no server. Step detail comes from each phase's `report.json`, resolved
- * against [root] (the app root `simul report` runs in); a missing report dir degrades to the
- * summary line.
+ * `simul report --format html`: one page — verdict table, then every scenario expanded into
+ * its steps per phase, with the screenshots of failed steps inlined as thumbnails (data URIs)
+ * so the file can be opened anywhere the artifact lands: no report dir, no device, no server.
+ * A phase that was run with `--gif` shows its screen recording next to the step list — the
+ * steps say what happened, the gif shows it. Gifs are megabytes each, so they are not inlined:
+ * with a [mediaDir] they are copied there and referenced as `media/<name>.gif` (ship the
+ * folder with the html); without one the page links to the gif where it lies under [root].
+ * Step detail comes from each phase's `report.json`, resolved against [root] (the app root
+ * `simul report` runs in); a missing report dir degrades to the summary line.
  */
 object HtmlReport {
 
@@ -71,7 +74,20 @@ object HtmlReport {
 
     private const val MAX_IMAGES = 200
 
-    fun render(r: PipelineReport, root: File): String {
+    /** The gif a phase outcome recorded (`--gif`), when the summary names one and the file is still there. */
+    fun gifOf(o: ScenarioOutcome, root: File): File? =
+        o.gif?.let { File(it).takeIf { f -> f.isAbsolute } ?: File(root, it) }?.takeIf { it.isFile }
+
+    /** Where the html should point at a gif: a copy under [mediaDir] (named after scenario + phase), else the file itself. */
+    private fun gifSrc(gif: File, scenarioPath: String, phase: String, root: File, mediaDir: File?): String {
+        if (mediaDir == null) return gif.relativeToOrSelf(root).path
+        val name = "$scenarioPath-$phase".replace(Regex("[^A-Za-z0-9._@-]+"), "_") + ".gif"
+        mediaDir.mkdirs()
+        gif.copyTo(File(mediaDir, name), overwrite = true)
+        return "${mediaDir.name}/$name"
+    }
+
+    fun render(r: PipelineReport, root: File, mediaDir: File? = null): String {
         var images = 0
         val sb = StringBuilder()
         sb.append("<!doctype html><html lang=\"ko\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">")
@@ -125,6 +141,8 @@ object HtmlReport {
                     sb.append("</section>")
                     continue
                 }
+                val gif = gifOf(o, root)
+                sb.append("<div class=body>")
                 sb.append("<ol class=steps>")
                 for (st in steps) {
                     sb.append("<li class=\"st-").append(st.status.lowercase()).append("\"><span class=st>").append(esc(st.status)).append("</span> ")
@@ -150,7 +168,13 @@ object HtmlReport {
                     }
                     sb.append("</li>")
                 }
-                sb.append("</ol></section>")
+                sb.append("</ol>")
+                if (gif != null) {
+                    val src = gifSrc(gif, row.path, phase.label, root, mediaDir)
+                    sb.append("<figure class=gif><img src=\"").append(esc(src)).append("\" alt=\"").append(esc("${row.path} · ${phase.label}")).append("\" loading=\"lazy\">")
+                    sb.append("<figcaption><a href=\"").append(esc(src)).append("\">").append(esc(phase.label)).append(" · ").append(humanDuration(o.durationMs)).append("</a></figcaption></figure>")
+                }
+                sb.append("</div></section>")
             }
             sb.append("</details>")
         }
@@ -179,6 +203,10 @@ object HtmlReport {
         li.st-passed .st{color:#2e7d32}li.st-failed .st{color:#c62828}li.st-skipped .st{color:var(--dim)}
         .reason{color:#c62828}.screen{margin-top:2px}
         .shots{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0}
+        .body{display:flex;gap:18px;align-items:flex-start}.body ol.steps{flex:1;min-width:0}
+        figure.gif{position:sticky;top:12px;flex:0 0 auto}figure.gif img{width:240px;max-width:40vw;border:1px solid var(--line);border-radius:10px;background:#000}
+        figure.gif figcaption{text-align:center;max-width:240px;font-size:11px}figure.gif figcaption a{color:var(--dim)}
+        @media(max-width:700px){.body{flex-direction:column}figure.gif{position:static}figure.gif img{max-width:100%}}
         figure{margin:0}figure img{display:block;width:170px;max-width:40vw;border:1px solid var(--line);border-radius:4px}
         figcaption{font-size:11px;color:var(--dim);max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         @media(max-width:600px){body{padding:16px 12px}.verdicts{display:block;overflow-x:auto}}

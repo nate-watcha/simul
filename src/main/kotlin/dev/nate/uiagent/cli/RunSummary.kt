@@ -64,6 +64,8 @@ data class ScenarioOutcome(
     val reason: String?,
     /** Model calls/time/tokens when the scenario consulted the LLM (record phase); null otherwise. */
     val llm: LlmStats? = null,
+    /** Screen recording of the run as a GIF (`--gif`), relative to the app root; null when not recorded. */
+    val gif: String? = null,
 ) {
     val passed get() = status == "PASSED"
 }
@@ -78,6 +80,20 @@ data class FailedStep(
     val screen: List<String> = emptyList(),
 )
 
+/**
+ * A scenario's identity across phases: its file relative to `.simul/scenarios/`, plus `@<state>`
+ * for a variant of a `states:` scenario (`billing/play.md@member`). [traceRelPath] inverts it.
+ */
+fun scenarioPath(project: SimulProject, md: File, scenario: Scenario): String =
+    md.relativeToOrSelf(project.scenariosDir).path + (scenario.state?.let { "@$it" } ?: "")
+
+/** The trace file (relative to `.simul/scenarios/`) a [scenarioPath] records into. */
+fun traceRelPath(path: String): String {
+    val at = path.indexOf(".md@")
+    return if (at >= 0) path.substring(0, at) + "@" + path.substring(at + ".md@".length) + ".trace.json"
+    else path.removeSuffix(".md") + ".trace.json"
+}
+
 /** Build the outcome row for a scenario the runner executed. */
 fun outcomeOf(project: SimulProject, md: File, scenario: Scenario, r: ScenarioRunResult): ScenarioOutcome {
     val failed = r.steps.firstOrNull { it.status == StepStatus.FAILED }
@@ -86,7 +102,7 @@ fun outcomeOf(project: SimulProject, md: File, scenario: Scenario, r: ScenarioRu
     val reportRel = r.reportDir?.relativeToOrSelf(project.appRoot)?.path
     return ScenarioOutcome(
         name = scenario.name,
-        path = md.relativeToOrSelf(project.scenariosDir).path,
+        path = scenarioPath(project, md, scenario),
         tags = scenario.tags,
         status = r.status.name,
         mode = r.steps.firstNotNullOfOrNull { s -> s.mode?.takeIf { it != "runner" } }
@@ -108,6 +124,7 @@ fun outcomeOf(project: SimulProject, md: File, scenario: Scenario, r: ScenarioRu
         },
         reason = null,
         llm = r.llm,
+        gif = r.media.firstOrNull { it.extension == "gif" }?.relativeToOrSelf(project.appRoot)?.path,
     )
 }
 
@@ -115,7 +132,7 @@ fun outcomeOf(project: SimulProject, md: File, scenario: Scenario, r: ScenarioRu
 fun outcomeWithout(project: SimulProject, md: File, scenario: Scenario, status: String, reason: String, crashLog: File? = null): ScenarioOutcome =
     ScenarioOutcome(
         name = scenario.name,
-        path = md.relativeToOrSelf(project.scenariosDir).path,
+        path = scenarioPath(project, md, scenario),
         tags = scenario.tags,
         status = status,
         mode = null,
@@ -177,6 +194,7 @@ object RunSummaryJson {
                     }
                     o.reason?.let { put("reason", it) }
                     o.llm?.let { put("llm", llmJson(it)) }
+                    o.gif?.let { put("gif", it) }
                 })
             }
         })
@@ -224,6 +242,7 @@ object RunSummaryJson {
                     },
                     reason = str(s, "reason"),
                     llm = llmFromJson(s["llm"] as? JsonObject),
+                    gif = str(s, "gif"),
                 )
             } ?: emptyList(),
         )
