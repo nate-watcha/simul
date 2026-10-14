@@ -1,12 +1,14 @@
 package dev.nate.uiagent.cli
 
 import dev.nate.uiagent.Point
+import dev.nate.uiagent.agent.LlmStats
 import dev.nate.uiagent.device.DeviceController
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -30,6 +32,8 @@ data class StepReport(
     val durationMs: Long,
     val screenshots: List<String>,
     val stateEvidence: List<StateEvidence> = emptyList(),
+    /** Model calls/time/tokens of an llm step; null when the model was not consulted. */
+    val llm: LlmStats? = null,
     /**
      * What the screen exposed when the step FAILED — the labels/ids the harness could see —
      * so a report answers "then what WAS there?" without the device (a replay that cannot
@@ -54,6 +58,9 @@ data class ScenarioRunResult(
     val reportDir: File? = null,
 ) {
     val passed get() = status == StepStatus.PASSED
+
+    /** Model usage summed over the steps; null when no step consulted the model (replay). */
+    val llm: LlmStats? get() = LlmStats.sum(steps.map { it.llm })
 }
 
 /**
@@ -182,7 +189,11 @@ class ScenarioRunner(
 
     /** One step's result line, e.g. `PASSED (replay, 7.2s)` or `FAILED (llm, 41s) — reason`. */
     private fun renderResult(s: StepReport): String =
-        "${s.status}${s.mode?.let { " ($it, ${sec(s.durationMs)})" } ?: ""}${s.reason?.let { " — $it" } ?: ""}"
+        "${s.status}${s.mode?.let { " ($it, ${sec(s.durationMs)}${llmShare(s)})" } ?: ""}${s.reason?.let { " — $it" } ?: ""}"
+
+    /** `, llm 12.3s/3 calls` — how much of an llm step was the model (the rest is device time). */
+    private fun llmShare(s: StepReport): String =
+        s.llm?.takeIf { it.calls > 0 }?.let { ", llm ${sec(it.durationMs)}/${it.calls} call${if (it.calls == 1) "" else "s"}" } ?: ""
 
     private fun sec(ms: Long): String = "%.1fs".format(ms / 1000.0)
 
@@ -222,7 +233,7 @@ class ScenarioRunner(
             }
         }
         return StepReport(n, text, status, "llm", recorder.actions.toList(), ev.appeared,
-            reason, 0, recorder.screenshots.toList(), stateEvidence = ev.states)
+            reason, 0, recorder.screenshots.toList(), stateEvidence = ev.states, llm = verdict.llm)
     }
 
     /**
@@ -319,6 +330,7 @@ class ScenarioRunner(
             put("mode", mode)
             put("startedAt", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX").format(Date()))
             put("durationMs", r.durationMs)
+            r.llm?.let { put("llm", llmJson(it)) }
             put("env", buildJsonObject {
                 put("agentVersion", AGENT_VERSION)
                 put("appVersionName", ops.appVersionName(app)?.let(::JsonPrimitive) ?: JsonNull)
@@ -339,6 +351,7 @@ class ScenarioRunner(
                         })
                         put("reason", s.reason?.let(::JsonPrimitive) ?: JsonNull)
                         put("durationMs", s.durationMs)
+                        s.llm?.let { put("llm", llmJson(it)) }
                         put("screenshots", buildJsonArray { s.screenshots.forEach { add(JsonPrimitive(it)) } })
                         if (s.screen.isNotEmpty()) put("screen", buildJsonArray { s.screen.forEach { add(JsonPrimitive(it)) } })
                     })
@@ -348,4 +361,19 @@ class ScenarioRunner(
         reportDir.mkdirs()
         File(reportDir, "report.json").writeText(reportJson.encodeToString(JsonObject.serializer(), obj) + "\n")
     }
+}
+
+/** `llm` object of report.json / summary.json — fixed key order, omitted entirely when null. */
+fun llmJson(l: LlmStats): JsonObject = buildJsonObject {
+    put("calls", l.calls)
+    put("durationMs", l.durationMs)
+    put("promptTokens", l.promptTokens)
+    put("completionTokens", l.completionTokens)
+    put("peakPromptTokens", l.peakPromptTokens)
+}
+
+fun llmFromJson(o: JsonObject?): LlmStats? {
+    o ?: return null
+    fun n(k: String) = (o[k] as? JsonPrimitive)?.longOrNull ?: 0L
+    return LlmStats(n("calls").toInt(), n("durationMs"), n("promptTokens"), n("completionTokens"), n("peakPromptTokens"))
 }

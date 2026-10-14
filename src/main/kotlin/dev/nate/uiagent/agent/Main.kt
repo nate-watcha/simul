@@ -113,5 +113,6 @@ fun main(argv: Array<String>) {
         it["reason"] = verdict.reason
     }
     println("${if (verdict.passed) "PASSED" else "FAILED"}: ${verdict.reason}  (${elapsed}ms)")
+    println(verdict.llm.summary(totalMs = elapsed))
     exitProcess(if (verdict.passed) 0 else 1)
 }

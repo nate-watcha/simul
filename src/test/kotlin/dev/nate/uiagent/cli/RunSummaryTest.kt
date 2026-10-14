@@ -1,5 +1,6 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.agent.LlmStats
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -95,5 +96,28 @@ class RunSummaryTest {
         val back = RunSummaryJson.read(file)
         assertEquals(s, back)
         assertEquals(".simul/reports/nav-basic-crash-1.log", back.scenarios[1].reportDir)
+    }
+
+    @Test
+    fun `llm stats of a recording round-trip through the summary and are absent for replay`() {
+        val p = project()
+        val md = File(p.scenariosDir, "nav/basic.md").apply { writeText("---\nname: nav-basic\n---\n1. a\n2. b\n") }
+        val cost = LlmStats(5, 30_000, 120_000, 900, 14_000)
+        val recorded = ScenarioRunResult("nav-basic", StepStatus.PASSED,
+            listOf(step(1, StepStatus.PASSED, "llm").copy(llm = cost), step(2, StepStatus.PASSED, "runner")),
+            updatedTrace = null, durationMs = 50_000)
+        val replayed = ScenarioRunResult("nav-basic", StepStatus.PASSED,
+            listOf(step(1, StepStatus.PASSED, "replay"), step(2, StepStatus.PASSED, "replay")),
+            updatedTrace = null, durationMs = 9_000)
+        val s = RunSummary("record", "llm", "2026-09-19T02:00:00+09:00", 5000, AGENT_VERSION, null, "emu",
+            listOf(outcomeOf(p, md, ScenarioMd.parse(md), recorded), outcomeOf(p, md, ScenarioMd.parse(md), replayed)))
+        assertEquals(cost, s.scenarios[0].llm)
+        assertNull(s.scenarios[1].llm)
+
+        val file = File(p.reportsDir, "nightly/record.json")
+        RunSummaryJson.write(s, file)
+        val text = file.readText()
+        assertEquals(1, Regex("\"llm\": \\{").findAll(text).count(), text)
+        assertEquals(s, RunSummaryJson.read(file))
     }
 }

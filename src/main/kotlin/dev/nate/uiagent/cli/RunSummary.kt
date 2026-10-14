@@ -1,5 +1,6 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.agent.LlmStats
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -61,6 +62,8 @@ data class ScenarioOutcome(
     val failedStep: FailedStep?,
     /** Why a SKIPPED/CRASH scenario did not complete. */
     val reason: String?,
+    /** Model calls/time/tokens when the scenario consulted the LLM (record phase); null otherwise. */
+    val llm: LlmStats? = null,
 ) {
     val passed get() = status == "PASSED"
 }
@@ -104,6 +107,7 @@ fun outcomeOf(project: SimulProject, md: File, scenario: Scenario, r: ScenarioRu
             )
         },
         reason = null,
+        llm = r.llm,
     )
 }
 
@@ -172,6 +176,7 @@ object RunSummaryJson {
                         })
                     }
                     o.reason?.let { put("reason", it) }
+                    o.llm?.let { put("llm", llmJson(it)) }
                 })
             }
         })
@@ -218,6 +223,7 @@ object RunSummaryJson {
                         )
                     },
                     reason = str(s, "reason"),
+                    llm = llmFromJson(s["llm"] as? JsonObject),
                 )
             } ?: emptyList(),
         )

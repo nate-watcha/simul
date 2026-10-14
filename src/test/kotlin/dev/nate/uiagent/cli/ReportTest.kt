@@ -1,5 +1,6 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.agent.LlmStats
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -13,13 +14,14 @@ class ReportTest {
 
     private fun outcome(
         path: String, status: String, mode: String? = "replay", failedAt: Int? = null,
-        reason: String? = null, traceUpdated: Boolean = false, skipReason: String? = null,
+        reason: String? = null, traceUpdated: Boolean = false, skipReason: String? = null, llm: LlmStats? = null,
     ) = ScenarioOutcome(
         name = path.substringAfterLast('/').removeSuffix(".md"), path = path, tags = listOf("smoke"),
         status = status, mode = mode, durationMs = 12_300, reportDir = ".simul/reports/x-20260919-020000",
         traceUpdated = traceUpdated, passedSteps = 2, failedSteps = if (failedAt != null) 1 else 0, skippedSteps = 0,
         failedStep = failedAt?.let { FailedStep(it, "Tap the \"Apply\" button", reason ?: "replay broken: evidence not on screen", "shots/step$it-1-tap-after.png", listOf("Coupons", "Register coupon")) },
         reason = skipReason,
+        llm = llm,
     )
 
     private fun summary(label: String, mode: String, vararg outs: ScenarioOutcome) = RunSummary(
@@ -96,6 +98,23 @@ class ReportTest {
         ),
         links = listOf("Run" to "https://github.com/o/r/actions/runs/1"),
     )
+
+    @Test
+    fun `markdown and slack carry one llm usage line per phase that consulted the model`() {
+        val cost = LlmStats(calls = 40, durationMs = 95_000, promptTokens = 1_200_000, completionTokens = 3_400, peakPromptTokens = 9_100)
+        val r = PipelineReport.build("t", listOf(
+            summary("baseline", "replay", outcome("nav/a.md", "PASSED")),
+            summary("record", "llm", outcome("nav/a.md", "PASSED", mode = "llm", traceUpdated = true, llm = cost),
+                outcome("nav/b.md", "PASSED", mode = "llm", traceUpdated = true, llm = cost)),
+        ))
+        val lines = r.llmUsageLines()
+        assertEquals(listOf("record (llm): model 3m10s of 24s wall · 80 calls · prompt 2.4M tok (peak 9.1k) · completion 6.8k tok"), lines)
+        val md = renderMarkdown(r)
+        assertTrue("<sub>record (llm): model 3m10s" in md, md)
+        assertTrue("baseline (replay): model" !in md)
+        assertTrue("record (llm): model 3m10s" in renderSlack(r), "slack header carries the same line")
+        assertTrue(renderMarkdown(nightly()).let { "model" !in it }, "no usage line when no phase reported stats")
+    }
 
     @Test
     fun `markdown has the phase table, verdicts and an attention section with reasons`() {

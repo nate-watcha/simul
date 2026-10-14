@@ -54,7 +54,8 @@ class ScenarioSession(
     /** Where the scenario's conversation lives between steps; in-memory by default. */
     history: ChatHistoryProvider = InMemoryChatHistoryProvider(),
 ) {
-    data class Verdict(val passed: Boolean, val reason: String)
+    /** [llm]: what the step cost in model calls, time and tokens. */
+    data class Verdict(val passed: Boolean, val reason: String, val llm: LlmStats = LlmStats.ZERO)
 
     private val sessionId = "scenario-" + UUID.randomUUID()
     private val gate = StepGate()
@@ -76,7 +77,7 @@ class ScenarioSession(
         install(EventHandler) {
             onLLMCallStarting { turns.llmStarted() }
             onLLMCallCompleted { ctx ->
-                turns.llmCompleted(ctx.response?.parts?.count { it is MessagePart.Tool.Call } ?: 0)
+                turns.llmCompleted(ctx.response?.parts?.count { it is MessagePart.Tool.Call } ?: 0, ctx.response?.metaInfo)
             }
         }
     }
@@ -128,16 +129,17 @@ class ScenarioSession(
             val said = runBlocking { agent.run(command, sessionId) }
             turns.flush()
             val v = controller.verdict
+            val llm = turns.stats
             when {
-                v != null -> Verdict(v.status == "PASSED", v.reason)
-                turns.turns >= maxTurnsPerStep -> Verdict(false, "no report() within $maxTurnsPerStep turns")
-                else -> Verdict(false, "no report() — agent said: ${said.take(120)}")
+                v != null -> Verdict(v.status == "PASSED", v.reason, llm)
+                turns.turns >= maxTurnsPerStep -> Verdict(false, "no report() within $maxTurnsPerStep turns", llm)
+                else -> Verdict(false, "no report() — agent said: ${said.take(120)}", llm)
             }
         } catch (ex: Exception) {
             turns.flush()
             if (generateSequence<Throwable>(ex) { it.cause }.any { it is AIAgentMaxNumberOfIterationsReachedException })
-                Verdict(false, "no report() within $maxTurnsPerStep turns")
-            else Verdict(false, "agent error: ${ex.message ?: ex.toString()}")
+                Verdict(false, "no report() within $maxTurnsPerStep turns", turns.stats)
+            else Verdict(false, "agent error: ${ex.message ?: ex.toString()}", turns.stats)
         }
     }
 }

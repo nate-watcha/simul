@@ -1,5 +1,6 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.agent.LlmStats
 import dev.nate.uiagent.json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -29,6 +30,7 @@ object HtmlReport {
     data class Step(
         val index: Int, val text: String, val status: String, val mode: String?, val reason: String?,
         val durationMs: Long, val screenshots: List<String>, val screen: List<String>, val evidence: List<String>,
+        val llm: LlmStats? = null,
     )
 
     fun readSteps(reportJson: File): List<Step> {
@@ -46,6 +48,7 @@ object HtmlReport {
                 screenshots = strs(s["screenshots"] as? JsonArray),
                 screen = strs(s["screen"] as? JsonArray),
                 evidence = strs(s["evidence"] as? JsonArray),
+                llm = llmFromJson(s["llm"] as? JsonObject),
             )
         } ?: emptyList()
     }
@@ -127,6 +130,7 @@ object HtmlReport {
                     sb.append("<li class=\"st-").append(st.status.lowercase()).append("\"><span class=st>").append(esc(st.status)).append("</span> ")
                     sb.append("<code>").append(esc(st.text)).append("</code>")
                     st.mode?.let { sb.append(" <span class=dim>(").append(esc(it)).append(", ").append(humanDuration(st.durationMs)).append(")</span>") }
+                    st.llm?.let { sb.append(" <span class=dim>").append(esc(it.summary(totalMs = st.durationMs))).append("</span>") }
                     st.reason?.let { sb.append("<div class=reason>").append(esc(it)).append("</div>") }
                     if (st.status == "FAILED") {
                         if (st.screen.isNotEmpty()) sb.append("<div class=screen>on screen: ").append(st.screen.joinToString(" · ") { "<code>${esc(it)}</code>" }).append("</div>")

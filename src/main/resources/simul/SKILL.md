@@ -37,6 +37,9 @@ CI는 그 trace를 LLM 없이 결정론적으로 재생한다(`--mode replay`).
 스텝 규칙은 전부 판정 방식에서 나오므로, 규칙만 외우고 이유를 모르면 새로운 화면에서
 잘못된 시나리오를 쓰게 된다.
 
+전제 상태(`appState:`/`clearData:`)와 진입(런치/딥링크) 선택, 도착 확인 시나리오는
+[references/setup.md](references/setup.md)를 따른다.
+
 기기 관찰과 ad-hoc 조작은 `android` CLI를 쓴다. `android layout`과 `android screen`을
 직접 쓰기 전에 android-cli 스킬의 [interact.md](../android-cli/references/interact.md)를
 읽어라. simul의 에이전트가 보는 것이 바로 `android layout`의 출력이다(children 트리를
@@ -49,12 +52,12 @@ CI는 그 trace를 LLM 없이 결정론적으로 재생한다(`--mode replay`).
    (scenarios.md §2)
 2. **기존 시나리오와 상태를 확인한다.** `scenarios/` 디렉토리 구조와 `.simul/states/`에
    어떤 앱 상태 스냅샷이 있는지 본다. 같은 화면 디렉토리에 추가하고, 이미 있는 상태를
-   재사용한다. 없는 상태가 필요하면 `simul state save <name>`을 사용자에게 요청한다.
+   재사용한다. 없는 상태가 필요하면 `simul state save <name>`을 사용자에게 요청한다. (setup.md)
 3. **화면이 뭘 노출하는지 본다.** 에뮬레이터에서 대상 화면을 띄우고 `android layout`으로
    실제 `text`/`contentDesc`/`resourceId`를 확인한다. 추측한 라벨로 쓰지 않는다. 지목할
    요소가 노출되지 않았으면 시나리오를 우회하지 말고 앱 변경을 제안한다. (scenarios.md §1)
-4. **시나리오를 쓴다.** 진입은 딥링크 우선, 전제는 `appState:`/`clearData:`로 선언, 앵커는
-   resourceId 우선. (scenarios.md §3–5)
+4. **시나리오를 쓴다.** 진입은 런치가 기본이고 딥링크는 실제 유저 진입 경로일 때만, 전제는
+   `appState:`/`clearData:`로 선언, 앵커는 resourceId 우선. (setup.md, scenarios.md §3–5)
 5. **녹화한다.** `simul run <path> --mode llm`
 6. **trace를 리뷰한다.** target이 의도한 요소인지, `::` 기준이 붙은 스텝의 액션이 1개인지,
    evidence에 동적 라벨이 섞이지 않았는지. 통과하면 md와 trace를 함께 커밋한다. (scenarios.md §6)

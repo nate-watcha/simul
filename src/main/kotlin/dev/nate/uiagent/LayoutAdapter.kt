@@ -38,6 +38,11 @@ object LayoutAdapter {
      *    `resource-id`s (`com.example:id/name`). Seen on the nightly runner: the top level alone
      *    parsed to 15 nodes and the whole bottom nav was in the children. 1.0.16406183 kept this
      *    shape unchanged (verified node-for-node against 1.0.16261425 on the same screen).
+     *  - ≥ 1.0.16500706 (layout V3, undocumented in the release notes): the top level is a list of
+     *    accessibility *windows* — `{"window-title","type","active","focused","layer","bounds",
+     *    "content":[V2 tree]}` — and the status bar now arrives as its own `SYSTEM` window
+     *    (clock, wifi, battery) next to the app's `APPLICATION` window. [selectWindows] keeps the
+     *    model's view what it was: application windows only, the active one(s) when there is one.
      * The default dump already drops pure containers; `--full` adds `hidden`/`off-screen`
      * booleans, and nodes flagged with either are skipped here so a full dump grounds the same
      * as a default one. A node without a `center` contributes only its children (hoisted to its
@@ -75,8 +80,30 @@ object LayoutAdapter {
             )
         }
         val roots = mutableListOf<RawNode>()
-        arr.forEach { visit(it, roots) }
+        val nodes = if (arr.isWindowList()) selectWindows(arr).flatMap { it["content"] as? JsonArray ?: JsonArray(emptyList()) } else arr
+        nodes.forEach { visit(it, roots) }
         return roots
+    }
+
+    /** Layout V3: every top-level entry is a window wrapper (has `content`, never a `center`). */
+    private fun JsonArray.isWindowList(): Boolean =
+        isNotEmpty() && all { (it as? JsonObject)?.let { o -> o["content"] is JsonArray && o["center"] == null } == true }
+
+    /**
+     * Which windows of a V3 dump the model gets to see. Earlier CLI generations dumped the active
+     * application window only, and traces/evidence/stability were tuned to that view, so:
+     *  - `SYSTEM` (status bar: a clock that changes every minute, wifi, battery), `INPUT_METHOD`
+     *    and overlays are dropped — never tap targets, pure diff noise.
+     *  - Of the `APPLICATION` windows, the `active` ones win when any is flagged (a dialog or
+     *    popup over an activity: the activity underneath stays out, as before, so its carousel
+     *    cannot keep the screen "unstable" and its labels cannot make the dialog's AMBIGUOUS).
+     *    Without an active flag every application window is kept, topmost (`layer`) first.
+     */
+    fun selectWindows(windows: JsonArray): List<JsonObject> {
+        val apps = windows.mapNotNull { it as? JsonObject }
+            .filter { it["type"]?.jsonPrimitive?.contentOrNull.equals("APPLICATION", ignoreCase = true) }
+            .sortedByDescending { it["layer"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0 }
+        return apps.filter { it["active"].isTrue() }.ifEmpty { apps }
     }
 
     /** Pre-order flattening of a parsed forest (tests and debugging). */

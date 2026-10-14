@@ -1,5 +1,6 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.agent.LlmStats
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -138,6 +139,17 @@ class PipelineReport(
     val startedAt get() = phases.firstNotNullOfOrNull { it.summary.startedAt.ifEmpty { null } }
 
     /** `12 scenarios · ✅ 9 stable · 🔁 1 changed · ❌ 2 regression suspected` */
+    /**
+     * One line per phase that consulted the model: `record (llm): model 5m12s of 9m40s wall ·
+     * 212 calls · prompt 1.2M tok (peak 9.1k) · completion 34k tok` — what the recording cost.
+     */
+    fun llmUsageLines(): List<String> = phases.mapNotNull { p ->
+        val l = LlmStats.sum(p.summary.scenarios.map { it.llm }) ?: return@mapNotNull null
+        val wall = p.summary.scenarios.sumOf { it.durationMs }
+        "${p.heading}: model ${humanDuration(l.durationMs)} of ${humanDuration(wall)} wall · ${l.calls} calls" +
+            (if (l.tokensReported) " · prompt ${LlmStats.tokens(l.promptTokens)} tok (peak ${LlmStats.tokens(l.peakPromptTokens)}) · completion ${LlmStats.tokens(l.completionTokens)} tok" else "")
+    }
+
     fun countsLine(): String = buildString {
         append("${rows.size} scenario${if (rows.size == 1) "" else "s"}")
         VerdictKind.entries.sortedBy { it.severity.ordinal * -1 }.forEach { k ->
@@ -271,6 +283,7 @@ fun renderMarkdown(r: PipelineReport): String = buildString {
         appendLine("| `${row.path}` | " + row.outcomes.joinToString(" | ") { cell(it) } +
             " | ${row.verdict.kind.emoji} ${row.verdict.kind.title} |")
     }
+    r.llmUsageLines().forEach { appendLine(); appendLine("<sub>$it</sub>") }
     if (r.attention.isNotEmpty()) {
         appendLine()
         appendLine("### Needs attention")
@@ -309,7 +322,8 @@ fun renderSlack(r: PipelineReport): String {
         put("text", buildJsonObject { put("type", "plain_text"); put("text", "${r.overallEmoji} ${r.title} — ${r.headline()}".take(150)) })
     }
     val env = listOfNotNull(r.appVersionName?.let { "app $it" }, r.device?.let { "device $it" }, r.agentVersion?.let { "simul $it" }, r.androidCli?.let { "android CLI $it" })
-    blocks += section("*${slackEscape(r.countsLine())}*" + (if (env.isEmpty()) "" else "\n_${slackEscape(env.joinToString(" · "))}_"))
+    blocks += section("*${slackEscape(r.countsLine())}*" + (if (env.isEmpty()) "" else "\n_${slackEscape(env.joinToString(" · "))}_") +
+        r.llmUsageLines().joinToString("") { "\n_${slackEscape(it)}_" })
     // one block per scenario needing attention, capped — Slack allows 50 blocks per message
     val shown = r.attention.take(20)
     for (row in shown) {

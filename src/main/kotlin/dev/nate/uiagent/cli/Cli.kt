@@ -288,6 +288,8 @@ internal fun executeScenario(
     }
 
     log("${result.status}: ${scenario.name}  (${result.durationMs}ms, report: ${reportDir.path})")
+    // what the recording cost: model time vs. the scenario's wall time, and the tokens it took
+    result.llm?.let { log("  ${it.summary(totalMs = result.durationMs)}") }
 
     result.updatedTrace?.let { updated ->
         TraceJson.write(updated, traceFile)
@@ -307,7 +309,8 @@ internal fun executeScenario(
 /**
  * Scaffold the `.simul/` convention in a target app repo: config template, scenarios dir,
  * and a Claude Code skill (SKILL.md + the scenario-authoring reference as
- * `references/scenarios.md`) so agent sessions in that repo write scenarios by the book.
+ * `references/scenarios.md` + the preconditions/entry reference as `references/setup.md`)
+ * so agent sessions in that repo write scenarios by the book.
  * Never overwrites existing files — rerunning after a simul upgrade refreshes only what is
  * missing (delete a doc to refresh it).
  */
@@ -329,6 +332,7 @@ internal fun initCommand(args: List<String>, cwd: File): Int {
 
     val scenarios = resource("scenarios.md") ?: return err("packaging error: /simul/scenarios.md missing")
     val skill = resource("SKILL.md") ?: return err("packaging error: /simul/SKILL.md missing")
+    val setup = resource("setup.md") ?: return err("packaging error: /simul/setup.md missing")
 
     val config = """
         agentVersion: ">=$AGENT_VERSION"
@@ -350,6 +354,7 @@ internal fun initCommand(args: List<String>, cwd: File): Int {
         File(cwd, ".simul/config.yaml") to config,
         File(cwd, ".claude/skills/simul-scenarios/SKILL.md") to skill,
         File(cwd, ".claude/skills/simul-scenarios/references/scenarios.md") to scenarios,
+        File(cwd, ".claude/skills/simul-scenarios/references/setup.md") to setup,
         if (ci == "github") {
             val wf = resource("nightly.yml") ?: return err("packaging error: /simul/nightly.yml missing")
             File(cwd, ".github/workflows/simul-nightly.yml") to wf

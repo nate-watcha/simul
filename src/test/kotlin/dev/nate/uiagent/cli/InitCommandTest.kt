@@ -22,9 +22,13 @@ class InitCommandTest {
         val guide = File(dir, ".claude/skills/simul-scenarios/references/scenarios.md").readText()
         assertTrue("에이전트가 보는 것" in guide && "따옴표" in guide, "authoring guide must ship")
 
+        val setup = File(dir, ".claude/skills/simul-scenarios/references/setup.md").readText()
+        assertTrue(setup.startsWith("# 전제 상태와 진입") && "appState" in setup && "deeplink" in setup, "preconditions/entry reference must ship")
+
         val skill = File(dir, ".claude/skills/simul-scenarios/SKILL.md").readText()
         assertTrue(skill.startsWith("---\nname: simul"), skill.take(60))
         assertTrue("references/scenarios.md" in skill, "skill must point at the full reference")
+        assertTrue("references/setup.md" in skill, "skill must point at the preconditions/entry reference")
 
         // the scaffolded config must parse with the shipped defaults
         val parsed = SimulConfig.load(File(dir, ".simul/config.yaml"))

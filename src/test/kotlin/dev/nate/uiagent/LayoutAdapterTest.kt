@@ -295,3 +295,87 @@ class LayoutTreeTest {
         assertEquals("(no elements)", renderFullLayout(emptyList()))
     }
 }
+
+class LayoutAdapterWindowFormatTest {
+    /**
+     * `android layout` ≥ 1.0.16500706 (layout V3): the top level is a list of accessibility
+     * windows and the status bar comes along as a SYSTEM window. Abridged from a real 1.0.16500706
+     * dump of the kloud home screen (emulator-5554, 720x1280).
+     */
+    private val v16500706 = """
+        Installing layout instrumentation server...
+        [{"window-title":"","type":"SYSTEM","layer":1,"bounds":"[0,0][720,48]","content":[
+            {"class":"android.widget.TextView","text":"1:40","bounds":"[8,8][63,41]","center":"[35,24]"},
+            {"class":"android.widget.ImageView","resource-id":"com.android.systemui:id/wifi_signal","content-desc":"Wifi signal full.","bounds":"[567,12][599,36]","center":"[583,24]"},
+            {"class":"android.view.View","content-desc":"Battery 100 percent.","bounds":"[611,11][659,37]","center":"[635,24]"}]},
+         {"window-title":"","type":"APPLICATION","active":true,"focused":true,"layer":0,"bounds":"[0,0][720,1280]","content":[
+            {"class":"android.view.View","interactions":["CHECKABLE","CLICKABLE","FOCUSABLE"],"state":["CHECKED"],"bounds":"[40,56][152,152]","center":"[96,104]",
+             "children":[{"class":"android.widget.TextView","text":"전체","bounds":"[72,84][120,124]","center":"[96,104]"}]},
+            {"class":"androidx.recyclerview.widget.RecyclerView","resource-id":"com.frograms.wplay.dev:id/recycler_view","interactions":["SCROLLABLE","FOCUSABLE"],"bounds":"[0,160][720,1118]","center":"[360,639]","children":[
+              {"class":"android.widget.Button","content-desc":"논논비요리","interactions":["CLICKABLE","FOCUSABLE"],"bounds":"[40,818][264,1118]","center":"[152,968]"}]},
+            {"class":"android.view.View","interactions":["CLICKABLE","FOCUSABLE"],"bounds":"[576,1120][720,1232]","center":"[648,1176]",
+             "children":[{"class":"android.widget.TextView","text":"보관함","bounds":"[617,1181][680,1217]","center":"[648,1199]"}]}]}]
+
+        A new version of Android CLI is available (1.0.99999999).
+        Please run 'android update' to install it.
+    """.trimIndent()
+
+    @Test
+    fun `1_0_16500706 window list parses to the application window's tree and drops the status bar`() {
+        val roots = LayoutAdapter.parseRawLayout(v16500706)
+        assertEquals(3, roots.size, "the application window's content roots")
+        assertEquals(6, roots.flatten().size)
+        val layout = LayoutAdapter.adapt(v16500706)
+        assertEquals(listOf("전체", "recycler_view", "논논비요리", "보관함"), layout.elements.map { it.label ?: it.resourceId })
+        assertEquals(listOf(null, null, 1, null), layout.elements.map { it.parentId })
+        val lib = layout.elements.single { it.label == "보관함" }
+        assertTrue("clickable" in lib.interactions && lib.center == Point(648, 1176), "V2 absorption rules apply unchanged")
+        assertTrue(layout.elements.none { it.label == "1:40" || it.label == "Battery 100 percent." }, "status bar must not reach the model")
+    }
+
+    @Test
+    fun `the active application window wins over the one underneath and system or ime windows are dropped`() {
+        val dialogOverActivity = """
+            [{"type":"SYSTEM","layer":2,"content":[{"text":"1:40","center":"[35,24]"}]},
+             {"type":"INPUT_METHOD","layer":3,"active":false,"content":[{"text":"q","interactions":["CLICKABLE"],"center":"[20,1000]"}]},
+             {"window-title":"","type":"APPLICATION","active":false,"focused":false,"layer":0,"content":[
+                {"interactions":["CLICKABLE"],"center":"[360,600]","children":[{"text":"확인","center":"[360,600]"}]},
+                {"text":"뒤의 화면","center":"[360,100]"}]},
+             {"window-title":"Share","type":"APPLICATION","active":true,"focused":true,"layer":1,"content":[
+                {"interactions":["CLICKABLE"],"center":"[500,700]","children":[{"text":"확인","center":"[500,700]"}]}]}]
+        """.trimIndent()
+        val layout = LayoutAdapter.adapt(dialogOverActivity)
+        assertEquals(listOf("확인"), layout.elements.map { it.label }, "only the dialog, no AMBIGUOUS 확인 from the activity behind")
+        assertEquals(Point(500, 700), layout.elements.single().center)
+    }
+
+    @Test
+    fun `without an active flag every application window is kept topmost first`() {
+        val twoApps = """
+            [{"type":"APPLICATION","layer":0,"content":[{"text":"아래","center":"[1,1]"}]},
+             {"type":"SYSTEM","layer":5,"content":[{"text":"상태바","center":"[2,2]"}]},
+             {"type":"APPLICATION","layer":1,"content":[{"text":"위","center":"[3,3]"}]}]
+        """.trimIndent()
+        assertEquals(listOf("위", "아래"), LayoutAdapter.adapt(twoApps).elements.map { it.label })
+    }
+
+    @Test
+    fun `a window list without an application window is an empty screen`() {
+        val systemOnly = """[{"type":"SYSTEM","layer":1,"content":[{"text":"1:40","center":"[35,24]"}]}]"""
+        assertTrue(LayoutAdapter.adapt(systemOnly).elements.isEmpty())
+        assertTrue(LayoutAdapter.adapt("""[{"type":"APPLICATION","active":true,"layer":0,"content":[]}]""").elements.isEmpty())
+    }
+
+    @Test
+    fun `--full window dump still skips hidden and off-screen subtrees`() {
+        val full = """
+            [{"type":"SYSTEM","layer":1,"bounds":"[0,0][720,48]","content":[{"class":"android.widget.FrameLayout","center":"[360,24]","children":[{"text":"1:40","center":"[35,24]"}]}]},
+             {"type":"APPLICATION","active":true,"layer":0,"bounds":"[0,0][720,1280]","content":[
+               {"class":"android.widget.FrameLayout","center":"[360,640]","children":[
+                 {"text":"보이는 버튼","interactions":["CLICKABLE"],"center":"[50,50]"},
+                 {"text":"숨은 버튼","hidden":true,"interactions":["CLICKABLE"],"center":"[50,50]"},
+                 {"text":"스크롤 밖","off-screen":true,"interactions":["CLICKABLE"],"center":"[50,4050]"}]}]}]
+        """.trimIndent()
+        assertEquals(listOf("보이는 버튼"), LayoutAdapter.adapt(full).elements.map { it.label })
+    }
+}

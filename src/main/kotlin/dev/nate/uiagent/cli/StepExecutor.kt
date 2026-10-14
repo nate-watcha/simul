@@ -2,6 +2,7 @@ package dev.nate.uiagent.cli
 
 import ai.koog.prompt.executor.model.PromptExecutor
 import ai.koog.prompt.llm.LLModel
+import dev.nate.uiagent.agent.LlmStats
 import dev.nate.uiagent.agent.ScenarioSession
 import dev.nate.uiagent.agent.SimulLlm
 import dev.nate.uiagent.device.DeviceController
@@ -20,7 +21,8 @@ interface StepExecutor {
     fun runStep(stepText: String, initialLayout: String?, criterion: String? = null): StepVerdict
 }
 
-data class StepVerdict(val passed: Boolean, val reason: String)
+/** [llm] is null for executors that never consult the model (replay, scripted fakes). */
+data class StepVerdict(val passed: Boolean, val reason: String, val llm: LlmStats? = null)
 
 /**
  * All steps of one scenario share ONE LLM conversation ([ScenarioSession], Koog ChatMemory):
@@ -47,6 +49,6 @@ class SessionStepExecutor(
         val s = session ?: ScenarioSession(executor(), controller, maxIterations, log, model)
             .also { session = it }
         val v = s.runStep(stepText, initialLayout, criterion)
-        return StepVerdict(v.passed, v.reason)
+        return StepVerdict(v.passed, v.reason, v.llm)
     }
 }

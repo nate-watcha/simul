@@ -1,6 +1,7 @@
 package dev.nate.uiagent.cli
 
 import dev.nate.uiagent.Point
+import dev.nate.uiagent.agent.LlmStats
 import dev.nate.uiagent.device.DeviceController
 import java.io.File
 import kotlin.test.Test
@@ -37,6 +38,36 @@ class RunnerTest {
     )
 
     // ------------------------------------------------------------------ llm / record
+
+    @Test
+    fun `llm steps carry the model's time and tokens into the result and report json`() {
+        val dev = FakeDevice(screenA, screenA, screenB, screenB)
+        val cost = LlmStats(calls = 3, durationMs = 1200, promptTokens = 20_000, completionTokens = 300, peakPromptTokens = 9_000)
+        val h = Harness(dev) { c, text ->
+            c.tap("웹툰")
+            StepVerdict(true, "tab selected", llm = cost)
+        }
+
+        val result = h.runner.run(scenario, trace = null, mode = RunMode.LLM)
+
+        assertEquals(StepStatus.PASSED, result.status)
+        assertEquals(cost, result.steps[0].llm, "the llm step keeps its own stats")
+        assertNull(result.steps[1].llm, "the runner-judged Verify step never consulted the model")
+        assertEquals(cost, result.llm, "scenario stats = sum over llm steps")
+
+        val json = File(h.reportDir, "report.json").readText()
+        assertTrue("\"llm\": {" in json && "\"peakPromptTokens\": 9000" in json, json)
+        assertEquals(2, Regex("\"llm\": \\{").findAll(json).count(), "scenario-level + the one llm step; no object on the runner step\n$json")
+    }
+
+    @Test
+    fun `replay never reports llm stats`() {
+        val dev = FakeDevice(screenA, screenA, screenB, screenB)
+        val h = Harness(dev) { _, _ -> throw AssertionError("replay must not reach the executor") }
+        val result = h.runner.run(scenario, goodTrace, RunMode.REPLAY)
+        assertNull(result.llm)
+        assertTrue("\"llm\"" !in File(h.reportDir, "report.json").readText())
+    }
 
     @Test
     fun `llm mode records a trace when all steps pass`() {
