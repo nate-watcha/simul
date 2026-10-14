@@ -1,98 +1,117 @@
 ---
-name: simul
-description: 자연어 UI 시나리오를 Android 에뮬레이터에서 실행하고 trace로 재생하는 테스트 러너
-  `simul`의 사용법. 앱의 UI 테스트·E2E 테스트·시나리오 작성, 기존 시나리오 수정, trace 녹화와
-  리뷰, replay 실패 진단, 테스트 가능성(testTag/contentDescription) 개선 요청이 필요할 때
-  사용한다. 사용자가 "시나리오", "UI 테스트", "E2E", "replay가 깨졌다", "이 화면 테스트 추가"를
-  언급하면 이 스킬을 읽는다 — `simul`이라는 이름을 직접 말하지 않아도 마찬가지다.
-license: Complete terms in LICENSE.txt
-metadata:
-  keywords:
-  - simul
-  - ui-test
-  - e2e
-  - scenario
-  - trace
-  - replay
-  - emulator
-  - accessibility
+name: simul-scenario
+description: simul(Android UI 테스트 러너)용 시나리오를 새로 쓰거나 고치거나 리뷰할 때 사용한다. 한 줄 목록을 시나리오 .md로 펴는 일, 상태(state)별 기대를 한 파일에 담는 형식, 스텝 작성 규칙을 담는다.
 ---
 
-`simul`은 마크다운으로 쓴 자연어 시나리오를 Android 에뮬레이터에서 실행하는 UI 테스트
-러너다. LLM 에이전트가 시나리오를 한 번 수행하며 trace를 녹화하고(`--mode llm`), 이후
-CI는 그 trace를 LLM 없이 결정론적으로 재생한다(`--mode replay`).
+simul 시나리오는 자연어로 쓴 유저 흐름이다. LLM 에이전트가 한 번 수행하며 trace를
+녹화하고(`--mode llm`), CI는 그 trace를 LLM 없이 재생한다(`--mode replay`). replay의
+스크린샷은 gif로 묶여 팀원이 본다.
 
-이 스킬로 할 수 있는 일:
+replay는 스텝마다 그 스텝이 실제로 일어났는지를 판정한다. 근거는 액션으로 새로 나타난
+`resourceId`, 얻은 `selected`/`checked` 상태, 스텝에 쓴 따옴표 앵커의 존재다. 매번
+바뀌는 콘텐츠는 근거가 되지 못한다. 아래 규칙은 전부 여기서 나온다.
 
-- 대상 프로젝트의 코드베이스를 읽고 **유저 여정을 정한 뒤** 시나리오를 작성한다
-- 시나리오를 녹화하고, trace를 리뷰하고, 커밋 가능한지 판단한다
-- replay 실패를 "정당한 화면 변경"과 "앱 회귀"로 구분한다
-- 시나리오로 지목할 수 없는 요소를 찾아 앱 쪽 노출(testTag, contentDescription) 변경을 요구한다
+## 무엇을 시나리오로 쓰나
 
-## 시나리오 작성 전에 반드시 읽을 것
+시나리오 하나는 **유저가 실제로 하는 흐름 하나를 처음부터 끝까지** 스텝으로 옮긴 것이다.
+따로 결과 확인 단계가 있는 게 아니라, 마지막 액션만으로 알 수 없는 것을 그 스텝에
+`::`로 붙인다.
 
-**IMPORTANT:** 시나리오를 쓰거나 고치기 전에 [references/scenarios.md](references/scenarios.md)를
-읽어라. 이 문서는 에이전트가 화면을 어떻게 관찰하는지(무엇이 보이고 무엇이 안 보이는지),
-어떤 여정을 테스트 대상으로 삼을지, 스텝 문장이 어떻게 PASS/FAIL로 판정되는지를 설명한다.
-스텝 규칙은 전부 판정 방식에서 나오므로, 규칙만 외우고 이유를 모르면 새로운 화면에서
-잘못된 시나리오를 쓰게 된다.
+simul로 쓸지는 **독자**로 정한다. 기획·디자인·다른 팀원이 "이 화면이 이렇게 동작한다"를
+봐야 하는 것이면 simul이다. 개발자만 알면 되는 것 — 입력 검증 규칙, 경계값, 조합이
+많은 로직 — 은 유닛/Compose 테스트다. 시나리오로 쓰면 파일만 늘고 아무도 안 본다.
 
-전제 상태(`appState:`/`clearData:`)와 진입(런치/딥링크) 선택, 도착 확인 시나리오는
-[references/setup.md](references/setup.md)를 따른다.
+쓸 것:
 
-기기 관찰과 ad-hoc 조작은 `android` CLI를 쓴다. `android layout`과 `android screen`을
-직접 쓰기 전에 android-cli 스킬의 [interact.md](../android-cli/references/interact.md)를
-읽어라. simul의 에이전트가 보는 것이 바로 `android layout`의 출력이다(children 트리를
-유지한 채 들여쓰기로 렌더, 좌표 제외).
+- 기능마다 유저가 그 기능을 쓰는 가장 흔한 흐름 하나.
+- 그 흐름 중에 앱 밖에서 일어나는 일. 홈으로 나갔다 돌아오고, 전화가 오고, 설정 앱에서
+  PiP나 글꼴을 바꾸고, 알림을 눌러 들어온다. simul은 앱 밖까지 보므로 이걸 쓸 수 있다.
+  목록은 [external.md](references/external.md).
 
-## 시나리오 작성 절차
+쓰지 않을 것:
 
-1. **여정을 정한다.** 유저가 이 앱을 켜는 이유를 나열하고, 이유마다 "진입 → 탐색 →
-   원하는 결과"를 시나리오 하나로 잡는다. 코드 분기·경계값은 시나리오로 쓰지 않는다.
-   (scenarios.md §2)
-2. **기존 시나리오와 상태를 확인한다.** `scenarios/` 디렉토리 구조와 `.simul/states/`에
-   어떤 앱 상태 스냅샷이 있는지 본다. 같은 화면 디렉토리에 추가하고, 이미 있는 상태를
-   재사용한다. 없는 상태가 필요하면 `simul state save <name>`을 사용자에게 요청한다. (setup.md)
-3. **화면이 뭘 노출하는지 본다.** 에뮬레이터에서 대상 화면을 띄우고 `android layout`으로
-   실제 `text`/`contentDesc`/`resourceId`를 확인한다. 추측한 라벨로 쓰지 않는다. 지목할
-   요소가 노출되지 않았으면 시나리오를 우회하지 말고 앱 변경을 제안한다. (scenarios.md §1)
-4. **시나리오를 쓴다.** 진입은 런치가 기본이고 딥링크는 실제 유저 진입 경로일 때만, 전제는
-   `appState:`/`clearData:`로 선언, 앵커는 resourceId 우선. (setup.md, scenarios.md §3–5)
-5. **녹화한다.** `simul run <path> --mode llm`
-6. **trace를 리뷰한다.** target이 의도한 요소인지, `::` 기준이 붙은 스텝의 액션이 1개인지,
-   evidence에 동적 라벨이 섞이지 않았는지. 통과하면 md와 trace를 함께 커밋한다. (scenarios.md §6)
+- 경계값과 입력 조합. 쿠폰 코드 길이, 검색어 글자 수 → 유닛 테스트.
+- 콘텐츠 정합성("영화만 나오는가", 특정 작품 제목). replay가 판정할 수 없다.
+- 기능 열거. 유저가 하지 않는 순서로 화면을 도는 것.
 
-FAILED인데 앱이 맞아 보이면 시나리오가 아니라 앱을 먼저 의심한다. 시나리오를 비틀어
-통과시키는 것은 테스트를 없애는 것과 같다.
+## 쓰기 전에: 한 줄 목록
 
-## 실행
+시나리오는 .md를 하나씩 쓰는 것이 아니라 **한 줄 목록에서 편다**. 요청이 "X 기능
+시나리오 써 줘"로 오면 먼저 이 줄을 만들고 확인받는다.
 
-```bash
-simul run <path> --mode llm              # 녹화 / 재녹화
-simul run <path> --mode replay           # 재생 (CI는 simul run --all)
-simul run <path> --dry-run               # 파싱과 setup만 확인
-simul state save <name>                  # 현재 앱 데이터를 상태 스냅샷으로 저장
-simul "'Settings' 눌러"                  # ad-hoc 한 스텝 실행 — 라벨 확인용
+```
+billing | member, nosub, guest | 작품 상세 → 재생 → 구독 여부에 따라 플레이어/구독 안내/로그인
+billing | member               | 쿠폰 등록 → 목록에 보임
+library | member               | 작품 보관 → 보관함 탭에 보임
 ```
 
-- 기기 2대 이상이면 `ANDROID_SERIAL=emulator-5554 simul run ...`
-- 결과는 `.simul/reports/<run>/`(report.json, 스크린샷, agent.jsonl)에 쌓인다. 커밋하지 않는다.
+기능 | 돌릴 상태 | 흐름 한 줄. 이 목록이 "무엇을 커버하나"의 전부다. 한 줄이 .md 하나가
+된다. 줄이 넘치면 분기를 쓴 것이다.
 
-## replay가 깨졌을 때
+## 상태는 파일을 나누지 않는다
 
-1. 리포트의 스크린샷과 agent.jsonl로 **그 시점의 관찰**을 본다.
-2. `evidence not on screen`이면 화면이 실제로 달라진 것이다. 최근 diff가 그 화면을 정당하게
-   바꿨으면 `--mode llm`으로 재녹화하고, 아니면 앱 회귀로 보고한다.
-3. 증상별 조치는 scenarios.md §7.
+같은 스텝인데 상태에 따라 기대가 다르면 **한 파일**에 상태별 `::`로 쓴다. 스텝 자체가
+갈리면(guest가 로그인까지 이어 가는 흐름) 그때만 파일을 나누고 이름에 상태를 넣는다.
 
-재녹화는 사람이 "화면 변경이 정당하다"고 판단한 뒤에만 한다.
+```markdown
+---
+name: play-from-detail
+tags: [player, billing]
+states: [member, nosub, guest]     # 상태마다 trace 하나. 접두 없는 ::는 전부에 적용
+setup:
+  launch: true
+---
 
-## 하지 말 것
+작품 상세에서 재생을 누른다. 구독 여부에 따라 갈린다.
 
-- 코드 분기·경계값·위젯 동작을 열거하는 시나리오 — 시나리오는 유저 여정 하나에 결과 하나다
-- 스크린샷의 색·위치·아이콘 모양으로 요소를 지목하는 스텝 — 에이전트는 스크린샷을 보지 않는다
-- 콘텐츠 제목, 배너 문구, 개수 배지를 타겟하거나 검증하는 스텝 — 날마다 바뀐다
-- 매 시나리오 앞에 로그인 스텝 — 상태 스냅샷으로 주입한다
-- `appState:`/`clearData:` 선언 없는 시나리오 — 결과가 기기 상태 운에 좌우된다
-- 한글 타이핑 스텝 — `adb shell input text`는 ASCII만 받는다
-- `.simul/reports/` 커밋
+1. Tap the "왓챠 인기작" row
+2. Tap the "content_cell" item
+3. Tap the "btn_play" button
+   :: member → the "screen:player" screen should be shown
+   :: nosub  → the "screen:subscribe" screen should be shown
+   :: guest  → the "btn_login" button should be shown
+```
+
+- `states` 하나만 있고 접두 없는 `::`만 있으면 보통의 시나리오다.
+- `states` 여럿에 접두 없는 `::`만 있으면 "모든 상태에서 같아야 한다"는 뜻이다.
+  상태별 차이를 예측해서 쓰지 말고, 이렇게 돌려서 깨지는 상태에만 접두 `::`를 추가한다.
+- 상태 스냅샷 만들기와 진입 방식은 [setup.md](references/setup.md).
+
+번호 리스트만 실행된다. 나머지 본문은 사람을 위한 설명이고 gif 옆에 같이 보인다.
+
+## 쓰기 전에: 화면 확인
+
+경로의 각 화면에서 `android layout`을 실행해 실제로 노출되는 `text`, `contentDesc`,
+`resourceId`, `state`를 확인한다. 라벨을 추측해서 쓰지 않는다. 세 매칭 속성이 모두
+없는 요소는 지목할 수 없다. 이웃 요소나 위치로 우회하지 말고, 앱에 노출이 필요하다고
+보고한다.
+
+## 스텝 규칙
+
+스텝은 `Tap` / `Type` / `Scroll` / `Go back` / `Verify`로 시작하는 영어 문장이고,
+라벨은 보이는 그대로 따옴표에 넣는다. 따옴표는 `text`, `contentDesc`, `resourceId`에
+동등하게 매칭된다.
+
+1. **한 스텝 = 한 동작.** FAILED 이후 스텝은 전부 SKIPPED다. 각 문장은 자기완결적으로.
+2. **앵커는 고정된 것만.** resourceId/testTag → 도착 화면에 유일한 고정 라벨 순.
+   콘텐츠 제목, 배너 문구, 개수 배지는 타겟으로도 검증으로도 쓰지 않는다.
+3. **뻔한 전환에는 `::`를 붙이지 않는다.** 새로 나타난 resourceId와 상태가 자동으로
+   게이트된다. 액션 스텝은 전후 레이아웃 차이가 없으면 그 자체로 FAILED다.
+4. **액션만으로 알 수 없는 것은 `::`로.** 복원, 불변, 다른 화면에 반영된 결과, 상태별
+   분기.
+5. **독립 `Verify`는 붙일 액션이 없을 때만.** 런치·딥링크 직후의 도착 확인. 반드시
+   따옴표 앵커를 넣는다. 앵커 없는 Verify는 LLM 판단으로 떨어진다.
+6. **같은 라벨이 여러 개면 AMBIGUOUS로 멈춘다.** 더 구체적인 라벨이나 resourceId.
+7. **스크롤은 명시한다.** `Scroll down to find "Settings"`. 이미 보이면 스크롤 없이 넘어간다.
+8. **타이핑은 ASCII만.** 한글 입력 스텝은 만들지 않는다.
+
+## 다 쓴 뒤
+
+가장 위험한 건 실패가 아니라, 액션이 안 먹혔는데도 통과하는 스텝이다. 스텝마다 묻는다:
+**이 액션이 실패했다면 이 스텝은 FAILED가 됐을까?**
+
+- 마지막 스텝은 흐름의 끝을 고정 앵커로 확인해야 한다.
+- 이전 화면에도 있던 라벨은 도착의 증거가 못 된다. resourceId로 내려간다.
+- 부재 기준(`not`이 든 문장)은 replay에서 게이트되지 않는다. 대신 나타나는 것을 쓴다.
+
+녹화한 뒤에는 [review.md](references/review.md)로 trace를 검토한다.

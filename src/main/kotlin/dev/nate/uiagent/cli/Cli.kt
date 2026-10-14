@@ -308,9 +308,9 @@ internal fun executeScenario(
 
 /**
  * Scaffold the `.simul/` convention in a target app repo: config template, scenarios dir,
- * and a Claude Code skill (SKILL.md + the scenario-authoring reference as
- * `references/scenarios.md` + the preconditions/entry reference as `references/setup.md`)
- * so agent sessions in that repo write scenarios by the book.
+ * and a Claude Code skill (SKILL.md — the scenario-authoring guide — plus the
+ * `references/` docs: `setup.md` (preconditions/entry) and `external.md` (external-element
+ * catalogue)) so agent sessions in that repo write scenarios by the book.
  * Never overwrites existing files — rerunning after a simul upgrade refreshes only what is
  * missing (delete a doc to refresh it).
  */
@@ -330,9 +330,9 @@ internal fun initCommand(args: List<String>, cwd: File): Int {
     fun resource(name: String): String? =
         object {}.javaClass.getResourceAsStream("/simul/$name")?.bufferedReader()?.readText()
 
-    val scenarios = resource("scenarios.md") ?: return err("packaging error: /simul/scenarios.md missing")
     val skill = resource("SKILL.md") ?: return err("packaging error: /simul/SKILL.md missing")
     val setup = resource("setup.md") ?: return err("packaging error: /simul/setup.md missing")
+    val external = resource("external.md") ?: return err("packaging error: /simul/external.md missing")
 
     val config = """
         agentVersion: ">=$AGENT_VERSION"
@@ -353,8 +353,8 @@ internal fun initCommand(args: List<String>, cwd: File): Int {
     val files = listOfNotNull(
         File(cwd, ".simul/config.yaml") to config,
         File(cwd, ".claude/skills/simul-scenarios/SKILL.md") to skill,
-        File(cwd, ".claude/skills/simul-scenarios/references/scenarios.md") to scenarios,
         File(cwd, ".claude/skills/simul-scenarios/references/setup.md") to setup,
+        File(cwd, ".claude/skills/simul-scenarios/references/external.md") to external,
         if (ci == "github") {
             val wf = resource("nightly.yml") ?: return err("packaging error: /simul/nightly.yml missing")
             File(cwd, ".github/workflows/simul-nightly.yml") to wf
@@ -372,14 +372,14 @@ internal fun initCommand(args: List<String>, cwd: File): Int {
     }
     val legacyReadme = File(cwd, ".simul/README.md")
     if (legacyReadme.exists()) {
-        println("note    .simul/README.md is superseded by .claude/skills/simul-scenarios/references/scenarios.md — delete it to avoid stale guidance")
+        println("note    .simul/README.md is superseded by .claude/skills/simul-scenarios/SKILL.md — delete it to avoid stale guidance")
     }
     println(
         """
 
         next steps:
           1. .simul/config.yaml 의 app / llm.url 확인
-          2. .claude/skills/simul-scenarios/references/scenarios.md 읽고 첫 시나리오 작성 → .simul/scenarios/<그룹>/<이름>.md
+          2. .claude/skills/simul-scenarios/SKILL.md 읽고 첫 시나리오 작성 → .simul/scenarios/<그룹>/<이름>.md
           3. simul run <그룹>/<이름>.md --mode llm   (녹화 후 trace를 md와 함께 커밋)
         """.trimIndent()
     )

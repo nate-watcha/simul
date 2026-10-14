@@ -87,7 +87,7 @@ fun renderStatus(r: StatusReport, now: Long = System.currentTimeMillis(), color:
     fun c(code: String, s: String) = if (color) "\u001B[${code}m$s\u001B[0m" else s
     val sb = StringBuilder()
     if (r.scenarios.isEmpty()) {
-        sb.appendLine("no scenarios — write one under .simul/scenarios/ (see .claude/skills/simul-scenarios/references/scenarios.md)")
+        sb.appendLine("no scenarios — write one under .simul/scenarios/ (see .claude/skills/simul-scenarios/SKILL.md)")
     } else {
         val pathW = maxOf(8, r.scenarios.maxOf { it.relPath.length })
         val preW = maxOf(5, r.scenarios.maxOf { (it.precondition ?: "-").length })

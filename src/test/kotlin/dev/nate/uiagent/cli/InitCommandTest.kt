@@ -3,6 +3,7 @@ package dev.nate.uiagent.cli
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class InitCommandTest {
@@ -19,15 +20,16 @@ class InitCommandTest {
         assertTrue("sizeClass: small" in config)
         assertTrue(File(dir, ".simul/scenarios").isDirectory)
 
-        val guide = File(dir, ".claude/skills/simul-scenarios/references/scenarios.md").readText()
-        assertTrue("에이전트가 보는 것" in guide && "따옴표" in guide, "authoring guide must ship")
-
         val setup = File(dir, ".claude/skills/simul-scenarios/references/setup.md").readText()
         assertTrue(setup.startsWith("# 전제 상태와 진입") && "appState" in setup && "deeplink" in setup, "preconditions/entry reference must ship")
 
+        val external = File(dir, ".claude/skills/simul-scenarios/references/external.md").readText()
+        assertTrue(external.startsWith("# 외부 요소 목록") && "Press home" in external, "external-element reference must ship")
+
         val skill = File(dir, ".claude/skills/simul-scenarios/SKILL.md").readText()
         assertTrue(skill.startsWith("---\nname: simul"), skill.take(60))
-        assertTrue("references/scenarios.md" in skill, "skill must point at the full reference")
+        assertTrue("따옴표" in skill, "skill must carry the authoring rules itself")
+        assertFalse(File(dir, ".claude/skills/simul-scenarios/references/scenarios.md").exists(), "scenarios.md was merged into SKILL.md")
         assertTrue("references/setup.md" in skill, "skill must point at the preconditions/entry reference")
 
         // the scaffolded config must parse with the shipped defaults
