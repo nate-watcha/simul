@@ -133,16 +133,16 @@ class ReportTest {
     }
 
     @Test
-    fun `slack payload is valid block kit with fallback text, escaped mrkdwn and a link context`() {
+    fun `slack payload is brief block kit (headline, counts, attention names, links) and keeps details in the report`() {
         val r = nightly()
         val payload = dev.nate.uiagent.json.parseToJsonElement(renderSlack(r)).jsonObject
         assertTrue(payload["text"]!!.jsonPrimitive.content.startsWith("⚠️ simul nightly 2026-09-19: 2 need attention"))
         val blocks = payload["blocks"]!!.jsonArray
         assertEquals("header", blocks[0].jsonObject["type"]!!.jsonPrimitive.content)
-        assertTrue(blocks.size in 4..6, "header + counts + 2 attention + context, got ${blocks.size}")
+        assertEquals(4, blocks.size, "header + counts + attention names + link context, got ${blocks.size}")
         val text = blocks.joinToString { it.toString() }
-        assertTrue("checkout/coupon.md" in text && "evidence not on screen" in text, text)
-        assertTrue("on screen: Coupons · Register coupon" in text, text)
+        assertTrue("`checkout/coupon.md`" in text, text)
+        assertTrue("evidence not on screen" !in text && "on screen:" !in text, "reasons and screen labels belong to the html/md report, not the channel")
         assertTrue("<https://github.com/o/r/actions/runs/1|Run>" in text, text)
         assertTrue("\"&lt;" !in renderSlack(r) || "<" !in renderSlack(r).substringAfter("Apply"), "mrkdwn control chars must be escaped")
     }

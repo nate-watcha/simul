@@ -314,7 +314,13 @@ fun renderMarkdown(r: PipelineReport): String = buildString {
 
 private fun slackEscape(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-/** Incoming-webhook payload (Block Kit) — `curl -d @slack.json $SLACK_WEBHOOK_URL`. */
+private const val SLACK_NAMES_PER_KIND = 8
+
+/**
+ * Block Kit payload for `chat.postMessage` / an incoming webhook — deliberately short: the
+ * channel gets the headline, the counts, and the names of what needs attention; reasons,
+ * screenshots and gifs live in the HTML report, which the `--link`s point at.
+ */
 fun renderSlack(r: PipelineReport): String {
     val blocks = mutableListOf<JsonObject>()
     fun section(mrkdwn: String) = buildJsonObject {
@@ -328,20 +334,15 @@ fun renderSlack(r: PipelineReport): String {
     val env = listOfNotNull(r.appVersionName?.let { "app $it" }, r.device?.let { "device $it" }, r.agentVersion?.let { "simul $it" }, r.androidCli?.let { "android CLI $it" })
     blocks += section("*${slackEscape(r.countsLine())}*" + (if (env.isEmpty()) "" else "\n_${slackEscape(env.joinToString(" · "))}_") +
         r.llmUsageLines().joinToString("") { "\n_${slackEscape(it)}_" })
-    // one block per scenario needing attention, capped — Slack allows 50 blocks per message
-    val shown = r.attention.take(20)
-    for (row in shown) {
-        val lines = mutableListOf("*${row.verdict.kind.emoji} `${slackEscape(row.path)}`* — ${row.verdict.kind.title}")
-        for ((i, o) in row.outcomes.withIndex()) {
-            val line = o?.let(::failureLine) ?: continue
-            lines += "> _${slackEscape(r.phases[i].label)}_ ${slackEscape(line)}"
-            o.failedStep?.screen?.takeIf { it.isNotEmpty() }?.let { sc ->
-                lines += "> on screen: " + slackEscape(sc.take(12).joinToString(" · ")) + (if (sc.size > 12) " …" else "")
-            }
-        }
-        blocks += section(lines.joinToString("\n"))
+    // what to look at, names only — one line per verdict kind, capped
+    val byKind = r.attention.groupBy { it.verdict.kind }
+    if (byKind.isNotEmpty()) {
+        blocks += section(byKind.entries.joinToString("\n") { (kind, rows) ->
+            val names = rows.take(SLACK_NAMES_PER_KIND).joinToString(", ") { "`${slackEscape(it.path)}`" }
+            val more = rows.size - SLACK_NAMES_PER_KIND
+            "${kind.emoji} ${kind.title}: $names" + (if (more > 0) " +$more more" else "")
+        })
     }
-    if (r.attention.size > shown.size) blocks += section("_… and ${r.attention.size - shown.size} more — see the full report_")
     if (r.links.isNotEmpty()) {
         blocks += buildJsonObject {
             put("type", "context")
