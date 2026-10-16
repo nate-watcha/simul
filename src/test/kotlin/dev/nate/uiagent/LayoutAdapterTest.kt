@@ -219,6 +219,31 @@ class LayoutTreeTest {
     }
 
     @Test
+    fun `a scroll container never takes a text child as its label`() {
+        // 실측 (settings screen): the ScrollView's only direct text child is the e-mail line, and a
+        // WebView got named after the paragraph crossing its center — content that scrolls away.
+        val dump = """
+        [{"window-title":"W","type":"APPLICATION","active":true,"bounds":"[0,0][720,1280]","content":[
+         {"class":"android.widget.ScrollView","interactions":["SCROLLABLE"],"bounds":"[0,254][720,1232]","center":"[360,743]","children":[
+           {"class":"android.widget.TextView","text":"natetest1@watcha.com","bounds":"[80,254][376,294]","center":"[228,274]"},
+           {"class":"android.view.View","interactions":["CLICKABLE","FOCUSABLE"],"bounds":"[0,914][720,1032]","center":"[360,973]","children":[
+             {"class":"android.widget.TextView","text":"왓챠 캐시","bounds":"[40,946][189,998]","center":"[114,972]"}]}]},
+         {"class":"android.webkit.WebView","interactions":["SCROLLABLE","FOCUSABLE"],"bounds":"[0,48][720,1232]","center":"[360,640]","children":[
+           {"class":"android.widget.TextView","text":"*이벤트, 쿠폰 등에 따라 가격이 달라질 수 있어요","bounds":"[74,596][646,678]","center":"[360,637]"}]}]}]
+        """.trimIndent()
+        assertEquals(
+            """
+            {"label":"@x360y743","interactions":["scrollable"]}
+              {"label":"natetest1@watcha.com","kind":"label"}
+              {"label":"왓챠 캐시","interactions":["clickable","focusable"]}
+            {"label":"@x360y640","interactions":["scrollable","focusable"]}
+              {"label":"*이벤트, 쿠폰 등에 따라 가격이 달라질 수 있어요","kind":"label"}
+            """.trimIndent(),
+            renderFullLayout(LayoutAdapter.adapt(dump).elements),
+        )
+    }
+
+    @Test
     fun `a card with several texts stays anonymous while a single-text card absorbs its label`() {
         val cards = """
             [{"class":"android.view.View","interactions":["CLICKABLE"],"bounds":"[0,0][720,300]","center":"[360,150]","children":[

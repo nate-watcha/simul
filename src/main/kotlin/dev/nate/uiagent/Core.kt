@@ -95,9 +95,17 @@ class LogicalLayout(
      * (e.g. "WebView present but not inspectable"). Null when web observation is fine or N/A.
      */
     val webNote: String? = null,
+    /** How far the web page extends past the viewport, when known. Null for native screens. */
+    val webOverflow: WebOverflow? = null,
 ) {
     /** True when web content was merged into this observation (diffing is disabled then). */
     val hasWeb: Boolean by lazy { elements.any { it.origin == Origin.WEB } }
+}
+
+/** Web page content beyond the viewport, in CSS px. Under a tenth of a viewport is "fits". */
+data class WebOverflow(val belowPx: Int, val abovePx: Int, val viewportPx: Int) {
+    val below: Boolean get() = belowPx > viewportPx / 10
+    val above: Boolean get() = abovePx > viewportPx / 10
 }
 
 /** Nesting depth of every element (0 = top level), relying on the pre-order invariant. */

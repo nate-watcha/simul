@@ -123,6 +123,13 @@ object LayoutAdapter {
         val isInteractive get() = raw.isInteractive
         /** A non-interactive node carrying text: a label owned by some interactive, or an orphan. */
         val isLabel get() = !raw.isInteractive && label != null
+        /**
+         * Scroll containers never take a text child as their name: the text is content that
+         * scrolls past (a ScrollView named after the e-mail line at its top, a WebView named after
+         * whatever paragraph crosses its center — 실측), so the label would change between
+         * observations. They keep their resourceId or get a synthetic handle instead.
+         */
+        val absorbsLabel get() = isInteractive && label == null && "scrollable" !in raw.interactions
     }
 
     private val sentinel = RawNode(emptyList(), emptyList(), null, null, null, Point(0, 0), null)
@@ -151,7 +158,7 @@ object LayoutAdapter {
         // on it and traces record it as evidence (tvDeleteHistory, tv_row_title on kloud).
         fun absorb(n: Node) {
             n.children.forEach(::absorb)
-            if (n.isInteractive && n.label == null) {
+            if (n.absorbsLabel) {
                 val only = n.children.singleOrNull { it.isLabel }?.takeIf { it.children.isEmpty() } ?: return
                 n.label = only.label
                 if (only.raw.resourceId == null) n.children.remove(only)
@@ -170,6 +177,7 @@ object LayoutAdapter {
             val out = mutableListOf<Node>()
             for (c in n.children) {
                 val nearest = if (!c.isLabel) null else interactives
+                    .filter { "scrollable" !in it.raw.interactions }
                     .filter { abs(it.raw.center.x - c.raw.center.x) <= MAX_DX && abs(it.raw.center.y - c.raw.center.y) <= MAX_DY }
                     .minByOrNull { dist2(it.raw.center, c.raw.center) }
                 val consumed = when {

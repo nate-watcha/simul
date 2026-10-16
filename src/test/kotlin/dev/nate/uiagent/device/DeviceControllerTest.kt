@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 // ---------------------------------------------------------------- fixtures
@@ -205,6 +206,31 @@ class DeviceControllerTest {
         assertEquals(listOf("swipe"), dev.gestures)
         assertContains(result, "FOUND after 1 scroll(s)")
         assertContains(result, "그린북")
+    }
+
+    @Test
+    fun `scrollToFind with several matches is FOUND in screen order, not AMBIGUOUS`() {
+        idSeq = 0
+        val list = el("목록", resourceId = "recycler_view", interactions = listOf("focusable", "scrollable"),
+            center = Point(360, 639), bounds = Bounds(0, 160, 720, 1118))
+        val page1 = layout(list, el("항목A", interactions = listOf("clickable")))
+        val page2 = layout(
+            list,
+            el("패키지 : 쿵푸팬더", interactions = listOf("clickable"), center = Point(330, 1005)),
+            el("패키지 : 러브레터", interactions = listOf("clickable"), center = Point(686, 1005)),
+        )
+        val dev = FakeDevice(page1, page1, page2, page2)
+        val c = controller(dev)
+        c.fullLayout()
+
+        val result = c.scrollToFind("목록", "패키지", "down")
+
+        assertTrue(result.startsWith("FOUND after 1 scroll(s) down: 2 elements match '패키지', in screen order:"))
+        assertContains(result, "- @x330y1005 ")
+        assertContains(result, "- @x686y1005 ")
+        assertTrue(result.indexOf("쿵푸팬더") < result.indexOf("러브레터"))
+        assertFalse(result.contains("AMBIGUOUS"))
+        assertFalse(result.contains("Repeat the action"))
     }
 
     @Test

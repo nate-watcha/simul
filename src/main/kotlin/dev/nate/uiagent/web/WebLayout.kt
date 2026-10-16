@@ -4,6 +4,7 @@ import dev.nate.uiagent.Bounds
 import dev.nate.uiagent.LogicalElement
 import dev.nate.uiagent.Origin
 import dev.nate.uiagent.Point
+import dev.nate.uiagent.WebOverflow
 import dev.nate.uiagent.json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -30,7 +31,13 @@ import kotlin.math.roundToInt
  */
 object WebLayout {
 
-    /** Element-extraction JS. Returns {"iw": innerWidth, "rs": readyState, "els": [...]}. */
+    /**
+     * Element-extraction JS. Returns {"iw": innerWidth, "ih": innerHeight, "sy": scrollY,
+     * "sh": document scrollHeight, "rs": readyState, "els": [...]}. The scroll geometry feeds
+     * [scrollHint]: only on-screen elements are extracted (like a11y), so the model otherwise has
+     * no way to know a page continues below the fold (실측: a payment page whose only submit
+     * button sat two screens down — the model tapped page titles instead of scrolling).
+     */
     val EXTRACT_JS: String = """
         (() => {
           const SEL = 'a,button,input,select,textarea,label,[onclick],[role=button],[role=link],' +
@@ -64,22 +71,57 @@ object WebLayout {
                        focused: ctl === document.activeElement || e === document.activeElement }
             });
           }
+          // Click handlers on plain elements (React onClick) leave no attribute; their one visible
+          // trace is the pointer cursor. The outermost pointer element that is not a control (nor
+          // inside one) is a click host. Page-sized wrappers are skipped: a pointer cursor set on
+          // the body would otherwise turn every top-level container into a "button".
+          const hosts = new Set();
+          for (const e of document.querySelectorAll('body *')) {
+            if (e.closest(SEL)) continue;
+            if (getComputedStyle(e).cursor !== 'pointer') continue;
+            const p = e.parentElement;
+            if (p && p !== document.body && getComputedStyle(p).cursor === 'pointer') continue;
+            if (!vis(e)) continue;
+            const r = e.getBoundingClientRect();
+            if (r.width * r.height > innerWidth * innerHeight * 0.5) continue;
+            hosts.add(e);
+            els.push({ label: firstLine(e.innerText) || e.getAttribute('aria-label') || null,
+                       attrId: e.id || null, tag: 'div', type: null, role: 'pointer', rect: rectOf(e),
+                       state: { checked: false, selected: e.getAttribute('aria-selected') === 'true',
+                                disabled: false, focused: e === document.activeElement } });
+          }
+          const hostOf = e => { for (let a = e; a; a = a.parentElement) if (hosts.has(a)) return a; return null; };
+          const union = (a, b) => { const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+            return { x, y, width: Math.max(a.x + a.width, b.x + b.width) - x, height: Math.max(a.y + a.height, b.y + b.height) - y }; };
           const texts = [];
+          const range = document.createRange();
           for (const e of document.querySelectorAll('body *')) {
             if (texts.length >= 120) break;
             if (!vis(e)) continue;
             let own = '';
-            for (const n of e.childNodes) if (n.nodeType === 3) own += n.textContent;
+            // The element's box also wraps its child elements (a badge, a struck-out price), which
+            // misplaces the text in reading order; measure the text nodes themselves.
+            let box = null;
+            for (const n of e.childNodes) if (n.nodeType === 3) {
+              own += n.textContent;
+              if (!n.textContent.trim()) continue;
+              range.selectNodeContents(n);
+              const r = range.getBoundingClientRect();
+              if (r.width > 0 && r.height > 0) box = box ? union(box, r) : { x: r.x, y: r.y, width: r.width, height: r.height };
+            }
             own = own.replace(/\s+/g, ' ').trim();
             if (!own) continue;
             // drop text that merely repeats its interactive host's label
-            const host = e.closest(SEL);
+            const host = e.closest(SEL) || hostOf(e);
             if (host && firstLine(host.innerText) === own) continue;
             texts.push({ label: own.slice(0, 80), attrId: e.id || null, tag: 'text', type: null,
-                         role: null, rect: rectOf(e),
+                         role: null, rect: box || rectOf(e),
                          state: { checked: false, selected: false, disabled: false, focused: false } });
           }
-          return JSON.stringify({ iw: innerWidth, rs: document.readyState, els: els.concat(texts) });
+          const se = document.scrollingElement || document.documentElement;
+          return JSON.stringify({ iw: innerWidth, ih: innerHeight, sy: Math.round(scrollY),
+                                  sh: se ? se.scrollHeight : 0,
+                                  rs: document.readyState, els: els.concat(texts) });
         })()
     """.trimIndent()
 
@@ -101,7 +143,43 @@ object WebLayout {
         val selected: Boolean = false,
     )
 
-    data class WebPage(val innerWidth: Int, val readyState: String, val elements: List<WebElement>)
+    data class WebPage(
+        val innerWidth: Int,
+        val readyState: String,
+        val elements: List<WebElement>,
+        /** Viewport height, document scroll offset and total scroll height, in CSS px (0 = unknown). */
+        val innerHeight: Int = 0,
+        val scrollY: Int = 0,
+        val scrollHeight: Int = 0,
+    )
+
+    /**
+     * Content-independent note telling the model the page extends past the viewport, or null when
+     * it fits (or geometry is unknown). Measured in screens so it reads the same at every dpr.
+     */
+    fun scrollHint(page: WebPage): String? {
+        val o = overflow(page) ?: return null
+        val ih = o.viewportPx
+        val parts = buildList {
+            if (o.below) add("${screens(o.belowPx, ih)} below")
+            if (o.above) add("${screens(o.abovePx, ih)} above")
+        }
+        if (parts.isEmpty()) return null
+        return "the web page continues past the viewport (${parts.joinToString(", ")})"
+    }
+
+    /** Page extent past the viewport; null when the geometry is unknown (older fixtures). */
+    fun overflow(page: WebPage): WebOverflow? {
+        val ih = page.innerHeight.takeIf { it > 0 } ?: return null
+        return WebOverflow(belowPx = page.scrollHeight - page.scrollY - ih, abovePx = page.scrollY, viewportPx = ih)
+    }
+
+    private fun screens(px: Int, ih: Int): String {
+        val n = px.toDouble() / ih
+        if (n < 1) return "less than 1 screen"
+        val rounded = String.format(java.util.Locale.ROOT, "%.1f", n)
+        return "about $rounded screen" + if (rounded.substringBefore('.').toInt() >= 2) "s" else ""
+    }
 
     /** Parse the EXTRACT_JS result string. Null on malformed input (observation failure). */
     fun parsePage(value: String): WebPage? {
@@ -131,7 +209,12 @@ object WebLayout {
                 selected = st?.get("selected")?.jsonPrimitive?.booleanOrNull == true,
             )
         } ?: emptyList()
-        return WebPage(iw, rs, els)
+        return WebPage(
+            iw, rs, els,
+            innerHeight = o["ih"]?.jsonPrimitive?.intOrNull ?: 0,
+            scrollY = o["sy"]?.jsonPrimitive?.intOrNull ?: 0,
+            scrollHeight = o["sh"]?.jsonPrimitive?.intOrNull ?: 0,
+        )
     }
 
     // ---------------------------------------------------------------- convert
@@ -175,7 +258,7 @@ object WebLayout {
             e.tag == "text" -> {}
             checkable -> { out += "clickable"; out += "checkable" }
             typable -> { out += "clickable"; out += "focusable" }
-            else -> out += "clickable" // a, button, select, [onclick], remaining roles
+            else -> out += "clickable" // a, button, select, [onclick], remaining roles, pointer hosts
         }
         if (e.disabled) out.remove("clickable")
         return out

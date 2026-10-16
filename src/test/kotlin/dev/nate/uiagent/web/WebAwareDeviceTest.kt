@@ -54,6 +54,117 @@ class WebAwareDeviceTest {
             "state":{"checked":false,"disabled":false,"focused":false}}]}"""
     )
 
+    /** Same page, but the document is 2070 CSS px tall with a 592 px viewport, scrolled to the top. */
+    private val extractTallPage = CdpClient.Eval.Ok(
+        """{"iw":360,"ih":592,"sy":0,"sh":2070,"rs":"complete","els":[
+           {"label":"결제하기","attrId":null,"tag":"text","type":null,"role":null,
+            "rect":{"x":52,"y":15,"width":69,"height":26},
+            "state":{"checked":false,"disabled":false,"focused":false}}]}"""
+    )
+
+    @Test
+    fun `a page taller than the viewport carries a scroll hint note`() {
+        // 실측: the payment page's only submit button sat two screens below the fold and the
+        // model, seeing nothing clickable, tapped page titles instead of scrolling.
+        val native = LogicalLayout(listOf(nativeEl(0, resourceId = "webview", y = 696)))
+        val cdp = FakeCdp(CdpClient.Discovery(listOf(target)), extractTallPage)
+        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        assertEquals(
+            "the web page continues past the viewport (about 2.5 screens below)",
+            merged.webNote,
+        )
+    }
+
+    @Test
+    fun `a page that fits the viewport has no scroll hint`() {
+        val fits = CdpClient.Eval.Ok("""{"iw":360,"ih":592,"sy":0,"sh":600,"rs":"complete","els":[]}""")
+        val native = LogicalLayout(listOf(nativeEl(0, resourceId = "webview", y = 696)))
+        val merged = WebAwareDevice(FakeDevice(native), FakeCdp(CdpClient.Discovery(listOf(target)), fits), "com.x").observe()
+        assertNull(merged.webNote) // 8 px of overflow is not a screen's worth of content
+    }
+
+    @Test
+    fun `scroll hint reports content above once scrolled down`() {
+        val page = WebLayout.WebPage(360, "complete", emptyList(), innerHeight = 592, scrollY = 1478, scrollHeight = 2070)
+        assertEquals(
+            "the web page continues past the viewport (about 2.5 screens above)",
+            WebLayout.scrollHint(page),
+        )
+        val mid = WebLayout.WebPage(360, "complete", emptyList(), innerHeight = 592, scrollY = 300, scrollHeight = 2070)
+        assertEquals(
+            "the web page continues past the viewport (about 2.0 screens below, less than 1 screen above)",
+            WebLayout.scrollHint(mid),
+        )
+        // geometry absent (older extraction fixtures) -> no hint
+        assertNull(WebLayout.scrollHint(WebLayout.WebPage(360, "complete", emptyList())))
+    }
+
+    private fun webEl(label: String, x0: Int, y0: Int, x1: Int, y1: Int) =
+        LogicalElement(-1, label, null, emptyList(), emptyList(), "label", Point((x0 + x1) / 2, (y0 + y1) / 2), Bounds(x0, y0, x1, y1), origin = Origin.WEB)
+
+    @Test
+    fun `reading order groups a row by overlapping vertical bands, then sorts left to right`() {
+        // 실측 payment page: "정가 | 소장: 11,000원" on one line with a smaller "정가", a struck-out
+        // price next to the real one, and a two-line heading whose center sits below its first word.
+        val els = listOf(
+            webEl("소장: 11,000원", 158, 550, 342, 588),
+            webEl("정가", 74, 552, 126, 590),               // center 1 px lower: a plain y sort put it second
+            webEl("7,700 캐시", 509, 800, 650, 846),
+            webEl("11,000 캐시", 362, 804, 500, 842),       // struck-out, smaller font
+            webEl("7,700 캐시에 소장할게요", 40, 1014, 458, 1136),  // wraps to two lines
+            webEl("11,000", 40, 1020, 190, 1080),
+            webEl("결제하기", 104, 78, 244, 130),
+        )
+        assertEquals(
+            listOf("결제하기", "정가", "소장: 11,000원", "11,000 캐시", "7,700 캐시", "11,000", "7,700 캐시에 소장할게요"),
+            WebAwareDevice.readingOrder(els).map { it.label },
+        )
+    }
+
+    @Test
+    fun `a native label that concatenates web labels is a11y projection and is dropped`() {
+        // Chrome joins sibling spans without separators; the web side has them split.
+        val extract = CdpClient.Eval.Ok(
+            """{"iw":360,"rs":"complete","els":[
+           {"label":"할인","attrId":null,"tag":"text","type":null,"role":null,"rect":{"x":37,"y":400,"width":20,"height":16},"state":{}},
+           {"label":"소장","attrId":null,"tag":"text","type":null,"role":null,"rect":{"x":66,"y":400,"width":20,"height":16},"state":{}},
+           {"label":"11,000 캐시","attrId":null,"tag":"text","type":null,"role":null,"rect":{"x":181,"y":402,"width":60,"height":14},"state":{}},
+           {"label":"7,700 캐시","attrId":null,"tag":"text","type":null,"role":null,"rect":{"x":255,"y":400,"width":70,"height":16},"state":{}}]}"""
+        )
+        val native = LogicalLayout(listOf(
+            nativeEl(0, resourceId = "webview", y = 696).copy(interactions = listOf("scrollable")),
+            LogicalElement(1, "할인소장11,000 캐시7,700 캐시", null, emptyList(), emptyList(), "label", Point(360, 823), null, parentId = 0),
+            LogicalElement(2, "확인", null, listOf("clickable"), emptyList(), null, Point(360, 900), null, parentId = 0), // a dialog button: shares nothing
+        ))
+        val cdp = FakeCdp(CdpClient.Discovery(listOf(target)), extract)
+        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        assertEquals(listOf(null, "확인", "할인", "소장", "11,000 캐시", "7,700 캐시"), merged.elements.map { it.label })
+    }
+
+    @Test
+    fun `without a webview resource-id the native scrollable with the WebView rect anchors the page`() {
+        // 실측: once Chrome projects a11y nodes the WebView node loses its id but keeps its bounds.
+        val host = LogicalElement(0, null, null, listOf("scrollable", "focusable"), emptyList(), null, Point(360, 696), Bounds(0, 160, 720, 1232))
+        val native = LogicalLayout(listOf(host, nativeEl(1, label = "닫기", y = 104)))
+        val cdp = FakeCdp(CdpClient.Discovery(listOf(target)), extractOk)
+        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        assertEquals(listOf(null, "구독 시작하기", "닫기"), merged.elements.map { it.label })
+        assertEquals(listOf(null, 0, null), merged.elements.map { it.parentId })
+    }
+
+    @Test
+    fun `a pointer-cursor host parses as a clickable element, not text`() {
+        val page = WebLayout.parsePage(
+            """{"iw":360,"rs":"complete","els":[
+           {"label":"상세 보기","attrId":null,"tag":"div","type":null,"role":"pointer",
+            "rect":{"x":20,"y":100,"width":320,"height":48},
+            "state":{"checked":false,"disabled":false,"focused":false}}]}"""
+        )!!
+        val el = WebLayout.toLogicalElements(page, Bounds(0, 160, 720, 1232)).single()
+        assertEquals(listOf("clickable"), el.interactions)
+        assertNull(el.kind)
+    }
+
     @Test
     fun `native-only screens pass through when discovery finds nothing`() {
         val native = LogicalLayout(listOf(nativeEl(0, label = "홈")))

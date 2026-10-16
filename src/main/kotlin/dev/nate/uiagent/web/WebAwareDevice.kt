@@ -7,6 +7,7 @@ import dev.nate.uiagent.Origin
 import dev.nate.uiagent.depthsOf
 import dev.nate.uiagent.device.Device
 import dev.nate.uiagent.pruneReparent
+import kotlin.math.abs
 
 /**
  * Device decorator that merges WebView content (via CDP) into native observations. Gestures
@@ -73,18 +74,21 @@ class WebAwareDevice(
         // is the gesture target for scrolling web pages.
         val webIds = webElements.mapNotNull { it.resourceId }.toHashSet()
         val webLabels = webElements.mapNotNull { it.label }.toHashSet()
+        val composedOfWeb = webComposition(webLabels)
         val keptNative = pruneReparent(native.elements) { e ->
             !(rect.containsCenter(e) && "scrollable" !in e.interactions && when {
                 e.resourceId != null -> e.resourceId in webIds
-                e.label != null -> e.label in webLabels || e.label.take(80) in webLabels
+                e.label != null -> e.label in webLabels || e.label.take(80) in webLabels || composedOfWeb(e.label)
                 else -> true // anonymous non-scrollable node inside the webview: a11y scaffolding
             })
         }
-        // The page's elements nest under the native WebView node when the screen still exposes
-        // one (its resource-id can vanish once Chrome projects a11y nodes — then they sit at the
-        // top level). Web siblings keep reading order; the rest is the native tree's order.
-        val web = webElements.sortedWith(compareBy({ it.center.y }, { it.center.x }))
-        val hostIdx = keptNative.indexOfFirst(::isWebViewNode)
+        // The page's elements nest under the native WebView node. Its resource-id can vanish once
+        // Chrome projects a11y nodes, so the fallback anchor is the native scrollable whose bounds
+        // are the WebView rect (실측: the payment page's WebView had no id but kept its bounds).
+        // Web siblings keep reading order; the rest is the native tree's order.
+        val web = readingOrder(webElements)
+        val hostIdx = keptNative.indexOfFirst(::isWebViewNode).takeIf { it >= 0 }
+            ?: keptNative.indexOfFirst { "scrollable" in it.interactions && it.bounds?.let { b -> sameRect(b, rect) } == true }
         val combined = if (hostIdx < 0) keptNative + web else {
             val depths = depthsOf(keptNative)
             var end = hostIdx + 1
@@ -98,8 +102,32 @@ class WebAwareDevice(
             if (e.origin == Origin.NATIVE) newId[e.id] = i
             e.copy(id = i, parentId = e.parentId?.let { newId[it] })
         }
-        return LogicalLayout(merged)
+        return LogicalLayout(merged, webNote = WebLayout.scrollHint(page), webOverflow = WebLayout.overflow(page))
     }
+
+    /**
+     * Chrome's a11y projection concatenates sibling spans without separators ("할인소장11,000 캐시
+     * 7,700 캐시" for four web texts), so label equality misses it. A native label that splits
+     * entirely into web labels (whitespace ignored) is that projection.
+     */
+    private fun webComposition(webLabels: Set<String>): (String) -> Boolean {
+        val tokens = webLabels.map { it.filterNot(Char::isWhitespace) }.filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return { false }
+        return { label ->
+            val s = label.filterNot(Char::isWhitespace)
+            if (s.isEmpty()) false else {
+                val memo = HashMap<Int, Boolean>()
+                fun from(i: Int): Boolean = i == s.length || memo.getOrPut(i) {
+                    tokens.any { t -> s.startsWith(t, i) && from(i + t.length) }
+                }
+                from(0)
+            }
+        }
+    }
+
+    /** Same on-screen rect, every edge within 8 px (the WebView node itself, not an enclosing scroller). */
+    private fun sameRect(a: Bounds, b: Bounds): Boolean =
+        abs(a.x0 - b.x0) <= 8 && abs(a.y0 - b.y0) <= 8 && abs(a.x1 - b.x1) <= 8 && abs(a.y1 - b.y1) <= 8
 
     private fun Bounds.containsCenter(e: LogicalElement): Boolean =
         e.center.x in x0..x1 && e.center.y in y0..y1
@@ -116,4 +144,32 @@ class WebAwareDevice(
 
     private fun isWebViewNode(e: LogicalElement): Boolean =
         e.resourceId?.contains("webview", ignoreCase = true) == true
+
+    companion object {
+    /**
+         * Reading order for web elements: top-to-bottom by row, left-to-right within a row. A plain
+         * (center.y, center.x) sort scrambles rows whose members differ in font size by a pixel or
+         * two (a struck-out price listed after the price next to it — 실측). Elements whose center
+         * falls inside the running vertical band shared by the row's members join that row.
+         */
+            internal fun readingOrder(elements: List<LogicalElement>): List<LogicalElement> {
+            val rows = mutableListOf<MutableList<LogicalElement>>()
+            var bandTop = 0
+            var bandBottom = -1
+            for (e in elements.sortedBy { it.center.y }) {
+                val top = e.bounds?.y0 ?: e.center.y
+                val bottom = e.bounds?.y1 ?: e.center.y
+                if (rows.isNotEmpty() && e.center.y in bandTop..bandBottom) {
+                    rows.last() += e
+                    bandTop = maxOf(bandTop, top)
+                    bandBottom = minOf(bandBottom, bottom)
+                } else {
+                    rows += mutableListOf(e)
+                    bandTop = top
+                    bandBottom = bottom
+                }
+            }
+            return rows.flatMap { row -> row.sortedWith(compareBy({ it.bounds?.x0 ?: it.center.x }, { it.center.y })) }
+        }
+    }
 }

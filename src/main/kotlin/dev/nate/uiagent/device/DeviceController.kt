@@ -88,13 +88,15 @@ class DeviceController(
         val before = grounding ?: return fullLayout()
         val after = stabilize()
         grounding = after
+        val diff = computeDiff(before.elements, after.elements, volatileKeys)
         // SPA re-renders churn identity-less elements, so diffs on web-merged observations are
-        // noise; return the full merged observation instead (plan M2).
-        if (before.hasWeb || after.hasWeb) {
+        // noise; return the full merged observation instead (plan M2). An empty diff is not
+        // noise though: it is the NO CHANGE sentinel the prompt rules key on (a tap on a page
+        // title went unanswered and the model never learned it was a no-op, 실측 결제 페이지).
+        if ((before.hasWeb || after.hasWeb) && !diff.isEmpty) {
             trace.event("webObserve") { it["action"] = action; it["elements"] = after.elements.size.toString() }
             return "(web content: full observation)\n" + renderFullLayout(after.elements) + noteSuffix(after)
         }
-        val diff = computeDiff(before.elements, after.elements, volatileKeys)
         val rendered = renderDiff(diff)
         trace.event("diff") {
             it["action"] = action
@@ -162,6 +164,21 @@ class DeviceController(
         candidates.take(8).forEach { append("- ").append(syntheticHandle(it)).append(' ').append(elementJson(it)).append('\n') }
     }.trimEnd()
 
+    /**
+     * scrollToFind result when several elements match. A search is complete once the target is on
+     * screen, so this is FOUND, not AMBIGUOUS: the tap-oriented "Repeat the action with one of" wording
+     * read as an instruction to tap a handle and made find-only steps overreach (실측, 패키지 셀 2개).
+     */
+    private fun foundMsg(how: String, target: String, candidates: List<LogicalElement>) = buildString {
+        append("FOUND $how")
+        if (candidates.size == 1) {
+            append(":\n").append(elementJson(candidates.single()))
+        } else {
+            append(": ${candidates.size} elements match '$target', in screen order:\n")
+            candidates.take(8).forEach { append("- ").append(syntheticHandle(it)).append(' ').append(elementJson(it)).append('\n') }
+        }
+    }.trimEnd()
+
     // ---------------------------------------------------------------- actions
 
     fun tap(target: String): String = traced("tap", "target" to target) {
@@ -169,11 +186,36 @@ class DeviceController(
             is Resolution.NotFound -> notFoundMsg(target)
             is Resolution.Ambiguous -> ambiguousMsg(target, r.candidates)
             is Resolution.Match -> {
+                if (!fastObserve) plainTextGuard(r.element)?.let { return@traced it }
                 lastResolved = r.element
                 device.tap(r.element.center.x, r.element.center.y)
                 "Tapped '${handleOf(r.element)}'.\n" + settleAndDiff("tap $target")
             }
         }
+    }
+
+    /**
+     * Plain text is not a control. A text with no interactions and no clickable/checkable ancestor
+     * (a page title, a heading, a price) is refused without acting — the model otherwise taps
+     * whatever label shares a word with the command, gets NO CHANGE, and tries the next one
+     * (실측: 결제 페이지, 5회 연속). A text nested in a clickable card or
+     * button is fine: the tap lands on its host. Replay (fastObserve) skips the guard and
+     * reproduces whatever worked when it was recorded.
+     */
+    private fun plainTextGuard(e: LogicalElement): String? {
+        if (e.interactions.isNotEmpty()) return null
+        val all = grounding?.elements ?: return null
+        val byId = all.associateBy { it.id }
+        var p = e.parentId?.let(byId::get)
+        while (p != null) {
+            if (p.interactions.any { it == "clickable" || it == "checkable" }) return null
+            p = p.parentId?.let(byId::get)
+        }
+        // The fact alone. What to do next (scroll, another element, FAILED) is the model's call
+        // under the prompt rules; a harness-side "scroll down" nudge was tried and dropped — it
+        // reads as an instruction on every screen, including ones where the control is simply
+        // named differently.
+        return "ERROR: '${handleOf(e)}' is plain text (no interactions); tapping it does nothing."
     }
 
     fun type(target: String, text: String): String = traced("type", "target" to target, "text" to text) {
@@ -220,8 +262,10 @@ class DeviceController(
 
     fun scrollToFind(scrollable: String, target: String, direction: String): String =
         traced("scrollToFind", "scrollable" to scrollable, "target" to target, "direction" to direction) {
-            (resolve(target) as? Resolution.Match)?.let {
-                return@traced "FOUND without scrolling:\n${elementJson(it.element)}"
+            when (val r = resolve(target)) {
+                is Resolution.Match -> return@traced foundMsg("without scrolling", target, listOf(r.element))
+                is Resolution.Ambiguous -> return@traced foundMsg("without scrolling", target, r.candidates)
+                is Resolution.NotFound -> {}
             }
             var stalled = false
             for (round in 1..maxScrollRounds) {
@@ -234,9 +278,8 @@ class DeviceController(
                     break
                 }
                 when (val r = resolve(target)) {
-                    is Resolution.Match -> return@traced "FOUND after $round scroll(s) $direction:\n${elementJson(r.element)}"
-                    is Resolution.Ambiguous -> return@traced "FOUND after $round scroll(s) $direction (multiple matches):\n" +
-                        ambiguousMsg(target, r.candidates)
+                    is Resolution.Match -> return@traced foundMsg("after $round scroll(s) $direction", target, listOf(r.element))
+                    is Resolution.Ambiguous -> return@traced foundMsg("after $round scroll(s) $direction", target, r.candidates)
                     is Resolution.NotFound -> {} // keep scrolling
                 }
             }
