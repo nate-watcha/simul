@@ -1,4 +1,4 @@
-package dev.nate.uiagent.cli
+package dev.nate.uiagent.device
 
 /**
  * One Android `settings` entry the runner pins over adb before scenarios run:
@@ -80,18 +80,18 @@ object DeviceSettings {
     /**
      * Bring the device to [wanted]. Each change is appended to [sink] as it happens — so a
      * failure half-way still leaves the caller able to undo what did change — and reported
-     * through [log] as `<ns>.<key> = <value> (was <before>)`. Returns [sink].
+     * through [log] as `<ns>.<key> = <value> (was <before>)`.
      */
     fun apply(
         ops: DeviceOps,
         wanted: List<DeviceSetting>,
         log: (String) -> Unit,
-        sink: MutableList<SettingChange> = mutableListOf(),
-    ): MutableList<SettingChange> {
-        if (wanted.isEmpty()) return sink
+        sink: MutableList<SettingChange>,
+    ) {
+        if (wanted.isEmpty()) return
         if (!ops.isEmulator()) {
             log("warning: ${wanted.size} device setting(s) ignored — target is not an emulator")
-            return sink
+            return
         }
         for (s in wanted) {
             val current = ops.settingGet(s.namespace, s.key)
@@ -100,7 +100,6 @@ object DeviceSettings {
             sink += SettingChange(s, current)
             log("$s (was ${DeviceSetting.show(current)})")
         }
-        return sink
     }
 
     /** Undo [changes], newest first; each restore failure is logged, never thrown (best effort on exit). */

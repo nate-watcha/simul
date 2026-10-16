@@ -1,5 +1,7 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.device.GUEST_STATE
+import dev.nate.uiagent.device.DeviceSetting
 import java.io.File
 
 /**
@@ -23,7 +25,6 @@ data class Scenario(
     val tags: List<String>,
     val setup: Setup?,
     val steps: List<String>,
-    val file: File? = null,
     /** Free prose between frontmatter and the first numbered step — a one-line summary. */
     val description: String = "",
     /** Declared `states:` — one run and one trace per state. Empty for a stateless scenario. */
@@ -103,7 +104,11 @@ data class Scenario(
 
     companion object {
         /** The one state name that needs no snapshot: without `guest.tar` it means a fresh install. */
-        const val GUEST = "guest"
+        const val GUEST = GUEST_STATE
+
+        /** State names double as file names (`<name>.tar`, `<md>@<name>.trace.json`). */
+        private val STATE_NAME = Regex("[A-Za-z0-9._-]+")
+        fun isValidStateName(s: String): Boolean = STATE_NAME.matches(s)
     }
 }
 
@@ -121,7 +126,7 @@ object ScenarioMd {
         val name = MiniYaml.string(y, "name") ?: file?.nameWithoutExtension ?: "scenario"
         val states = MiniYaml.list(y, "states")
         require(states.distinct().size == states.size) { "scenario '$name': duplicate entries in states: $states" }
-        require(states.all { it.matches(STATE_NAME) }) { "scenario '$name': state names must be [A-Za-z0-9._-]+ (states: $states)" }
+        require(states.all(Scenario::isValidStateName)) { "scenario '$name': state names must be [A-Za-z0-9._-]+ (states: $states)" }
 
         val stepDefs = parseSteps(body, name, states)
         // description = prose lines before the first numbered step (headings/blank lines dropped)
@@ -151,7 +156,6 @@ object ScenarioMd {
             tags = MiniYaml.list(y, "tags"),
             setup = setup,
             steps = stepDefs.map { it.render(null) },
-            file = file,
             description = description,
             states = states,
             stepDefs = stepDefs,
@@ -190,8 +194,6 @@ object ScenarioMd {
         require(prefix in states) { "scenario '$name': unknown state '$prefix' in `:: $raw` (states: $states)" }
         return text.trim().takeIf { it.isNotEmpty() }?.let { Scenario.Criterion(prefix, it) }
     }
-
-    private val STATE_NAME = Regex("[A-Za-z0-9._-]+")
 
     /** Returns (frontmatter or null, body). Frontmatter = leading `---` ... `---` block. */
     private fun splitFrontmatter(text: String): Pair<String?, String> {

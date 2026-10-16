@@ -1,0 +1,19 @@
+agentVersion: ">=__AGENT_VERSION__"
+app: your.app.package   # TODO: set the application id under test
+llm:
+  url: http://localhost:8080   # OpenAI-compatible endpoint: local llama-server or a hosted API
+  model: qwen                  # model name sent with every request
+  # apiKey: ${OPENAI_API_KEY}  # endpoints that need a key: ${VAR} reads the environment —
+  #                            # never a literal here (this file is committed). Without this
+  #                            # line SIMUL_LLM_API_KEY is used when set.
+defaults:
+  maxTurns: 12
+  scrollLimit: 3
+display:
+  sizeClass: small   # small=720x1280@320(360dp) | medium(640dp) | large(1066dp)
+# device:            # emulator `settings` every scenario assumes (read → put only if different → restored on exit).
+#   settings:        # a scenario that needs the opposite declares the same block under its own `setup:`
+#     secure.credential_service: ""              # no credential provider → no "Use your saved password" sheet
+#     secure.credential_service_primary: ""
+#     secure.autofill_service: null              # null = `settings delete` (key unset)
+#     secure.immersive_mode_confirmations: confirmed

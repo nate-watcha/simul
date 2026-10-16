@@ -1,20 +1,13 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.device.SettingChange
+import dev.nate.uiagent.device.DeviceSettings
+import dev.nate.uiagent.device.DeviceOps
 import dev.nate.uiagent.Point
 import dev.nate.uiagent.agent.LlmStats
+import dev.nate.uiagent.secs
 import dev.nate.uiagent.device.DeviceController
-import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.longOrNull
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
 
 enum class RunMode { LLM, REPLAY, AUTO }
 
@@ -42,11 +35,6 @@ data class StepReport(
     val screen: List<String> = emptyList(),
 )
 
-/** The labels a scenario could reference on the current screen, deduplicated and capped. */
-fun screenLabels(elements: List<dev.nate.uiagent.LogicalElement>, cap: Int = 30): List<String> =
-    elements.mapNotNull { it.label ?: it.resourceId }.map { it.replace("\r\n", " ").replace('\n', ' ').trim() }
-        .filter { it.isNotEmpty() }.distinct().take(cap)
-
 data class ScenarioRunResult(
     val scenario: String,
     val status: StepStatus,
@@ -66,7 +54,7 @@ data class ScenarioRunResult(
 }
 
 /**
- * The journeys.md execution contract, deterministically: run setup, execute steps in order
+ * The scenario execution contract, deterministically: run setup, execute steps in order
  * with per-step isolation, propagate the first FAILED as SKIPPED for the rest, and emit the
  * report. Mode decides how a step runs: llm (record) or replay (pure trace playback — the LLM
  * is never consulted; a broken step is a FAILED result).
@@ -115,8 +103,8 @@ class ScenarioRunner(
                 ).joinToString(" + ").ifEmpty { "none" }
                 log("  setup: $what")
                 val s = System.currentTimeMillis()
-                ops.setup(it, app)
-                log("  setup: done (${sec(System.currentTimeMillis() - s)})")
+                ops.setup(app, appState = it.appState, clearData = it.clearData, launch = it.launch, deeplink = it.deeplink)
+                log("  setup: done (${secs(System.currentTimeMillis() - s)})")
             }
         } catch (ex: Exception) {
             val why = "setup failed: ${ex.message?.lineSequence()?.firstOrNull() ?: ex.toString()}"
@@ -205,13 +193,11 @@ class ScenarioRunner(
 
     /** One step's result line, e.g. `PASSED (replay, 7.2s)` or `FAILED (llm, 41s) — reason`. */
     private fun renderResult(s: StepReport): String =
-        "${s.status}${s.mode?.let { " ($it, ${sec(s.durationMs)}${llmShare(s)})" } ?: ""}${s.reason?.let { " — $it" } ?: ""}"
+        "${s.status}${s.mode?.let { " ($it, ${secs(s.durationMs)}${llmShare(s)})" } ?: ""}${s.reason?.let { " — $it" } ?: ""}"
 
     /** `, llm 12.3s/3 calls` — how much of an llm step was the model (the rest is device time). */
     private fun llmShare(s: StepReport): String =
-        s.llm?.takeIf { it.calls > 0 }?.let { ", llm ${sec(it.durationMs)}/${it.calls} call${if (it.calls == 1) "" else "s"}" } ?: ""
-
-    private fun sec(ms: Long): String = "%.1fs".format(ms / 1000.0)
+        s.llm?.takeIf { it.calls > 0 }?.let { ", llm ${secs(it.durationMs)}/${it.calls} call${if (it.calls == 1) "" else "s"}" } ?: ""
 
     // ------------------------------------------------------------------ step modes
 
@@ -260,7 +246,7 @@ class ScenarioRunner(
      */
     private fun runnerVerifyStep(n: Int, text: String): StepReport? {
         if (controller.currentElements.isEmpty()) {
-            log("  observing initial screen (~3.5s/dump)…")
+            log("  observing initial screen (~1s/dump)…")
             controller.fullLayout()
         }
         var judgment = judgeVerify(text, controller.currentElements) ?: return null
@@ -300,7 +286,7 @@ class ScenarioRunner(
             // Re-observe only when there is no grounding yet (scenario start). Between steps
             // the previous action already observed — an observation costs seconds on-device.
             if (controller.currentElements.isEmpty()) {
-                log("  observing initial screen (~3.5s/dump)…")
+                log("  observing initial screen (~1s/dump)…")
                 controller.fullLayout()
             }
             replayer.replayStep(ts)
@@ -334,62 +320,6 @@ class ScenarioRunner(
         return if (ops.screenshot(File(reportDir, rel))) rel else null
     }
 
-    // ------------------------------------------------------------------ report
-
-    @OptIn(ExperimentalSerializationApi::class)
-    private val reportJson = Json { prettyPrint = true; prettyPrintIndent = "  " }
-
-    private fun writeReport(r: ScenarioRunResult, mode: String) {
-        val obj: JsonObject = buildJsonObject {
-            put("scenario", r.scenario)
-            put("status", r.status.name)
-            put("mode", mode)
-            put("startedAt", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX").format(Date()))
-            put("durationMs", r.durationMs)
-            r.llm?.let { put("llm", llmJson(it)) }
-            put("env", buildJsonObject {
-                put("agentVersion", AGENT_VERSION)
-                put("appVersionName", ops.appVersionName(app)?.let(::JsonPrimitive) ?: JsonNull)
-                put("device", ops.deviceName()?.let(::JsonPrimitive) ?: JsonNull)
-                put("androidCli", ops.androidCliVersion()?.let(::JsonPrimitive) ?: JsonNull)
-            })
-            put("steps", buildJsonArray {
-                r.steps.forEach { s ->
-                    add(buildJsonObject {
-                        put("step", s.index)
-                        put("text", s.text)
-                        put("status", s.status.name)
-                        put("mode", s.mode?.let(::JsonPrimitive) ?: JsonNull)
-                        put("actions", buildJsonArray { s.actions.forEach { add(TraceJson.actionJson(it)) } })
-                        put("evidence", buildJsonArray {
-                            s.evidence.forEach { add(JsonPrimitive(it)) }
-                            s.stateEvidence.forEach { add(JsonPrimitive(it.toString())) } // "label=state"
-                        })
-                        put("reason", s.reason?.let(::JsonPrimitive) ?: JsonNull)
-                        put("durationMs", s.durationMs)
-                        s.llm?.let { put("llm", llmJson(it)) }
-                        put("screenshots", buildJsonArray { s.screenshots.forEach { add(JsonPrimitive(it)) } })
-                        if (s.screen.isNotEmpty()) put("screen", buildJsonArray { s.screen.forEach { add(JsonPrimitive(it)) } })
-                    })
-                }
-            })
-        }
-        reportDir.mkdirs()
-        File(reportDir, "report.json").writeText(reportJson.encodeToString(JsonObject.serializer(), obj) + "\n")
-    }
-}
-
-/** `llm` object of report.json / summary.json — fixed key order, omitted entirely when null. */
-fun llmJson(l: LlmStats): JsonObject = buildJsonObject {
-    put("calls", l.calls)
-    put("durationMs", l.durationMs)
-    put("promptTokens", l.promptTokens)
-    put("completionTokens", l.completionTokens)
-    put("peakPromptTokens", l.peakPromptTokens)
-}
-
-fun llmFromJson(o: JsonObject?): LlmStats? {
-    o ?: return null
-    fun n(k: String) = (o[k] as? JsonPrimitive)?.longOrNull ?: 0L
-    return LlmStats(n("calls").toInt(), n("durationMs"), n("promptTokens"), n("completionTokens"), n("peakPromptTokens"))
+    private fun writeReport(r: ScenarioRunResult, mode: String) =
+        ReportJson.write(r, mode, ReportJson.Env(ops.appVersionName(app), ops.deviceName(), ops.androidCliVersion()), reportDir)
 }

@@ -1,8 +1,8 @@
-package dev.nate.uiagent.cli
+package dev.nate.uiagent.device
 
 /**
  * A forced emulator display: physical pixels + density. What the app actually responds to is
- * the dp width (= width / (density/160)) — the Material window size class — so a profile must
+ * the dp width (= width / (density/160)) — the size class the app's design system switches on — so a profile must
  * always pin BOTH size and density; forcing only the pixel size on a device with a different
  * density would still produce a different layout.
  *

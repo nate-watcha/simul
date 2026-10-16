@@ -18,8 +18,6 @@ dependencies {
     implementation("ai.koog:koog-agents:$koog")
     implementation("ai.koog:agents-features-memory:$koog")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2") // agent.run은 suspend — runBlocking 브리지
-    // koog가 전이로 쓰는 Ktor 엔진을 직접 구성한다(keep-alive를 llama-server의 5s보다 짧게 — Llm.kt 참조)
-    implementation("io.ktor:ktor-client-apache5:3.3.3")
     // 우리 코드는 JsonElement 런타임만 사용 — @Serializable 컴파일러 플러그인은 금지 (Core.kt 참조).
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.10.0")
     implementation("org.jline:jline:3.26.3")    // TUI: raw 모드/alt screen/키 입력
@@ -45,7 +43,7 @@ tasks.test {
 tasks.register<JavaExec>("runAgent") {
     group = "application"
     description = "Run the tool-calling agent on a single natural-language command"
-    mainClass.set("dev.nate.uiagent.agent.MainKt")
+    mainClass.set("dev.nate.uiagent.cli.AdhocKt")
     classpath = sourceSets["main"].runtimeClasspath
     standardInput = System.`in`
     isIgnoreExitValue = true // FAILED verdict exits 1; that's a result, not a build failure

@@ -1,14 +1,19 @@
-package dev.nate.uiagent.cli
+package dev.nate.uiagent.device
 
 import dev.nate.uiagent.runProcess
+import dev.nate.uiagent.runToFile
 import java.io.File
 
 /**
  * Runner-side device operations that are not model tools: scenario setup (deeplink/cold
  * launch), screenshots, and environment facts for the report. Tests substitute a fake.
  */
+/** The one app state that needs no snapshot: `pm clear` alone is the whole restore. */
+const val GUEST_STATE = "guest"
+
 interface DeviceOps {
-    fun setup(setup: Scenario.Setup, app: String?)
+    /** Scenario setup: optional app-data restore (state snapshot or clear), cold start, deeplink. */
+    fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?)
 
     /** Capture a PNG screenshot into [dest]; false if capture failed (non-fatal). */
     fun screenshot(dest: File): Boolean
@@ -21,23 +26,23 @@ interface DeviceOps {
      * format has changed between releases (flat list → tree), so the version is stamped into
      * traces and reports and a replay under a different version gets a warning.
      */
-    fun androidCliVersion(): String? = null
+    fun androidCliVersion(): String?
 
     // ---- display profile enforcement (emulator-only safety net; see DisplayProfile) ----
 
     /** Current effective display as "WxH@dpi" (override if set, else physical); null if unreadable. */
-    fun displayProfile(): String? = null
+    fun displayProfile(): String?
 
-    fun isEmulator(): Boolean = false
-    fun setDisplay(profile: DisplayProfile) {}
-    fun resetDisplay() {}
+    fun isEmulator(): Boolean
+    fun setDisplay(profile: DisplayProfile)
+    fun resetDisplay()
 
     // ---- `settings` pinning (emulator-only, see DeviceSettings) ----
 
     /** `settings get <namespace> <key>`; null when the key is unset (the shell prints `null`). */
-    fun settingGet(namespace: String, key: String): String? = null
-    fun settingPut(namespace: String, key: String, value: String) {}
-    fun settingDelete(namespace: String, key: String) {}
+    fun settingGet(namespace: String, key: String): String?
+    fun settingPut(namespace: String, key: String, value: String)
+    fun settingDelete(namespace: String, key: String)
 }
 
 class AdbOps(
@@ -47,8 +52,8 @@ class AdbOps(
     private val statesDir: File? = null,
 ) : DeviceOps {
 
-    override fun setup(setup: Scenario.Setup, app: String?) {
-        if ((setup.clearData || setup.appState != null) && app != null) {
+    override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?) {
+        if ((clearData || appState != null) && app != null) {
             runCatching { runProcess(listOf(adbBin, "shell", "am", "force-stop", app)) }
             runProcess(listOf(adbBin, "shell", "pm", "clear", app))
             // pm clear also revokes runtime permissions — re-grant the ones whose system
@@ -57,12 +62,12 @@ class AdbOps(
                 runProcess(listOf(adbBin, "shell", "pm", "grant", app, "android.permission.POST_NOTIFICATIONS"))
             }
         }
-        setup.appState?.let { name ->
+        appState?.let { name ->
             requireNotNull(app) { "setup.appState requires `app` in config.yaml" }
             val tar = File(statesDir ?: error("appState needs a .simul project"), "$name.tar")
             if (!tar.isFile) {
                 // `guest` without a snapshot is a fresh install — the pm clear above is the whole restore
-                require(name == Scenario.GUEST) { "app state '$name' not found: ${tar.path} — create it with `simul state save $name`" }
+                require(name == GUEST_STATE) { "app state '$name' not found: ${tar.path} — create it with `simul state save $name`" }
                 return@let
             }
             // debuggable builds only: restore the app-data snapshot under the app's own uid
@@ -70,14 +75,14 @@ class AdbOps(
             runProcess(listOf(adbBin, "shell", "run-as", app, "sh", "-c", "'tar xf /data/local/tmp/simul-state.tar'"))
             runCatching { runProcess(listOf(adbBin, "shell", "rm", "/data/local/tmp/simul-state.tar")) }
         }
-        if (setup.launch && app != null) {
+        if (launch && app != null) {
             // cold start: kill, then fire the launcher intent; give the splash a head start
             // before the runner's wait-for-stable takes over
             runCatching { runProcess(listOf(adbBin, "shell", "am", "force-stop", app)) }
             runProcess(listOf(adbBin, "shell", "monkey", "-p", app, "-c", "android.intent.category.LAUNCHER", "1"))
             Thread.sleep(3000)
         }
-        setup.deeplink?.let { link ->
+        deeplink?.let { link ->
             // Pin the package: with both prod and dev builds installed, an unpinned VIEW
             // intent opens the system app chooser instead of the app under test.
             val out = runProcess(
@@ -92,16 +97,7 @@ class AdbOps(
     }
 
 
-    override fun screenshot(dest: File): Boolean = try {
-        dest.parentFile?.mkdirs()
-        val p = ProcessBuilder(adbBin, "exec-out", "screencap", "-p")
-            .redirectOutput(dest)
-            .redirectErrorStream(false)
-            .start()
-        p.waitFor() == 0 && dest.length() > 0
-    } catch (_: Exception) {
-        false
-    }
+    override fun screenshot(dest: File): Boolean = runToFile(listOf(adbBin, "exec-out", "screencap", "-p"), dest) == null
 
     override fun appVersionName(app: String?): String? {
         if (app == null) return null
@@ -167,19 +163,12 @@ class AdbOps(
      */
     fun saveState(app: String, dest: File): Boolean {
         runCatching { runProcess(listOf(adbBin, "shell", "am", "force-stop", app)) }
-        dest.parentFile?.mkdirs()
-        val p = ProcessBuilder(
-            adbBin, "exec-out", "run-as", app,
-            "tar", "cf", "-", "--exclude=./cache", "--exclude=./code_cache", ".",
-        ).redirectOutput(dest).redirectErrorStream(false).start()
-        val err = p.errorStream.bufferedReader().readText()
-        p.waitFor()
-        if (p.exitValue() != 0 || dest.length() == 0L) {
-            System.err.println("state save failed (run-as needs a debuggable build): ${err.trim().take(200)}")
-            dest.delete()
-            return false
-        }
-        return true
+        val err = runToFile(
+            listOf(adbBin, "exec-out", "run-as", app, "tar", "cf", "-", "--exclude=./cache", "--exclude=./code_cache", "."),
+            dest,
+        ) ?: return true
+        System.err.println("state save failed (run-as needs a debuggable build): ${err.take(200)}")
+        return false
     }
 
     companion object {

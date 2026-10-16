@@ -1,28 +1,12 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.Spawned
 import dev.nate.uiagent.runProcess
+import dev.nate.uiagent.spawnProcess
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 /** What `--video` / `--gif` ask of a run: nothing, the raw screen recording, or that plus a GIF. */
 enum class VideoOutput { NONE, MP4, GIF }
-
-/** A running child process, narrowed to what the recorder needs so tests can script one. */
-interface Spawned {
-    /** True when the process exited within [timeoutMs]. */
-    fun waitFor(timeoutMs: Long): Boolean
-    fun exitCode(): Int
-    fun destroy()
-}
-
-internal fun spawnProcess(argv: List<String>): Spawned {
-    val p = ProcessBuilder(argv).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
-    return object : Spawned {
-        override fun waitFor(timeoutMs: Long) = p.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
-        override fun exitCode() = p.exitValue()
-        override fun destroy() { p.destroyForcibly() }
-    }
-}
 
 /**
  * Records the device screen for the duration of a scenario with `adb shell screenrecord`.

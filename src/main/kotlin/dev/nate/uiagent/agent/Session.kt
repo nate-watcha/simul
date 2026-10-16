@@ -1,5 +1,6 @@
 package dev.nate.uiagent.agent
 
+import dev.nate.uiagent.Defaults
 import ai.koog.agents.chatMemory.feature.ChatHistoryProvider
 import ai.koog.agents.chatMemory.feature.ChatMemory
 import ai.koog.agents.chatMemory.feature.InMemoryChatHistoryProvider
@@ -47,15 +48,15 @@ import java.util.UUID
 class ScenarioSession(
     executor: PromptExecutor,
     private val controller: DeviceController,
-    private val maxTurnsPerStep: Int = 12,
+    private val maxTurnsPerStep: Int = Defaults.MAX_TURNS,
     /** Live progress sink — one line per turn (llm/tool timings), a step can run for minutes. */
     log: (String) -> Unit = {},
     model: LLModel = SimulLlm.model(),
     /** Where the scenario's conversation lives between steps; in-memory by default. */
     history: ChatHistoryProvider = InMemoryChatHistoryProvider(),
 ) {
-    /** [llm]: what the step cost in model calls, time and tokens. */
-    data class Verdict(val passed: Boolean, val reason: String, val llm: LlmStats = LlmStats.ZERO)
+    /** [llm]: what the step cost in model calls, time and tokens; null for executors that never consult the model. */
+    data class Verdict(val passed: Boolean, val reason: String, val llm: LlmStats? = null)
 
     private val sessionId = "scenario-" + UUID.randomUUID()
     private val gate = StepGate()
@@ -65,7 +66,7 @@ class ScenarioSession(
     private val agent: GraphAIAgent<String, String> = GraphAIAgent(
         promptExecutor = executor,
         agentConfig = AIAgentConfig(
-            prompt = prompt("simul", params = SimulLlm.PARAMS) { system(SYSTEM_PROMPT_V1) },
+            prompt = prompt("simul", params = SimulLlm.PARAMS) { system(SYSTEM_PROMPT) },
             model = model,
             // Koog counts graph nodes: start + request + (execute + send) per turn + record + finish.
             maxAgentIterations = maxTurnsPerStep * 2 + 5,

@@ -2,7 +2,7 @@ package dev.nate.uiagent.cli
 
 import ai.koog.prompt.executor.model.PromptExecutor
 import ai.koog.prompt.llm.LLModel
-import dev.nate.uiagent.agent.LlmStats
+import dev.nate.uiagent.Defaults
 import dev.nate.uiagent.agent.ScenarioSession
 import dev.nate.uiagent.agent.SimulLlm
 import dev.nate.uiagent.device.DeviceController
@@ -18,11 +18,8 @@ interface StepExecutor {
      * (scenario start). [criterion] is the step's `::` expected-result clause, if any —
      * delivered to the model only after its first tool result (see [ScenarioSession.runStep]).
      */
-    fun runStep(stepText: String, initialLayout: String?, criterion: String? = null): StepVerdict
+    fun runStep(stepText: String, initialLayout: String?, criterion: String? = null): ScenarioSession.Verdict
 }
-
-/** [llm] is null for executors that never consult the model (replay, scripted fakes). */
-data class StepVerdict(val passed: Boolean, val reason: String, val llm: LlmStats? = null)
 
 /**
  * All steps of one scenario share ONE LLM conversation ([ScenarioSession], Koog ChatMemory):
@@ -39,16 +36,15 @@ class SessionStepExecutor(
     private val controller: DeviceController,
     private val executor: () -> PromptExecutor,
     private val model: LLModel = SimulLlm.model(),
-    private val maxIterations: Int = 12,
+    private val maxIterations: Int = Defaults.MAX_TURNS,
     private val log: (String) -> Unit = {},
 ) : StepExecutor {
 
     private var session: ScenarioSession? = null
 
-    override fun runStep(stepText: String, initialLayout: String?, criterion: String?): StepVerdict {
+    override fun runStep(stepText: String, initialLayout: String?, criterion: String?): ScenarioSession.Verdict {
         val s = session ?: ScenarioSession(executor(), controller, maxIterations, log, model)
             .also { session = it }
-        val v = s.runStep(stepText, initialLayout, criterion)
-        return StepVerdict(v.passed, v.reason, v.llm)
+        return s.runStep(stepText, initialLayout, criterion)
     }
 }

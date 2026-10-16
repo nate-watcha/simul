@@ -1,25 +1,13 @@
 package dev.nate.uiagent.cli
 
-import dev.nate.uiagent.device.AdbDevice
-import dev.nate.uiagent.device.DeviceController
-import dev.nate.uiagent.Trace
-import dev.nate.uiagent.web.CdpClient
-import dev.nate.uiagent.web.WebAwareDevice
+import dev.nate.uiagent.device.AdbOps
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
 import kotlin.system.exitProcess
 
 /**
- * The `simul` CLI (plan §1):
- *
- *   simul run <path>... | --tag <tag> | --all   [--mode replay|llm|auto] [--dry-run]
- *   simul list
- *   simul "<natural-language command>"          (ad-hoc mode; works without .simul/)
- *
- * CI invariant: CI only replays. The default mode is auto — replay when a trace exists,
- * SKIP with a warning when it doesn't; the LLM interprets full scenarios only under an
- * explicit `--mode llm`.
+ * The `simul` CLI: dispatch plus the small subcommands. `run` lives in RunCommand.kt, `report`
+ * in Report.kt, `init` in InitCommand.kt, the ad-hoc single command in Adhoc.kt, and the
+ * interactive mode (bare `simul` on a TTY inside a project) in Tui.kt.
  */
 fun main(argv: Array<String>) {
     exitProcess(cliMain(argv, File(".").absoluteFile.parentFile))
@@ -29,7 +17,7 @@ fun cliMain(argv: Array<String>, cwd: File): Int = when (argv.firstOrNull()) {
     null -> {
         // bare `simul` on a TTY inside a project = interactive mode; otherwise usage
         val project = SimulProject.find(cwd)
-        if (project != null && System.console() != null) Tui(project, cwd).run()
+        if (project != null && System.console() != null) Tui(project).run()
         else {
             printUsage()
             2
@@ -90,349 +78,6 @@ private fun printUsage() {
     )
 }
 
-// -------------------------------------------------------------------------- run
-
-internal fun runCommand(args: List<String>, cwd: File): Int {
-    var mode = RunMode.AUTO
-    var dryRun = false
-    var all = false
-    var urlOverride: String? = null
-    var stateFilter: String? = null
-    var summaryPath: String? = null
-    var label: String? = null
-    var video = VideoOutput.NONE
-    val tags = mutableListOf<String>()
-    val paths = mutableListOf<String>()
-
-    var i = 0
-    while (i < args.size) {
-        when (val a = args[i]) {
-            "--mode" -> mode = when (args.getOrNull(++i)) {
-                "replay" -> RunMode.REPLAY
-                "llm" -> RunMode.LLM
-                "auto" -> RunMode.AUTO
-                else -> return err("invalid --mode (use replay|llm|auto)")
-            }
-            "--dry-run" -> dryRun = true
-            "--all" -> all = true
-            "--tag" -> tags += args.getOrNull(++i) ?: return err("--tag needs a value")
-            "--state" -> stateFilter = args.getOrNull(++i) ?: return err("--state needs a value")
-            "--url" -> urlOverride = args.getOrNull(++i) ?: return err("--url needs a value")
-            "--summary" -> summaryPath = args.getOrNull(++i) ?: return err("--summary needs a file path")
-            "--label" -> label = args.getOrNull(++i) ?: return err("--label needs a value")
-            "--gif" -> video = VideoOutput.GIF
-            "--video" -> video = VideoOutput.MP4
-            else -> if (a.startsWith("--")) return err("unknown option $a") else paths += a
-        }
-        i++
-    }
-
-    val project = SimulProject.find(cwd)
-        ?: return err("no .simul/ directory found from $cwd upwards — run inside an app repo with the .simul convention")
-    project.versionWarning()?.let { println(it) }
-
-    // A `states:` scenario is several runs — one variant per state, each with its own trace.
-    val targets: List<Pair<File, Scenario>> = when {
-        paths.isNotEmpty() -> paths.flatMap { p ->
-            val direct = File(cwd, p).takeIf { it.isFile } ?: File(p).takeIf { it.isFile && it.isAbsolute }
-            val md = direct ?: File(project.scenariosDir, p).takeIf { it.isFile }
-                ?: return err("scenario not found: $p")
-            val variants = try { ScenarioMd.parse(md).variants() } catch (e: IllegalArgumentException) {
-                return err("${md.relativeToOrSelf(cwd)}: ${e.message}")
-            }
-            variants.filter { stateFilter == null || it.precondition == stateFilter }.map { md to it }
-        }
-        all || tags.isNotEmpty() || stateFilter != null -> {
-            var broken = false
-            val found = project.scenarioVariants { md, why ->
-                System.err.println("error: ${md.relativeTo(project.scenariosDir)}: $why"); broken = true
-            }
-            if (broken) return 2
-            found.filter { (_, sc) ->
-                (tags.isEmpty() || sc.tags.any { it in tags }) &&
-                    (stateFilter == null || sc.precondition == stateFilter)
-            }
-        }
-        else -> return err("nothing to run: give a scenario path, --tag <tag>, or --all")
-    }
-    if (targets.isEmpty()) return err("no scenarios matched")
-
-    val llm = project.config.llm.let { if (urlOverride != null) it.copy(url = urlOverride) else it }
-    // The key is only needed when the LLM actually runs; replay must work without the secret.
-    if (mode != RunMode.REPLAY && !dryRun) llm.keyProblem()?.let { return err(it) }
-    var anyFailed = false
-    var anyRan = false
-    val outcomes = mutableListOf<ScenarioOutcome>()
-    val batchStart = System.currentTimeMillis()
-    val startedAt = RunSummaryJson.stamp()
-
-    val ops = AdbOps(statesDir = project.statesDir)
-    // Force the configured emulator display for the whole run so traces recorded on one
-    // device replay on any other. Never touch a physical device's screen, and put back
-    // whatever was there before (a developer may have their own wm override active).
-    var displayBefore: String? = null
-    val display = project.config.display
-    if (!dryRun && display != null) {
-        val current = ops.displayProfile()
-        when {
-            !ops.isEmulator() ->
-                println("warning: display profile $display ignored — target is not an emulator")
-            current == display.toString() -> {} // already there, nothing to restore
-            else -> {
-                ops.setDisplay(display)
-                displayBefore = current ?: "unknown"
-                println("display: forced to $display (${display.dpWidth}dp wide) — restored on exit")
-            }
-        }
-    }
-    // Same for the emulator `settings` baseline (credential provider, autofill, ...): read,
-    // change only what differs, and put the developer's own values back when the run ends.
-    val devicePinned = mutableListOf<SettingChange>()
-    if (!dryRun) {
-        DeviceSettings.apply(ops, project.config.device, { println("device: $it — restored on exit") }, devicePinned)
-    }
-
-    try {
-        for ((md, scenario) in targets) {
-            val traceFile = project.traceFileFor(md, scenario)
-            val trace = traceFile.takeIf { it.isFile }?.let { runCatching { TraceJson.read(it) }.getOrNull() }
-
-            if (dryRun) {
-                val planned = if (mode == RunMode.AUTO) (if (trace != null) "replay" else "skip (no trace)") else mode.name.lowercase()
-                println("${scenario.name} (${scenarioPath(project, md, scenario)})")
-                println("  mode: $planned  trace: ${traceStatus(md, traceFile)}  tags: ${scenario.tags}" +
-                    (scenario.state?.let { "  state: $it" } ?: ""))
-                scenario.steps.forEachIndexed { idx, s -> println("  ${idx + 1}. $s") }
-                continue
-            }
-
-            val effective = when {
-                mode != RunMode.AUTO -> mode
-                trace != null -> RunMode.REPLAY
-                else -> {
-                    println("SKIPPED ${scenario.name}: no trace — authoring incomplete (record with --mode llm)")
-                    outcomes += outcomeWithout(project, md, scenario, "SKIPPED", "no trace")
-                    continue
-                }
-            }
-            if (effective == RunMode.REPLAY && trace == null) {
-                println("SKIPPED ${scenario.name}: no trace to replay (record with --mode llm)")
-                outcomes += outcomeWithout(project, md, scenario, "SKIPPED", "no trace")
-                continue
-            }
-
-            anyRan = true
-            if (scenario.precondition == null) {
-                println("note: ${scenario.name} declares no appState/clearData — runs against the device's current state")
-            }
-            // A harness/environment crash (OOM, classpath swapped under a live JVM, adb
-            // vanishing) must not kill the rest of the batch — record it and move on.
-            val result = try {
-                executeScenario(project, scenario, trace, effective, llm, traceFile, ops, video = video)
-            } catch (t: Throwable) {
-                val log = writeCrashLog(project.reportsDir, scenario.name, t)
-                println("CRASH ${scenario.name}: ${t.javaClass.simpleName}: ${t.message ?: ""}")
-                println("  stack trace → ${log.relativeTo(project.appRoot)}")
-                anyFailed = true
-                outcomes += outcomeWithout(project, md, scenario, "CRASH",
-                    "${t.javaClass.simpleName}: ${t.message ?: ""}".trim(), crashLog = log)
-                continue
-            }
-            if (!result.passed) anyFailed = true
-            outcomes += outcomeOf(project, md, scenario, result)
-        }
-    } finally {
-        if (devicePinned.isNotEmpty()) DeviceSettings.restore(ops, devicePinned) { println("device: $it") }
-        displayBefore?.let { before ->
-            val prior = DisplayProfile.parse(before)
-            if (prior != null) ops.setDisplay(prior) else ops.resetDisplay()
-            println("display: restored to ${if (prior != null) before else "device default"}")
-        }
-    }
-
-    if (!anyRan && !dryRun) println("warning: no scenario was executed (all skipped)")
-    if (summaryPath != null && !dryRun) {
-        val file = File(summaryPath).takeIf { it.isAbsolute } ?: File(cwd, summaryPath)
-        val summary = RunSummary(
-            label = label ?: mode.name.lowercase(),
-            mode = mode.name.lowercase(),
-            startedAt = startedAt,
-            durationMs = System.currentTimeMillis() - batchStart,
-            agentVersion = AGENT_VERSION,
-            appVersionName = ops.appVersionName(project.config.app),
-            device = ops.deviceName(),
-            scenarios = outcomes,
-            androidCli = ops.androidCliVersion(),
-        )
-        RunSummaryJson.write(summary, file)
-        val shown = file.relativeToOrSelf(cwd).path.let { if (it.startsWith("..")) file.absolutePath else it }
-        println("summary: $shown (${outcomes.count { it.passed }}/${outcomes.size} passed)")
-    }
-    return if (anyFailed) 1 else 0
-}
-
-internal fun executeScenario(
-    project: SimulProject,
-    scenario: Scenario,
-    trace: TraceFile?,
-    mode: RunMode,
-    llm: LlmConfig,
-    traceFile: File,
-    ops: DeviceOps,
-    log: (String) -> Unit = ::println,
-    video: VideoOutput = VideoOutput.NONE,
-): ScenarioRunResult {
-    val stamp = SimpleDateFormat("yyyyMMdd-HHmmss").format(Date())
-    val reportDir = File(project.reportsDir, "${scenario.name}-$stamp")
-    reportDir.mkdirs()
-
-    val jsonl = Trace(File(reportDir, "agent.jsonl"))
-    val listener = SwitchableListener()
-    val adb = AdbDevice(onCommand = { argv -> jsonl.event("exec") { it["argv"] = argv.joinToString(" ") } })
-    val cdp = CdpClient()
-    val controller = DeviceController(
-        device = WebAwareDevice(adb, cdp, project.config.app),
-        trace = jsonl,
-        maxScrollRounds = project.config.scrollLimit,
-        listener = listener,
-    )
-
-    // turn lines nest under the runner's step line in the live log
-    // replay never builds a client — the key stays optional for CI that only replays
-    val executor = SessionStepExecutor(controller, { llm.client() }, llm.llmModel(), project.config.maxTurns,
-        log = { log("    $it") })
-    // steps are logged live by the runner — a scenario can run for minutes
-    val runner = ScenarioRunner(controller, listener, ops, executor, reportDir, project.config.app, log = log)
-
-    log("── ${scenario.name} [${mode.name.lowercase()}] ${"─".repeat(30)}")
-    // The screen recording spans setup through the last step — the whole journey, as a
-    // teammate would watch it. It stops in `finally`: a crashed run must not leave
-    // screenrecord running on the device for the rest of its time limit.
-    val recorder = if (video != VideoOutput.NONE) ScreenRecorder().also { it.start() } else null
-    var media: List<File> = emptyList()
-    val result = try {
-        runner.run(scenario, trace, mode)
-    } finally {
-        cdp.close() // release the adb port forwards this run created
-        recorder?.let { media = it.stop(File(reportDir, "run.mp4")) }
-    }
-
-    log("${result.status}: ${scenario.name}  (${result.durationMs}ms, report: ${reportDir.path})")
-    // what the recording cost: model time vs. the scenario's wall time, and the tokens it took
-    result.llm?.let { log("  ${it.summary(totalMs = result.durationMs)}") }
-
-    if (recorder != null) {
-        fun rel(f: File) = f.relativeToOrSelf(project.appRoot).path
-        recorder.problem?.let { log("  video: $it") }
-        media.forEach { log("  video: ${rel(it)}") }
-        if (video == VideoOutput.GIF && media.size == 1) {
-            // --gif wants the gif only: the mp4 is the intermediate and goes, so an artifact of the
-            // report dir does not carry both (--video is the way to keep the raw recording)
-            val gif = File(reportDir, "run.gif")
-            val failure = Gif.convert(media[0], gif)
-            if (failure == null) { media[0].delete(); media = listOf(gif); log("  gif: ${rel(gif)}") }
-            else log("  gif: $failure")
-        }
-    }
-
-    result.updatedTrace?.let { updated ->
-        TraceJson.write(updated, traceFile)
-        if (mode == RunMode.REPLAY) {
-            // coordinate-fallback rewrite: leave a copy beside the report too; never auto-commit
-            TraceJson.write(updated, File(reportDir, "trace.updated.json"))
-            log("  trace updated (lastCoords) — review the diff of ${traceFile.path}")
-        } else {
-            log("  trace recorded: ${traceFile.path}")
-        }
-    }
-    return result.copy(reportDir = reportDir, media = media)
-}
-
-// -------------------------------------------------------------------------- init
-
-/**
- * Scaffold the `.simul/` convention in a target app repo: config template, scenarios dir,
- * and a Claude Code skill (SKILL.md — the scenario-authoring guide — plus the
- * `references/` docs: `setup.md` (preconditions/entry) and `external.md` (external-element
- * catalogue)) so agent sessions in that repo write scenarios by the book.
- * Never overwrites existing files — rerunning after a simul upgrade refreshes only what is
- * missing (delete a doc to refresh it).
- */
-internal fun initCommand(args: List<String>, cwd: File): Int {
-    var app: String? = null
-    var i = 0
-    while (i < args.size) {
-        when (val a = args[i]) {
-            "--app" -> app = args.getOrNull(++i) ?: return err("--app needs a value")
-            else -> return err("unknown option $a")
-        }
-        i++
-    }
-
-    fun resource(name: String): String? =
-        object {}.javaClass.getResourceAsStream("/simul/$name")?.bufferedReader()?.readText()
-
-    val skill = resource("SKILL.md") ?: return err("packaging error: /simul/SKILL.md missing")
-    val setup = resource("setup.md") ?: return err("packaging error: /simul/setup.md missing")
-    val external = resource("external.md") ?: return err("packaging error: /simul/external.md missing")
-
-    val config = """
-        agentVersion: ">=$AGENT_VERSION"
-        app: ${app ?: "your.app.package   # TODO: set the application id under test"}
-        llm:
-          url: http://localhost:8080   # OpenAI-compatible endpoint: local llama-server or a hosted API
-          model: qwen                  # model name sent with every request
-          # apiKey: ${'$'}{OPENAI_API_KEY}  # endpoints that need a key: ${'$'}{VAR} reads the environment —
-          #                            # never a literal here (this file is committed). Without this
-          #                            # line SIMUL_LLM_API_KEY is used when set.
-        defaults:
-          maxTurns: 12
-          scrollLimit: 3
-        display:
-          sizeClass: small   # small=720x1280@320(360dp) | medium(640dp) | large(1066dp)
-        # device:            # emulator `settings` every scenario assumes (read → put only if different → restored on exit).
-        #   settings:        # a scenario that needs the opposite declares the same block under its own `setup:`
-        #     secure.credential_service: ""              # no credential provider → no "Use your saved password" sheet
-        #     secure.credential_service_primary: ""
-        #     secure.autofill_service: null              # null = `settings delete` (key unset)
-        #     secure.immersive_mode_confirmations: confirmed
-    """.trimIndent() + "\n"
-
-    val files = listOf(
-        File(cwd, ".simul/config.yaml") to config,
-        File(cwd, ".claude/skills/simul-scenarios/SKILL.md") to skill,
-        File(cwd, ".claude/skills/simul-scenarios/references/setup.md") to setup,
-        File(cwd, ".claude/skills/simul-scenarios/references/external.md") to external,
-    )
-    File(cwd, ".simul/scenarios").mkdirs()
-    for ((file, content) in files) {
-        if (file.exists()) {
-            println("kept    ${file.relativeTo(cwd)}")
-        } else {
-            file.parentFile?.mkdirs()
-            file.writeText(content)
-            println("created ${file.relativeTo(cwd)}")
-        }
-    }
-    val legacyReadme = File(cwd, ".simul/README.md")
-    if (legacyReadme.exists()) {
-        println("note    .simul/README.md is superseded by .claude/skills/simul-scenarios/SKILL.md — delete it to avoid stale guidance")
-    }
-    println(
-        """
-
-        next steps:
-          1. .simul/config.yaml 의 app / llm.url 확인
-          2. .claude/skills/simul-scenarios/SKILL.md 읽고 첫 시나리오 작성 → .simul/scenarios/<그룹>/<이름>.md
-          3. simul run <그룹>/<이름>.md --mode llm   (녹화 후 trace를 md와 함께 커밋)
-          4. CI: `simul run --all` (replay만, LLM 0회) — 나이틀리 3단계·리포트는 simul README 참조
-        """.trimIndent()
-    )
-    return 0
-}
-
-// -------------------------------------------------------------------------- state
-
 /**
  * `simul state save <name>` — snapshot the app's current data (login/profile/flags) so
  * scenarios can restore it via `setup.appState: <name>` instead of logging in through the UI.
@@ -440,19 +85,29 @@ internal fun initCommand(args: List<String>, cwd: File): Int {
 private fun stateCommand(args: List<String>, cwd: File): Int {
     if (args.getOrNull(0) != "save" || args.size != 2) return err("usage: simul state save <name>")
     val name = args[1]
-    if (!name.matches(Regex("[A-Za-z0-9._-]+"))) return err("state name must be [A-Za-z0-9._-]+")
     val project = SimulProject.find(cwd) ?: return err("no .simul/ directory found from $cwd upwards")
-    val app = project.config.app ?: return err("config.yaml needs `app:` to save app state")
-    val dest = File(project.statesDir, "$name.tar")
-    print("saving ${app} data → ${dest.relativeTo(project.appRoot)} … ")
-    return if (AdbOps().saveState(app, dest)) {
-        println("done (${dest.length() / 1024}KB)")
-        println("use it in a scenario:  setup:\n                         appState: $name\n                         launch: true")
-        0
-    } else 1
+    print("saving app data → ${project.statesDir.relativeTo(project.appRoot)}/$name.tar … ")
+    return saveAppState(project, name).fold(
+        onSuccess = { dest ->
+            println("done (${dest.length() / 1024}KB)")
+            println("use it in a scenario:  setup:\n                         appState: $name\n                         launch: true")
+            0
+        },
+        onFailure = { err(it.message ?: "state save failed") },
+    )
 }
 
-// -------------------------------------------------------------------------- list
+/**
+ * `simul state save <name>` and the TUI's `s` key: snapshot the app's current data (login,
+ * profile, flags) into `.simul/states/<name>.tar` so scenarios restore it via `setup.appState`.
+ */
+internal fun saveAppState(project: SimulProject, name: String): Result<File> {
+    if (!Scenario.isValidStateName(name)) return Result.failure(IllegalArgumentException("state name must be [A-Za-z0-9._-]+"))
+    val app = project.config.app ?: return Result.failure(IllegalStateException("config.yaml needs `app:` to save app state"))
+    val dest = File(project.statesDir, "$name.tar")
+    return if (AdbOps().saveState(app, dest)) Result.success(dest)
+    else Result.failure(IllegalStateException("state save failed — see the error above"))
+}
 
 private fun listCommand(cwd: File): Int {
     val project = SimulProject.find(cwd)
@@ -465,38 +120,12 @@ private fun listCommand(cwd: File): Int {
     }
     for ((md, s) in project.scenarioVariants { f, why -> println("${f.relativeTo(project.scenariosDir).path}  ERROR: $why") }) {
         val tags = if (s.tags.isEmpty()) "" else "  tags=${s.tags.joinToString(",")}"
-        println("${scenarioPath(project, md, s)}  steps=${s.steps.size}  trace=${traceStatus(md, project.traceFileFor(md, s))}$tags")
+        println("${scenarioPath(project, md, s)}  steps=${s.steps.size}  trace=${TraceState.of(md, project.traceFileFor(md, s)).name.lowercase()}$tags")
     }
     return 0
 }
 
-private fun traceStatus(md: File, traceFile: File): String = when {
-    !traceFile.isFile -> "none"
-    traceFile.lastModified() < md.lastModified() -> "stale"
-    else -> "ok"
-}
-
-// -------------------------------------------------------------------------- ad-hoc
-
-/** `simul "<command>"` — the single-command executor, with the project's LLM url as default. */
-private fun adhocCommand(argv: Array<String>, cwd: File): Int {
-    val args = argv.toMutableList()
-    val project = SimulProject.find(cwd)
-    val llm = project?.config?.llm ?: LlmConfig()
-    if ("--url" !in args) args += listOf("--url", llm.url)
-    if ("--model" !in args) args += listOf("--model", llm.model)
-    if ("--api-key" !in args) {
-        llm.keyProblem()?.let { return err(it) }
-        llm.apiKey?.let { args += listOf("--api-key", it) }
-    }
-    if ("--app" !in args) {
-        project?.config?.app?.let { args += listOf("--app", it) }
-    }
-    dev.nate.uiagent.agent.main(args.toTypedArray()) // exits the process itself
-    return 0
-}
-
-private fun err(msg: String): Int {
+internal fun err(msg: String): Int {
     System.err.println("error: $msg")
     return 2
 }

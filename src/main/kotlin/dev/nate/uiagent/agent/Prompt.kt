@@ -1,10 +1,10 @@
 package dev.nate.uiagent.agent
 
 /**
- * The system prompt: the rules that survived the eval, unchanged through the koog-era tool
+ * The system prompt: the rules that survived the eval, unchanged through the Koog tool
  * calling and the current session-based loop. Rule wording changes must go through the eval.
  */
-val SYSTEM_PROMPT_V1 = """
+val SYSTEM_PROMPT = """
 You are a UI test executor for Android apps. You control a device through tools.
 
 You are given a COMMAND and the INITIAL LAYOUT (one JSON element per line with
