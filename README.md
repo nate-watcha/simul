@@ -62,11 +62,14 @@ phase 역할은 라벨이 아니라 **mode와 순서**로 정해진다: 첫 llm 
 
 **리포트가 담는 것**
 
-- `--format html`: **모두가 보는 페이지**. 시나리오당 카드 하나 — 시나리오 md의 설명 한 줄(frontmatter 아래 첫
-  산문, summary.json `description`)이 제목, 그 옆에 replay gif, 실패했으면 **어느 phase의 몇 번 스텝**이 왜 깨졌는지와
-  그 순간 스크린샷. 스텝 목록은 "N steps"로 접혀 있고 phase별 ✅/❌/⏭ 격자만 보여준다. 주의 시나리오가 먼저 오고
-  상단에 점프 칩이 있다. mode·소요시간·llm 토큰·evidence·에이전트 보고문 같은 디버그 정보는 여기 없다 —
-  `--out` 옆에 같이 써지는 **`report.debug.html`**(카드의 `debug` 링크, phase마다 전체 스텝 상세)에 있다.
+- `--format html`: **모두가 보는 상태판** — "앱 괜찮아? 뭐가 안 돼?"에 답한다. 위에서부터 한 줄 헤드라인(`✅ 앱 정상` /
+  `❌ 3개 안 됨` / `⚠️ 앱 정상, 확인할 게 2개`), **기능 영역 타일**(시나리오 디렉토리 하나 = 타일 하나, 상태별 개수;
+  디렉토리에 `README.md`가 있으면 첫 줄이 타일 이름), **안 되는 것**(깨진 시나리오만 gif + 어느 phase 몇 번 스텝 + 사유 +
+  화면 라벨 + 그 순간 스크린샷), **확인 필요**(재녹화·첫 녹화 — trace diff 리뷰 대상), 그리고 영역별 **체크리스트**:
+  시나리오 md의 설명 한 줄(summary.json `description`)이 "이 화면은 이렇게 동작한다"는 문장으로 ✅/❌/🔁 와 함께 나열되고
+  ▶를 누르면 gif와 스텝 격자가 펼쳐진다. 시나리오당 상태는 하나로 접힌다(동작 / 안 됨 / 불안정 / 바뀜 / 새 녹화 / 미실행).
+  baseline·record·verify 열, mode·소요시간·llm 토큰·evidence·에이전트 보고문은 여기 없다 — `--out` 옆에 같이 써지는
+  **`report.debug.html`**(시나리오마다 `debug` 링크, phase별 전체 스텝 상세)에 있다.
   gif는 시나리오당 수 MB라 인라인하지 않고 `--out` 옆 `media/<시나리오>-<phase>.gif`로 복사해 두 페이지가 같이 참조한다 —
   **아티팩트는 `report.html` + `report.debug.html` + `media/` 폴더를 함께** 올린다. 스크린샷 썸네일은 data URI라 폴더 밖이어도 보인다.
 - `--format md`: GitHub 잡 서머리·PR 본문용. 표 + "Needs attention"에 실패 사유·스크린샷·리포트 폴더·gif 경로.

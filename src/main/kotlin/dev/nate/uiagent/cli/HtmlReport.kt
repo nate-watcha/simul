@@ -18,11 +18,12 @@ import javax.imageio.ImageIO
 /**
  * `simul report --format html`: two pages for two readers.
  *
- * [render] is the report everyone opens — one table, a row per scenario grouped by directory:
- * the gif(s) of the replays, the scenario's one-line description (what the journey checks),
- * when something broke *which step* and the screenshot of that moment, one status cell per
- * phase, the verdict. The step list is folded under "N steps" as a status grid (one column
- * per phase), and that is all: no modes, durations, token counts or evidence lists.
+ * [render] is the report everyone opens, and it answers "does the app work, and what
+ * doesn't?": a headline, a tile per feature area (= scenario directory) with its counts, the
+ * broken scenarios in full (gif, which step, reason, screenshot), the re-recorded ones to
+ * review, then each area's scenarios as a checklist of one-line descriptions — how its
+ * screens behave, ticked or not, the recording and the step grid a click away. No pipeline
+ * phases, modes, durations, token counts or evidence lists here.
  *
  * [renderDebug] is the page for whoever has to find out why: every step of every phase with
  * mode, duration, model usage, harness reason, evidence, on-screen labels and the screenshots
@@ -161,137 +162,214 @@ object HtmlReport {
     /** `billing/play/x.md@member` → `billing/play`; root-level scenarios group under "". */
     fun groupOf(path: String): String = path.substringBeforeLast('/', "")
 
+    /** What a scenario is, for someone who asks "does the app work?" — the pipeline verdicts folded to five answers. */
+    enum class State(val icon: String, val label: String, val cls: String) {
+        BROKEN("❌", "안 됨", "broken"), FLAKY("⚠️", "불안정", "flaky"), CHANGED("🔁", "바뀜", "changed"),
+        NEW("🆕", "새 녹화", "new"), OK("✅", "동작", "ok"), SKIPPED("⏭", "미실행", "skipped"),
+    }
+
+    fun stateOf(kind: VerdictKind): State = when (kind) {
+        VerdictKind.STABLE, VerdictKind.PASS -> State.OK
+        VerdictKind.REGRESSION, VerdictKind.FAIL, VerdictKind.CRASH, VerdictKind.TRACE_FLAKE -> State.BROKEN
+        VerdictKind.RECORD_FLAKE -> State.FLAKY
+        VerdictKind.CHANGED -> State.CHANGED
+        VerdictKind.NEW -> State.NEW
+        VerdictKind.SKIPPED -> State.SKIPPED
+    }
+
+    /** A feature area = a scenario directory; its display name is the first line of its README.md when there is one. */
+    private class Group(val dir: String, val name: String, val rows: List<ScenarioRow>) {
+        val states = rows.groupingBy { stateOf(it.verdict.kind) }.eachCount()
+        val worst: State = State.entries.first { it in states }
+        val id get() = "g-" + dir.ifEmpty { "root" }.replace(Regex("[^A-Za-z0-9_-]+"), "_")
+    }
+
+    private fun groups(r: PipelineReport, root: File): List<Group> =
+        r.rows.groupBy { groupOf(it.path) }.map { (dir, rows) ->
+            val readme = File(root, ".simul/scenarios/$dir/README.md")
+            val name = readme.takeIf { it.isFile }?.readLines()?.firstOrNull { it.isNotBlank() }?.trimStart('#', ' ')?.trim()
+            Group(dir, name?.takeIf { it.isNotEmpty() } ?: dir.ifEmpty { "(root)" }, rows.sortedBy { stateOf(it.verdict.kind).ordinal })
+        }.sortedWith(compareBy({ it.worst.ordinal }, { it.dir.ifEmpty { "\uffff" } })) // root-level last
+
+    /** `❌ 2 안 됨 · ✅ 7 동작` — the counts of a group or of the whole run, worst first. */
+    private fun stateCounts(states: Map<State, Int>): String =
+        State.entries.mapNotNull { s -> states[s]?.let { "${s.icon} $it ${s.label}" } }.joinToString(" · ")
+
     /**
-     * The page for everyone: one table. Rows are the scenarios, grouped by the directory they
-     * live in (`auth/`, `billing/` …, a header row each), with the replay gif(s) in the first
-     * column, the description and, when something broke, *which step* in the second, then one
-     * status cell per phase and the verdict. [debugHref] (relative to the page) links each row
-     * to its section on the debug page; null when there is none (stdout).
+     * The page for everyone: "does the app work, and what doesn't?". A headline, one tile per
+     * feature area (scenario directory) with its counts, the broken scenarios with where they
+     * broke (gif, step, reason, screenshot), the re-recorded ones to review, then every area's
+     * scenarios as a checklist — each description is a sentence about how a screen behaves,
+     * ticked or not, with its recording a click away. Pipeline phases stay on the debug page.
+     * [debugHref] (relative to the page) links each scenario to its section there; null = none.
      */
     fun render(r: PipelineReport, root: File, mediaDir: File? = null, debugHref: String? = null): String {
         val ctx = Ctx(root, mediaDir)
+        val groups = groups(r, root)
+        val states = r.rows.groupingBy { stateOf(it.verdict.kind) }.eachCount()
+        val broken = r.rows.filter { stateOf(it.verdict.kind) == State.BROKEN }
+        val flaky = r.rows.filter { stateOf(it.verdict.kind) == State.FLAKY }
+        val review = r.rows.filter { stateOf(it.verdict.kind) in setOf(State.CHANGED, State.NEW) }
         val sb = StringBuilder()
         head(sb, r.title)
-        sb.append("<header><h1>").append(r.overallEmoji).append(' ').append(esc(r.title)).append("</h1>")
-        sb.append("<p class=headline>").append(esc(r.headline())).append("</p>")
-        sb.append("<p class=counts>").append(esc(r.countsLine())).append("</p>")
+
+        // ---- headline: the one answer
+        val headline = when {
+            broken.isNotEmpty() -> "❌ ${broken.size}개 안 됨"
+            flaky.isNotEmpty() || review.isNotEmpty() -> "⚠️ 앱 정상, 확인할 게 ${flaky.size + review.size}개"
+            states.keys.all { it == State.SKIPPED } -> "⏭ 실행된 시나리오 없음"
+            else -> "✅ 앱 정상"
+        }
+        sb.append("<header><h1>").append(esc(r.title)).append("</h1>")
+        sb.append("<p class=\"headline ").append((if (broken.isNotEmpty()) State.BROKEN else if (flaky.isNotEmpty() || review.isNotEmpty()) State.CHANGED else State.OK).cls).append("\">").append(esc(headline)).append("</p>")
+        sb.append("<p class=counts>").append(r.rows.size).append("개 시나리오 · ").append(esc(stateCounts(states))).append("</p>")
         envLine(r).takeIf { it.isNotEmpty() }?.let { sb.append("<p class=env>").append(esc(it)).append("</p>") }
         val links = r.links.map { (n, u) -> "<a href=\"${esc(u)}\">${esc(n)}</a>" } +
             listOfNotNull(debugHref?.let { "<a href=\"${esc(it)}\">debug</a>" })
         if (links.isNotEmpty()) sb.append("<p class=links>").append(links.joinToString(" · ")).append("</p>")
-        sb.append("</header>")
+        sb.append("</header><main>")
 
-        // what to look at first — jump chips into the table
-        if (r.attention.isNotEmpty()) {
-            sb.append("<nav class=attention><ul>")
-            for (row in r.attention) {
-                sb.append("<li><a href=\"#s").append(r.rows.indexOf(row)).append("\">").append(row.verdict.kind.emoji).append(' ').append(esc(titleOf(row))).append("</a></li>")
+        // ---- feature tiles
+        sb.append("<nav class=tiles>")
+        for (g in groups) {
+            sb.append("<a class=\"tile ").append(g.worst.cls).append("\" href=\"#").append(g.id).append("\"><span class=name>").append(esc(g.name)).append("</span>")
+            if (g.name != g.dir) sb.append("<span class=dir>").append(esc(g.dir.ifEmpty { "." })).append("/</span>")
+            sb.append("<span class=state>").append(esc(stateCounts(g.states))).append("</span></a>")
+        }
+        sb.append("</nav>")
+
+        // ---- what does not work
+        if (broken.isNotEmpty() || flaky.isNotEmpty()) {
+            sb.append("<section class=broken><h2>안 되는 것</h2>")
+            for (row in broken + flaky) brokenItem(sb, r, row, ctx, debugHref)
+            sb.append("</section>")
+        }
+        // ---- what changed: re-recorded or first recorded, for a human to review
+        if (review.isNotEmpty()) {
+            sb.append("<section class=review><h2>확인 필요 <span class=dim>화면이 바뀌어 다시 녹화됐거나 처음 녹화된 것 — trace diff를 보고 머지</span></h2><ul>")
+            for (row in review) {
+                val i = r.rows.indexOf(row)
+                val st = stateOf(row.verdict.kind)
+                sb.append("<li>").append(st.icon).append(" <a href=\"#s").append(i).append("\">").append(esc(titleOf(row))).append("</a> <span class=dim>").append(esc(row.path))
+                row.outcomes.filterNotNull().firstOrNull { it.traceUpdated }?.let { sb.append(" · .simul/scenarios/").append(esc(traceRelPath(it.path))) }
+                sb.append("</span></li>")
             }
-            sb.append("</ul></nav>")
+            sb.append("</ul></section>")
         }
 
-        val hasGifs = r.rows.any { row -> row.outcomes.any { o -> o != null && gifOf(o, root) != null } }
-        val cols = 2 + (if (hasGifs) 1 else 0) + r.phases.size
-        sb.append("<main><div class=scroll><table class=grid><thead><tr>")
-        if (hasGifs) sb.append("<th></th>")
-        sb.append("<th>scenario</th>")
-        r.phases.forEach { sb.append("<th>").append(esc(it.heading)).append("</th>") }
-        sb.append("<th>verdict</th></tr></thead><tbody>")
-        val groups = r.rows.groupBy { groupOf(it.path) } // LinkedHashMap: first-seen order
-        for ((dir, rows) in groups) {
-            if (groups.size > 1 || dir.isNotEmpty()) {
-                val bad = rows.filter { it.verdict.severity != Severity.OK }.groupingBy { it.verdict.kind.emoji }.eachCount()
-                sb.append("<tr class=group><th colspan=").append(cols).append("><span class=dir>").append(esc(dir.ifEmpty { "." })).append("/</span> <span class=dim>")
-                sb.append(rows.size).append(" scenario").append(if (rows.size == 1) "" else "s")
-                bad.forEach { (emoji, n) -> sb.append(" · ").append(emoji).append(' ').append(n) }
-                sb.append("</span></th></tr>")
-            }
-            for (row in rows) tableRow(sb, r, row, ctx, debugHref, hasGifs)
+        // ---- every area, as a checklist of how its screens behave
+        for (g in groups) {
+            sb.append("<section class=area id=\"").append(g.id).append("\"><h2>").append(esc(g.name))
+            if (g.name != g.dir) sb.append(" <span class=dir>").append(esc(g.dir.ifEmpty { "." })).append("/</span>")
+            sb.append(" <span class=\"dim counts\">").append(esc(stateCounts(g.states))).append("</span></h2><ul class=list>")
+            for (row in g.rows) listItem(sb, r, row, ctx, debugHref)
+            sb.append("</ul></section>")
         }
-        sb.append("</tbody></table></div></main>")
-        sb.append("<footer class=dim>generated by simul ").append(esc(r.agentVersion ?: "")).append("</footer></body></html>\n")
+        sb.append("</main><footer class=dim>generated by simul ").append(esc(r.agentVersion ?: "")).append("</footer></body></html>\n")
         return sb.toString()
     }
 
-    private fun tableRow(sb: StringBuilder, r: PipelineReport, row: ScenarioRow, ctx: Ctx, debugHref: String?, gifColumn: Boolean) {
-        val i = r.rows.indexOf(row)
-        sb.append("<tr id=\"s").append(i).append("\" class=\"row sev-").append(row.verdict.severity.name.lowercase()).append("\">")
-        // ---- the recordings, one per phase that has one
-        if (gifColumn) {
-            sb.append("<td class=preview>")
-            for ((pi, o) in row.outcomes.withIndex()) {
-                val gif = o?.let { gifOf(it, ctx.root) } ?: continue
-                gifFigure(sb, ctx, row, r.phases[pi], o, gif)
-            }
-            sb.append("</td>")
-        }
-        // ---- what it is, and where it broke
-        sb.append("<td class=scenario><div class=desc>").append(esc(titleOf(row))).append("</div>")
-        sb.append("<div class=path><code>").append(esc(row.path)).append("</code></div>")
-        for ((pi, o) in row.outcomes.withIndex()) {
-            if (o == null) continue
-            val phase = r.phases[pi]
-            when (o.status) {
-                "FAILED" -> {
-                    sb.append("<div class=fail>")
-                    val f = o.failedStep
-                    if (f == null) sb.append("<p class=where>❌ <b>").append(esc(phase.label)).append("</b> failed</p>")
-                    else {
-                        // the failing moment: the summary's last screenshot, else the step's last one from
-                        // report.json — first in the markup so it floats beside the text, not under it
-                        val shot = f.screenshot?.let(ctx::resolve)
-                            ?: ctx.stepsOf(o).firstOrNull { it.index == f.index }?.screenshots?.lastOrNull()?.let { s -> ctx.reportDir(o)?.let { File(it, s) } }
-                        val uri = shot?.let(ctx::thumb)
-                        if (shot != null && uri != null) {
-                            sb.append("<figure class=shot><img src=\"").append(uri).append("\" alt=\"").append(esc(shot.name)).append("\"><figcaption>").append(esc(shot.name)).append("</figcaption></figure>")
-                        }
-                        sb.append("<p class=where>❌ <b>").append(esc(phase.label)).append("</b> · ")
-                        if (f.reason?.startsWith("setup failed") == true) sb.append("setup")
-                        else sb.append("step ").append(f.index).append(" <q>").append(esc(f.text)).append("</q>")
-                        sb.append("</p>")
-                        f.reason?.let { sb.append("<p class=reason>").append(esc(it)).append("</p>") }
-                        if (f.screen.isNotEmpty()) sb.append("<p class=screen>on screen: ").append(f.screen.joinToString(" · ") { "<code>${esc(it)}</code>" }).append("</p>")
+    /** The failure of one outcome: phase, step, reason, on-screen labels, the screenshot of that moment. */
+    private fun failureBlock(sb: StringBuilder, phase: Phase, o: ScenarioOutcome, ctx: Ctx) {
+        when (o.status) {
+            "FAILED" -> {
+                sb.append("<div class=fail>")
+                val f = o.failedStep
+                if (f == null) sb.append("<p class=where>❌ <b>").append(esc(phase.label)).append("</b> failed</p>")
+                else {
+                    // the failing moment: the summary's last screenshot, else the step's last one from
+                    // report.json — first in the markup so it floats beside the text, not under it
+                    val shot = f.screenshot?.let(ctx::resolve)
+                        ?: ctx.stepsOf(o).firstOrNull { it.index == f.index }?.screenshots?.lastOrNull()?.let { s -> ctx.reportDir(o)?.let { File(it, s) } }
+                    val uri = shot?.let(ctx::thumb)
+                    if (shot != null && uri != null) {
+                        sb.append("<figure class=shot><img src=\"").append(uri).append("\" alt=\"").append(esc(shot.name)).append("\"><figcaption>").append(esc(shot.name)).append("</figcaption></figure>")
                     }
-                    sb.append("</div>")
+                    sb.append("<p class=where>❌ <b>").append(esc(phase.label)).append("</b> · ")
+                    if (f.reason?.startsWith("setup failed") == true) sb.append("setup")
+                    else sb.append("step ").append(f.index).append(" <q>").append(esc(f.text)).append("</q>")
+                    sb.append("</p>")
+                    f.reason?.let { sb.append("<p class=reason>").append(esc(it)).append("</p>") }
+                    if (f.screen.isNotEmpty()) sb.append("<p class=screen>on screen: ").append(f.screen.joinToString(" · ") { "<code>${esc(it)}</code>" }).append("</p>")
                 }
-                "CRASH" -> sb.append("<div class=fail><p class=where>💥 <b>").append(esc(phase.label)).append("</b> · harness crash</p><p class=reason>").append(esc(o.reason ?: "")).append("</p></div>")
-                "SKIPPED" -> if (row.verdict.severity != Severity.OK) sb.append("<p class=dim>⏭ <b>").append(esc(phase.label)).append("</b> · ").append(esc(o.reason ?: "skipped")).append("</p>")
+                sb.append("</div>")
             }
+            "CRASH" -> sb.append("<div class=fail><p class=where>💥 <b>").append(esc(phase.label)).append("</b> · harness crash</p><p class=reason>").append(esc(o.reason ?: "")).append("</p></div>")
         }
-        if (row.verdict.kind.advice.isNotEmpty()) sb.append("<p class=advice>").append(esc(row.verdict.kind.advice)).append("</p>")
-        row.outcomes.withIndex().firstOrNull { it.value?.traceUpdated == true }?.let { (pi, o) ->
-            sb.append("<p class=dim>trace re-recorded by <b>").append(esc(r.phases[pi].label)).append("</b> — <code>.simul/scenarios/").append(esc(traceRelPath(o!!.path))).append("</code></p>")
-        }
-        // ---- the steps, folded: one line per step, one status mark per phase that ran
+    }
+
+    /** The folded step grid: one line per step, one status mark per phase that ran. Nothing when no report.json is around. */
+    private fun stepsGrid(sb: StringBuilder, r: PipelineReport, row: ScenarioRow, ctx: Ctx) {
         val stepsByPhase = row.outcomes.map { o -> o?.let(ctx::stepsOf) ?: emptyList() }
         val n = stepsByPhase.maxOf { it.size }
-        if (n > 0) {
-            val ran = row.outcomes.indices.filter { stepsByPhase[it].isNotEmpty() }
-            sb.append("<details class=steps><summary>").append(n).append(" step").append(if (n == 1) "" else "s").append("</summary><table><thead><tr><th></th><th>step</th>")
-            ran.forEach { sb.append("<th>").append(esc(r.phases[it].label)).append("</th>") }
-            sb.append("</tr></thead><tbody>")
-            for (k in 0 until n) {
-                val text = stepsByPhase.firstNotNullOfOrNull { it.getOrNull(k)?.text } ?: ""
-                val statuses = ran.map { stepsByPhase[it].getOrNull(k)?.status }
-                val worst = when {
-                    "FAILED" in statuses -> "failed"
-                    statuses.all { it == "SKIPPED" || it == null } -> "skipped"
-                    else -> "passed"
-                }
-                sb.append("<tr class=\"st-").append(worst).append("\"><td class=n>").append(k + 1).append("</td><td class=t>").append(esc(text)).append("</td>")
-                ran.forEach { sb.append("<td class=m>").append(mark(stepsByPhase[it].getOrNull(k)?.status)).append("</td>") }
-                sb.append("</tr>")
+        if (n == 0) return
+        val ran = row.outcomes.indices.filter { stepsByPhase[it].isNotEmpty() }
+        sb.append("<details class=steps><summary>").append(n).append(" steps</summary><table><thead><tr><th></th><th>step</th>")
+        ran.forEach { sb.append("<th>").append(esc(r.phases[it].label)).append("</th>") }
+        sb.append("</tr></thead><tbody>")
+        for (k in 0 until n) {
+            val text = stepsByPhase.firstNotNullOfOrNull { it.getOrNull(k)?.text } ?: ""
+            val statuses = ran.map { stepsByPhase[it].getOrNull(k)?.status }
+            val worst = when {
+                "FAILED" in statuses -> "failed"
+                statuses.all { it == "SKIPPED" || it == null } -> "skipped"
+                else -> "passed"
             }
-            sb.append("</tbody></table></details>")
+            sb.append("<tr class=\"st-").append(worst).append("\"><td class=n>").append(k + 1).append("</td><td class=t>").append(esc(text)).append("</td>")
+            ran.forEach { sb.append("<td class=m>").append(mark(stepsByPhase[it].getOrNull(k)?.status)).append("</td>") }
+            sb.append("</tr>")
         }
+        sb.append("</tbody></table></details>")
+    }
+
+    private fun gifs(sb: StringBuilder, r: PipelineReport, row: ScenarioRow, ctx: Ctx): Boolean {
+        val gifs = row.outcomes.mapIndexedNotNull { pi, o -> o?.let { gifOf(it, ctx.root) }?.let { Triple(r.phases[pi], o, it) } }
+        if (gifs.isEmpty()) return false
+        sb.append("<div class=gifs>")
+        for ((phase, o, gif) in gifs) gifFigure(sb, ctx, row, phase, o, gif)
+        sb.append("</div>")
+        return true
+    }
+
+    /** A broken scenario, in full: gifs beside the description, every failing phase's block, the advice, the steps. */
+    private fun brokenItem(sb: StringBuilder, r: PipelineReport, row: ScenarioRow, ctx: Ctx, debugHref: String?) {
+        val i = r.rows.indexOf(row)
+        val st = stateOf(row.verdict.kind)
+        sb.append("<article id=\"b").append(i).append("\" class=\"item ").append(st.cls).append("\">")
+        gifs(sb, r, row, ctx)
+        sb.append("<div class=main><div class=desc>").append(st.icon).append(' ').append(esc(titleOf(row))).append("</div>")
+        sb.append("<div class=path><code>").append(esc(row.path)).append("</code> · ").append(esc(row.verdict.kind.title)).append("</div>")
+        for ((pi, o) in row.outcomes.withIndex()) if (o != null) failureBlock(sb, r.phases[pi], o, ctx)
+        if (row.verdict.kind.advice.isNotEmpty()) sb.append("<p class=advice>").append(esc(row.verdict.kind.advice)).append("</p>")
+        stepsGrid(sb, r, row, ctx)
+        sb.append("<p class=foot><a href=\"#s").append(i).append("\">목록에서 보기</a>")
+        if (debugHref != null) sb.append(" · <a href=\"").append(esc(debugHref)).append("#s").append(i).append("\">debug</a>")
+        sb.append("</p></div></article>")
+    }
+
+    /** One line of an area's checklist: state, description, where it broke; the recording and steps fold under ▶. */
+    private fun listItem(sb: StringBuilder, r: PipelineReport, row: ScenarioRow, ctx: Ctx, debugHref: String?) {
+        val i = r.rows.indexOf(row)
+        val st = stateOf(row.verdict.kind)
+        sb.append("<li id=\"s").append(i).append("\" class=\"").append(st.cls).append("\"><details><summary><span class=icon>").append(st.icon).append("</span><span class=desc>").append(esc(titleOf(row))).append("</span>")
+        val where = row.outcomes.filterNotNull().firstOrNull { it.status == "FAILED" || it.status == "CRASH" }
+            ?.let { o -> o.failedStep?.let { f -> if (f.reason?.startsWith("setup failed") == true) "setup" else "step ${f.index}" } ?: o.status.lowercase() }
+        // the tag: where it broke for a broken one; the state (and where the old trace broke) otherwise
+        val tag = when {
+            st == State.BROKEN || st == State.FLAKY -> where ?: st.label
+            st != State.OK -> st.label + (where?.let { " · $it" } ?: "")
+            else -> null
+        }
+        tag?.let { sb.append("<span class=\"tag ").append(st.cls).append("\">").append(esc(it)).append("</span>") }
+        sb.append("<span class=path>").append(esc(row.path)).append("</span></summary><div class=body>")
+        val hadGifs = gifs(sb, r, row, ctx)
+        sb.append("<div class=main>")
+        if (st == State.BROKEN || st == State.FLAKY) sb.append("<p><a href=\"#b").append(i).append("\">↑ 안 되는 것에서 보기</a></p>")
+        for ((pi, o) in row.outcomes.withIndex()) if (o != null && st != State.BROKEN && st != State.FLAKY) failureBlock(sb, r.phases[pi], o, ctx)
+        stepsGrid(sb, r, row, ctx)
+        if (!hadGifs && row.outcomes.all { it == null || it.gif == null }) sb.append("<p class=dim>녹화 없음</p>")
         if (debugHref != null) sb.append("<p class=foot><a href=\"").append(esc(debugHref)).append("#s").append(i).append("\">debug</a></p>")
-        sb.append("</td>")
-        // ---- one cell per phase, then the verdict
-        for (o in row.outcomes) {
-            sb.append("<td class=\"ph ph-").append(o?.status?.lowercase() ?: "none").append("\">").append(esc(cell(o))).append("</td>")
-        }
-        sb.append("<td class=verdict><span class=badge>").append(row.verdict.kind.emoji).append(' ').append(esc(row.verdict.kind.title)).append("</span></td>")
-        sb.append("</tr>")
+        sb.append("</div></div></details></li>")
     }
 
     // ------------------------------------------------------------------ the debug page
@@ -376,24 +454,28 @@ object HtmlReport {
     }
 
     private val CSS = """
-        :root{--bg:#f6f6f7;--card:#fff;--fg:#1b1b1b;--dim:#6b6b6b;--line:#e3e3e3;--ok:#2e7d32;--warn:#b26a00;--fail:#c62828;--okbg:#e8f5e9;--warnbg:#fff4d6;--failbg:#fdecea}
-        @media(prefers-color-scheme:dark){:root{--bg:#111;--card:#1c1c1e;--fg:#e6e6e6;--dim:#9a9a9a;--line:#333;--ok:#6fcf7a;--warn:#f0b443;--fail:#ef6a5f;--okbg:#15301b;--warnbg:#3a2f10;--failbg:#3d1c1a}}
+        :root{--bg:#f6f6f7;--card:#fff;--fg:#1b1b1b;--dim:#6b6b6b;--line:#e3e3e3;--ok:#2e7d32;--warn:#b26a00;--fail:#c62828;--info:#1565c0;--okbg:#e8f5e9;--warnbg:#fff4d6;--failbg:#fdecea;--infobg:#e3f2fd}
+        @media(prefers-color-scheme:dark){:root{--bg:#111;--card:#1c1c1e;--fg:#e6e6e6;--dim:#9a9a9a;--line:#333;--ok:#6fcf7a;--warn:#f0b443;--fail:#ef6a5f;--info:#6fa8e8;--okbg:#15301b;--warnbg:#3a2f10;--failbg:#3d1c1a;--infobg:#15263a}}
         body{margin:0;padding:24px 16px;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Apple SD Gothic Neo",sans-serif;background:var(--bg);color:var(--fg)}
-        header,main,nav,footer{max-width:1360px;margin-inline:auto}
-        h1{font-size:22px;margin:0 0 2px}h2{font-size:18px;margin:4px 0 2px;line-height:1.35}h3{font-size:14px;margin:12px 0 4px}
-        .headline{font-size:17px;font-weight:600;margin:0}.counts{margin:2px 0 0}.env,.dim,.foot{color:var(--dim);font-size:13px}.links{margin:6px 0 0}.links a{margin-right:4px}
+        header,main,footer{max-width:1100px;margin-inline:auto}
+        h1{font-size:20px;margin:0 0 6px;color:var(--dim);font-weight:600}h2{font-size:18px;margin:0 0 10px}h3{font-size:14px;margin:12px 0 4px}
+        .headline{font-size:30px;font-weight:800;margin:0;line-height:1.2}.headline.broken{color:var(--fail)}.headline.changed{color:var(--warn)}.headline.ok{color:var(--ok)}
+        .counts{margin:4px 0 0}.env,.dim,.foot{color:var(--dim);font-size:13px}.links{margin:6px 0 0}.links a{margin-right:4px}
         code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
-        nav.attention{margin:16px auto 0}nav.attention ul{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
-        nav.attention a{display:inline-block;padding:4px 10px;border:1px solid var(--line);border-radius:999px;background:var(--card);color:inherit;text-decoration:none;font-size:13px}
-        main{margin-top:16px}
-        .card{background:var(--card);border:1px solid var(--line);border-left:5px solid var(--line);border-radius:10px;padding:14px 16px;margin:12px 0}
-        .card.sev-fail{border-left-color:var(--fail)}.card.sev-warn{border-left-color:var(--warn)}.card.sev-ok{border-left-color:var(--ok)}
-        .badge{display:inline-block;font-size:12px;font-weight:700;padding:1px 8px;border-radius:999px;background:var(--okbg)}
-        .sev-fail .badge{background:var(--failbg);color:var(--fail)}.sev-warn .badge{background:var(--warnbg);color:var(--warn)}.sev-ok .badge{background:var(--okbg);color:var(--ok)}
-        .meta{margin:0;color:var(--dim);font-size:13px}
-        .body{display:flex;gap:20px;align-items:flex-start;margin-top:8px}.body .main{flex:1;min-width:0}
+        .dir{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--dim);font-weight:400}
+        nav.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin:20px 0 28px}
+        .tile{display:block;padding:12px 14px;border-radius:10px;background:var(--card);border:1px solid var(--line);border-left:5px solid var(--ok);color:inherit;text-decoration:none}
+        .tile .name{display:block;font-weight:700;font-size:16px}.tile .dir{display:block}.tile .state{display:block;font-size:13px;margin-top:4px;color:var(--dim)}
+        .tile.broken{border-left-color:var(--fail);background:var(--failbg)}.tile.broken .state{color:var(--fail)}
+        .tile.flaky,.tile.changed,.tile.new{border-left-color:var(--warn)}.tile.changed .state,.tile.flaky .state,.tile.new .state{color:var(--warn)}
+        .tile.skipped{border-left-color:var(--line)}
+        section{margin:0 0 28px}section.broken h2{color:var(--fail)}section.review h2 .dim{font-size:13px;font-weight:400}
+        section.review ul{margin:0;padding-left:20px}section.review li{margin:3px 0}
+        .item{display:flex;gap:18px;align-items:flex-start;background:var(--card);border:1px solid var(--line);border-left:5px solid var(--fail);border-radius:10px;padding:14px 16px;margin:10px 0}
+        .item.flaky{border-left-color:var(--warn)}.item .main{flex:1;min-width:0}
+        .desc{font-size:16px;font-weight:600;line-height:1.35}.path{color:var(--dim);font-size:12px;margin-bottom:4px}
         .fail{background:var(--failbg);border-radius:8px;padding:8px 12px;margin:8px 0;display:flow-root}
-        .fail figure.shot{float:right;margin:0 0 4px 12px;margin-top:0}.fail figure.shot img{width:110px}
+        .fail figure.shot{float:right;margin:0 0 4px 12px}.fail figure.shot img{width:110px}
         .where{margin:0;font-weight:600}.where q{quotes:none;font-weight:500}
         .reason{margin:2px 0 0;color:var(--fail)}.screen{margin:2px 0 0;font-size:13px}
         .advice{margin:6px 0;color:var(--dim);font-size:13px}
@@ -403,26 +485,27 @@ object HtmlReport {
         details.steps table{border-collapse:collapse;margin-top:6px;width:100%}details.steps td,details.steps th{padding:3px 8px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}
         details.steps th{font-size:11px;color:var(--dim);font-weight:600}details.steps td.n{color:var(--dim);width:1%}details.steps td.m{white-space:nowrap;width:1%}
         details.steps tr.st-failed td.t{color:var(--fail);font-weight:600}details.steps tr.st-skipped td.t{color:var(--dim)}
-        .scroll{overflow-x:auto}
-        table.grid{border-collapse:collapse;width:100%;background:var(--card);border:1px solid var(--line);border-radius:10px}
-        .grid>thead th{font-size:11px;color:var(--dim);font-weight:600;text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
-        .grid>tbody>tr.group>th{text-align:left;padding:10px 10px 6px;background:var(--bg);border-top:1px solid var(--line);border-bottom:1px solid var(--line);font-size:13px}
-        .grid .dir{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700;font-size:13px}
-        .grid>tbody>tr.row>td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
-        .grid>tbody>tr.row:last-child>td{border-bottom:0}
-        tr.row.sev-fail>td:first-child{box-shadow:inset 4px 0 var(--fail)}tr.row.sev-warn>td:first-child{box-shadow:inset 4px 0 var(--warn)}
-        td.preview{width:1%;white-space:nowrap}td.preview figure.gif{display:inline-block;vertical-align:top;margin-right:8px}td.preview figure.gif:last-child{margin-right:0}
-        td.scenario{min-width:320px}.desc{font-size:16px;font-weight:600;line-height:1.35}.path{color:var(--dim);font-size:12px;margin-bottom:4px}
-        td.ph{white-space:nowrap;font-size:13px;width:1%}td.ph-failed,td.ph-crash{color:var(--fail);font-weight:600}td.ph-none,td.ph-skipped{color:var(--dim)}
-        td.verdict{white-space:nowrap;width:1%}
-        .gifs{display:flex;gap:10px;flex:0 0 auto;position:sticky;top:12px}
+        .gifs{display:flex;gap:10px;flex:0 0 auto;flex-wrap:wrap}
         figure.gif img{width:150px;max-width:40vw;border:1px solid var(--line);border-radius:10px;background:#000}
         figure.gif figcaption{text-align:center;max-width:150px}figure.gif figcaption a{color:var(--dim)}
+        section.area{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}section.area h2 .counts{font-size:13px;font-weight:400;margin-left:6px}
+        ul.list{list-style:none;margin:0;padding:0}ul.list>li{border-top:1px solid var(--line)}ul.list>li>details>summary{list-style:none;cursor:pointer;display:flex;gap:8px;align-items:baseline;padding:7px 4px;flex-wrap:wrap}
+        ul.list>li>details>summary::-webkit-details-marker{display:none}ul.list>li>details>summary::before{content:"▶";font-size:10px;color:var(--dim);width:12px}ul.list>li>details[open]>summary::before{content:"▼"}
+        ul.list .desc{font-size:15px;font-weight:500;flex:1;min-width:200px}ul.list>li.broken .desc{font-weight:600}
+        ul.list .path{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;white-space:nowrap}
+        .tag{font-size:12px;font-weight:700;padding:0 8px;border-radius:999px;background:var(--warnbg);color:var(--warn);white-space:nowrap}
+        .tag.broken{background:var(--failbg);color:var(--fail)}.tag.new{background:var(--infobg);color:var(--info)}.tag.skipped{background:var(--bg);color:var(--dim)}
+        ul.list .body{display:flex;gap:18px;align-items:flex-start;padding:6px 4px 12px 20px}ul.list .body .main{flex:1;min-width:0}
         section.phase{margin:6px 0 10px}ol.steps{margin:4px 0;padding-left:22px;flex:1;min-width:0}ol.steps li{margin:3px 0}
         .st{display:inline-block;min-width:58px;font-size:11px;font-weight:700;letter-spacing:.02em}
         li.st-passed .st{color:var(--ok)}li.st-failed .st{color:var(--fail)}li.st-skipped .st{color:var(--dim)}
         .shots{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0}
-        @media(max-width:700px){.body{flex-direction:column}.gifs{position:static;flex-wrap:wrap}figure.gif img{max-width:100%}}
+        .card{background:var(--card);border:1px solid var(--line);border-left:5px solid var(--line);border-radius:10px;padding:14px 16px;margin:12px 0}
+        .card.sev-fail{border-left-color:var(--fail)}.card.sev-warn{border-left-color:var(--warn)}.card.sev-ok{border-left-color:var(--ok)}
+        .badge{display:inline-block;font-size:12px;font-weight:700;padding:1px 8px;border-radius:999px;background:var(--okbg)}
+        .sev-fail .badge{background:var(--failbg);color:var(--fail)}.sev-warn .badge{background:var(--warnbg);color:var(--warn)}.sev-ok .badge{background:var(--okbg);color:var(--ok)}
+        .meta{margin:0;color:var(--dim);font-size:13px}.body{display:flex;gap:20px;align-items:flex-start;margin-top:8px}.body>ol.steps{flex:1}
+        @media(max-width:700px){.item,ul.list .body,.body{flex-direction:column}figure.gif img{max-width:100%}}
         @media(max-width:600px){body{padding:16px 12px}details.steps{overflow-x:auto}}
     """.trimIndent()
 }
