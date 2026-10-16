@@ -54,6 +54,20 @@ internal class FakeOps(private val versionName: String? = "5.4.0") : DeviceOps {
     override fun displayProfile(): String? = display
     var androidCli: String? = "1.0.test"
     override fun androidCliVersion(): String? = androidCli
+
+    var emulator = true
+    override fun isEmulator(): Boolean = emulator
+    /** `namespace.key` → value; absent = unset. */
+    val settings = linkedMapOf<String, String>()
+    /** Every settings write in order: `put ns.key=value` / `delete ns.key`. */
+    val settingLog = mutableListOf<String>()
+    override fun settingGet(namespace: String, key: String): String? = settings["$namespace.$key"]
+    override fun settingPut(namespace: String, key: String, value: String) {
+        settings["$namespace.$key"] = value; settingLog += "put $namespace.$key=$value"
+    }
+    override fun settingDelete(namespace: String, key: String) {
+        settings.remove("$namespace.$key"); settingLog += "delete $namespace.$key"
+    }
 }
 
 /** Step executor driven by a lambda (which may drive the controller to simulate agent actions). */

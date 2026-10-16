@@ -84,6 +84,35 @@ class ScenarioMdTest {
     }
 
     @Test
+    fun `setup device settings parse and are inherited by every state variant`() {
+        val s = ScenarioMd.parse(
+            """
+            ---
+            name: saved-password-sheet
+            states: [guest, member]
+            setup:
+              launch: true
+              device:
+                settings:
+                  secure.credential_service: com.google.android.gms/.PasswordAndPasskeyService
+                  secure.autofill_service: null
+            ---
+            1. Verify the "saved_password_sheet" sheet is shown
+            """.trimIndent()
+        )
+        val expected = listOf(
+            DeviceSetting("secure", "credential_service", "com.google.android.gms/.PasswordAndPasskeyService"),
+            DeviceSetting("secure", "autofill_service", null),
+        )
+        assertEquals(expected, s.setup!!.device)
+        assertEquals(listOf(expected, expected), s.variants().map { it.setup!!.device })
+        assertEquals(emptyList(), ScenarioMd.parse("---\nname: plain\nsetup:\n  launch: true\n---\n1. x \"y\"").setup!!.device)
+        assertFailsWith<IllegalArgumentException> {
+            ScenarioMd.parse("---\nname: bad\nsetup:\n  device:\n    settings:\n      credential_service: x\n---\n1. x \"y\"")
+        }
+    }
+
+    @Test
     fun `precondition derives from appState or clearData`() {
         assertEquals("member-basic", ScenarioMd.parse("---\nname: a\nsetup:\n  appState: member-basic\n---\n1. x \"y\"").precondition)
         assertEquals("guest", ScenarioMd.parse("---\nname: b\nsetup:\n  clearData: true\n---\n1. x \"y\"").precondition)

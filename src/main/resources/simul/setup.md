@@ -44,6 +44,45 @@ setup:
   줄이든)는 모든 상태에 적용된다. 한 상태에 접두 기준이 있으면 그 상태에서는 접두 없는
   기준을 대신한다 — "기본 기대"를 접두 없이 쓰고, 다른 상태에만 접두로 덮어쓴다.
 
+## 앱 데이터가 아닌 전제: 에뮬레이터 설정
+
+Google 비밀번호 관리자의 자격 증명 제공자, 자동완성 서비스, 전체화면 "Got it" 안내 같은 것은
+기기 설정이라 pm clear로도 스냅샷 복원으로도 바뀌지 않는다. 이메일 로그인을 한 번 녹화하면 그 뒤
+모든 게스트 콜드 런치에 "Use your saved password" 시트가 뜨는 식이다. 이런 전제는 **시나리오
+스텝이 아니라 설정으로 선언**하고 러너가 adb(`settings get/put`)로 맞춘다 — 모델이 설정 앱을
+조작하게 하지 않는다(adb가 같은 결과를 결정론적으로 내고, replay는 LLM 0회여야 한다).
+
+두 층이다. `.simul/config.yaml`의 `device.settings`는 모든 시나리오가 전제하는 기본값이고,
+시나리오 `setup.device.settings`는 그 시나리오만 반대 상태가 필요할 때(저장된 비밀번호 시트
+자체를 검증할 때) 덮어쓰는 값이다.
+
+```yaml
+# .simul/config.yaml — 실행 시작에 맞추고 끝나면 이전 값으로 되돌린다
+device:
+  settings:
+    secure.credential_service: ""              # 제공자 없음 → 시트 안 뜸
+    secure.credential_service_primary: ""
+    secure.autofill_service: null              # null = 키 삭제(settings delete)
+    secure.immersive_mode_confirmations: confirmed
+```
+
+```yaml
+# 시나리오 frontmatter — 이 시나리오의 launch 전에 바꾸고, 끝나면 기본값으로 복귀
+setup:
+  appState: guest
+  launch: true
+  device:
+    settings:
+      secure.credential_service: com.google.android.gms/com.google.android.gms.auth.api.credentials.credman.service.PasswordAndPasskeyService
+```
+
+- 키는 `<namespace>.<key>`(`system|secure|global`), 값은 `settings put`에 그대로 들어간다.
+  `""`는 빈 문자열, `null`은 키 삭제다. 현재 값을 읽어 다를 때만 쓰고, 바꾼 것만 되돌린다.
+- 에뮬레이터에서만 동작한다. 실기기는 경고 한 줄 뒤 무시한다(display와 같은 규칙).
+- 설정을 켠다고 시트가 뜨는 건 아니다 — 저장된 자격 증명이 Google 계정 데이터로 **AVD 안에**
+  있어야 한다. 그 전제는 앞 시나리오의 부수효과에 기대지 말고 러너 AVD 이미지에 한 번 저장해 둔다.
+- `states:` variant는 같은 `device` 블록을 상속한다.
+
 ## 진입
 
 ```yaml

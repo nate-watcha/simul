@@ -31,6 +31,13 @@ interface DeviceOps {
     fun isEmulator(): Boolean = false
     fun setDisplay(profile: DisplayProfile) {}
     fun resetDisplay() {}
+
+    // ---- `settings` pinning (emulator-only, see DeviceSettings) ----
+
+    /** `settings get <namespace> <key>`; null when the key is unset (the shell prints `null`). */
+    fun settingGet(namespace: String, key: String): String? = null
+    fun settingPut(namespace: String, key: String, value: String) {}
+    fun settingDelete(namespace: String, key: String) {}
 }
 
 class AdbOps(
@@ -137,6 +144,20 @@ class AdbOps(
     override fun resetDisplay() {
         runCatching { runProcess(listOf(adbBin, "shell", "wm", "size", "reset")) }
         runCatching { runProcess(listOf(adbBin, "shell", "wm", "density", "reset")) }
+    }
+
+    override fun settingGet(namespace: String, key: String): String? =
+        runProcess(listOf(adbBin, "shell", "settings", "get", namespace, key)).trim().takeIf { it != "null" }
+
+    override fun settingPut(namespace: String, key: String, value: String) {
+        // adb joins the argv and the device shell re-parses it, so an empty value would vanish
+        // and spaces would split — single-quote for that shell (`'` itself as '\'').
+        val quoted = "'" + value.replace("'", "'\\''") + "'"
+        runProcess(listOf(adbBin, "shell", "settings", "put", namespace, key, quoted))
+    }
+
+    override fun settingDelete(namespace: String, key: String) {
+        runProcess(listOf(adbBin, "shell", "settings", "delete", namespace, key))
     }
 
     /**

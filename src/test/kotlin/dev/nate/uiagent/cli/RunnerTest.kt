@@ -37,6 +37,52 @@ class RunnerTest {
         steps = listOf("Tap the \"웹툰\" tab", "Verify \"웹툰 홈\" is shown"),
     )
 
+    // ------------------------------------------------------------------ device settings
+
+    @Test
+    fun `scenario device settings are pinned before setup and restored when the scenario ends`() {
+        val dev = FakeDevice(screenA, screenA, screenB, screenB)
+        val h = Harness(dev) { c, _ -> c.tap("웹툰"); StepVerdict(true, "ok") }
+        h.ops.settings["secure.credential_service"] = ""  // the config baseline
+        val pinned = scenario.copy(setup = Scenario.Setup(deeplink = "app://home", launch = false,
+            device = listOf(DeviceSetting("secure", "credential_service", "com.google/.Pw"))))
+
+        val result = h.runner.run(pinned, trace = null, mode = RunMode.LLM)
+
+        assertEquals(StepStatus.PASSED, result.status)
+        assertEquals(listOf("put secure.credential_service=com.google/.Pw", "put secure.credential_service="), h.ops.settingLog)
+        assertEquals("", h.ops.settings["secure.credential_service"], "next scenario starts from the baseline")
+    }
+
+    @Test
+    fun `device settings are restored even when setup fails, and a physical device is left alone`() {
+        val dev = FakeDevice(screenA)
+        val failing = object : DeviceOps by FakeOps() {
+            val inner = FakeOps()
+            override fun isEmulator() = true
+            override fun settingGet(namespace: String, key: String) = inner.settingGet(namespace, key)
+            override fun settingPut(namespace: String, key: String, value: String) = inner.settingPut(namespace, key, value)
+            override fun settingDelete(namespace: String, key: String) = inner.settingDelete(namespace, key)
+            override fun setup(setup: Scenario.Setup, app: String?) = throw RuntimeException("adb shell am start failed")
+        }
+        val listener = SwitchableListener()
+        val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
+        val reportDir = tempDir()
+        val runner = ScenarioRunner(controller, listener, failing, neverCalledExecutor, reportDir, "com.example")
+        val pinned = scenario.copy(setup = Scenario.Setup(deeplink = "app://home", launch = false,
+            device = listOf(DeviceSetting("secure", "autofill_service", "com.x/.Af"))))
+
+        val result = runner.run(pinned, trace = null, mode = RunMode.REPLAY)
+
+        assertEquals(StepStatus.FAILED, result.status)
+        assertEquals(listOf("put secure.autofill_service=com.x/.Af", "delete secure.autofill_service"), failing.inner.settingLog)
+
+        val phone = Harness(FakeDevice(screenA)) { _, _ -> StepVerdict(true, "ok") }
+        phone.ops.emulator = false
+        phone.runner.run(pinned, trace = null, mode = RunMode.LLM)
+        assertTrue(phone.ops.settingLog.isEmpty(), "never rewrite a person's phone settings")
+    }
+
     // ------------------------------------------------------------------ llm / record
 
     @Test

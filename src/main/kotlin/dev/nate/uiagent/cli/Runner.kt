@@ -86,6 +86,18 @@ class ScenarioRunner(
 
     fun run(scenario: Scenario, trace: TraceFile?, mode: RunMode): ScenarioRunResult {
         require(mode != RunMode.AUTO) { "AUTO must be resolved to LLM/REPLAY (or skip) by the caller" }
+        // A scenario's own device settings last exactly as long as the scenario: whatever
+        // happens inside (setup failure, step FAILED, harness exception), the next scenario
+        // starts from the baseline the run began with.
+        val pinned = mutableListOf<SettingChange>()
+        try {
+            return runPinned(scenario, trace, mode, pinned)
+        } finally {
+            if (pinned.isNotEmpty()) DeviceSettings.restore(ops, pinned) { log("  device: $it") }
+        }
+    }
+
+    private fun runPinned(scenario: Scenario, trace: TraceFile?, mode: RunMode, pinned: MutableList<SettingChange>): ScenarioRunResult {
         val t0 = System.currentTimeMillis()
         val modeName = if (mode == RunMode.LLM) "llm" else "replay"
 
@@ -93,6 +105,8 @@ class ScenarioRunner(
         // the process and take the rest of a --all batch with it.
         try {
             scenario.setup?.let {
+                // before the cold start, so the app reads the pinned values
+                DeviceSettings.apply(ops, it.device, { msg -> log("  device: $msg") }, pinned)
                 val what = listOfNotNull(
                     it.appState?.let { s -> "restore app state '$s' (pm clear + snapshot)" },
                     if (it.clearData && it.appState == null) "clear app data (guest)" else null,

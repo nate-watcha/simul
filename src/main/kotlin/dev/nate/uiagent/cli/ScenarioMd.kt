@@ -67,6 +67,11 @@ data class Scenario(
         val clearData: Boolean = false,
         /** Restore `.simul/states/<name>.tar` (saved via `simul state save`) — implies clearData. */
         val appState: String? = null,
+        /**
+         * Emulator `settings` this scenario needs pinned differently from the config baseline,
+         * applied before the launch and put back when the scenario ends (see DeviceSettings).
+         */
+        val device: List<DeviceSetting> = emptyList(),
     )
 
     /** One numbered step: the command and its `::` criteria, each optionally bound to a state. */
@@ -132,6 +137,7 @@ object ScenarioMd {
                 launch = (setupMap["launch"] as? String)?.equals("true", ignoreCase = true) == true,
                 clearData = (setupMap["clearData"] as? String)?.equals("true", ignoreCase = true) == true,
                 appState = setupMap["appState"] as? String,
+                device = DeviceSetting.parse(setupMap["device"], "scenario '$name' setup"),
             )
         } else null
         if (states.isNotEmpty()) {

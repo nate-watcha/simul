@@ -142,6 +142,8 @@ data class SimulConfig(
     val scrollLimit: Int,
     /** Emulator display to force for the whole run (trace portability across devices). */
     val display: DisplayProfile? = null,
+    /** Emulator `settings` pinned for the whole run — the baseline every scenario assumes (see DeviceSettings). */
+    val device: List<DeviceSetting> = emptyList(),
 ) {
     companion object {
         fun load(file: File, env: (String) -> String? = System::getenv): SimulConfig {
@@ -157,6 +159,7 @@ data class SimulConfig(
                     MiniYaml.string(y, "display", "size"),
                     MiniYaml.string(y, "display", "density"),
                 ),
+                device = DeviceSetting.parse(y["device"], "config.yaml"),
             )
         }
     }

@@ -100,7 +100,9 @@ record가 다시 쓴 `.simul/scenarios/**/*.trace.json`은 워크플로가 PR로
 
 - PATH에 `simul`(이 레포 `./gradlew installDist` + `scripts/simul`), `adb`·`emulator`·`android`(CLI), `ffmpeg`(gif용, 선택)
 - 에뮬레이터 1대: 매번 콜드 부팅·스냅샷 저장 안 함(기기 드리프트가 앱 회귀로 둔갑하지 않게), `ANDROID_SERIAL` 고정.
-  화면은 config.yaml `display:`가 실행 중 강제하므로 AVD 해상도는 무관
+  화면은 config.yaml `display:`가, 자격 증명 제공자·자동완성 같은 기기 설정은 `device.settings`가 실행 중
+  강제하므로 AVD 해상도·설정은 무관. 단 "저장된 비밀번호" 시트처럼 Google 계정 데이터가 전제인 시나리오는
+  그 데이터가 AVD 이미지에 있어야 한다
 - debug 빌드 설치(WebView 채널이 debuggable 전제), `.simul/config.yaml llm.url`에 닿는 OpenAI 호환 LLM —
   키는 `llm.apiKey: ${VAR}` + 러너 시크릿. **replay 두 단계는 키 없이 돈다**
 - 로그인 등 상태 스냅샷(`.simul/states/*.tar`, gitignored)은 러너 로컬 디렉터리에서 체크아웃 뒤 복사
@@ -130,6 +132,11 @@ record가 다시 쓴 `.simul/scenarios/**/*.trace.json`은 워크플로가 PR로
   실행 동안 `wm size/density`로 강제해 어떤 에뮬레이터에서든 같은 size class로 trace를 재생.
   에뮬레이터에서만 동작(실기기는 경고 후 무시), 종료 시 이전 상태 복원. 녹화 trace에
   `recordedWith.display` 스탬프, replay 시 불일치 경고
+- **기기 설정 핀** — config의 `device.settings`(`<namespace>.<key>: value`, `null`=삭제)를 실행 동안
+  `settings put`으로 강제하고, 시나리오 `setup.device.settings`는 그 시나리오의 launch 전에 덮고
+  끝나면 기본값으로 되돌린다(`DeviceSettings`). 앱 데이터가 아닌 전제(Google 자격 증명 제공자 →
+  "Use your saved password" 시트, 자동완성, 전체화면 안내)를 모델이 설정 앱을 조작하는 대신 adb로
+  결정론적으로 맞춘다. display와 같이 에뮬레이터 전용·변경분만·종료 시 복원
 - serialization 컴파일러 플러그인 미사용 — kotlinx-serialization **런타임**(JsonElement)만
 
 ## 빌드 & 테스트

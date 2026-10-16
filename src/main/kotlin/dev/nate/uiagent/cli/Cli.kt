@@ -185,6 +185,12 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
             }
         }
     }
+    // Same for the emulator `settings` baseline (credential provider, autofill, ...): read,
+    // change only what differs, and put the developer's own values back when the run ends.
+    val devicePinned = mutableListOf<SettingChange>()
+    if (!dryRun) {
+        DeviceSettings.apply(ops, project.config.device, { println("device: $it — restored on exit") }, devicePinned)
+    }
 
     try {
         for ((md, scenario) in targets) {
@@ -236,6 +242,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
             outcomes += outcomeOf(project, md, scenario, result)
         }
     } finally {
+        if (devicePinned.isNotEmpty()) DeviceSettings.restore(ops, devicePinned) { println("device: $it") }
         displayBefore?.let { before ->
             val prior = DisplayProfile.parse(before)
             if (prior != null) ops.setDisplay(prior) else ops.resetDisplay()
@@ -383,6 +390,12 @@ internal fun initCommand(args: List<String>, cwd: File): Int {
           scrollLimit: 3
         display:
           sizeClass: small   # small=720x1280@320(360dp) | medium(640dp) | large(1066dp)
+        # device:            # emulator `settings` every scenario assumes (read → put only if different → restored on exit).
+        #   settings:        # a scenario that needs the opposite declares the same block under its own `setup:`
+        #     secure.credential_service: ""              # no credential provider → no "Use your saved password" sheet
+        #     secure.credential_service_primary: ""
+        #     secure.autofill_service: null              # null = `settings delete` (key unset)
+        #     secure.immersive_mode_confirmations: confirmed
     """.trimIndent() + "\n"
 
     val files = listOf(
