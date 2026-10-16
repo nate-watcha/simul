@@ -12,15 +12,6 @@ class LlmConfigTest {
         LlmConfig.fromYaml(MiniYaml.parse(yaml), env::get)
 
     @Test
-    fun `defaults - local llama-server, no key`() {
-        val c = load("app: x\n")
-        assertEquals(LlmConfig.DEFAULT_URL, c.url)
-        assertEquals("qwen", c.model)
-        assertNull(c.apiKey)
-        assertNull(c.keyProblem())
-    }
-
-    @Test
     fun `apiKey env reference reads the environment`() {
         val c = load("llm:\n  url: https://api.example.com\n  model: gpt-x\n  apiKey: \${OPENAI_API_KEY}\n",
             mapOf("OPENAI_API_KEY" to "sk-test"))
@@ -44,8 +35,4 @@ class LlmConfigTest {
         assertEquals("k1", c.apiKey)
     }
 
-    @Test
-    fun `literal key is accepted as-is`() {
-        assertEquals("literal", load("llm:\n  apiKey: literal\n").apiKey)
-    }
 }

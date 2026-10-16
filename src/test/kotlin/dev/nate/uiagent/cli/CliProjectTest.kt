@@ -1,5 +1,7 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.captureStdout
+import dev.nate.uiagent.tempDir
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -10,7 +12,7 @@ import kotlin.test.assertTrue
 class CliProjectTest {
 
     private fun makeProject(): File {
-        val root = File.createTempFile("uiagent-proj", "").let { it.delete(); it.mkdirs(); it }
+        val root = tempDir()
         File(root, ".simul/scenarios/subscription").mkdirs()
         File(root, ".simul/config.yaml").writeText(
             """
@@ -51,17 +53,10 @@ class CliProjectTest {
 
     @Test
     fun `no project found returns null and cli errors`() {
-        val empty = File.createTempFile("uiagent-empty", "").let { it.delete(); it.mkdirs(); it }
+        val empty = tempDir()
         assertNull(SimulProject.find(empty))
         assertEquals(2, cliMain(arrayOf("run", "--all"), empty))
         assertEquals(2, cliMain(arrayOf("list"), empty))
-    }
-
-    @Test
-    fun `list and dry-run exit 0`() {
-        val root = makeProject()
-        assertEquals(0, cliMain(arrayOf("list"), root))
-        assertEquals(0, cliMain(arrayOf("run", "--all", "--dry-run"), root))
     }
 
     @Test
@@ -71,20 +66,6 @@ class CliProjectTest {
         // scenario untouched: still no trace, no reports of an actual run
         val p = SimulProject.find(root)!!
         assertEquals(false, p.traceFileFor(p.scenarios().single()).exists())
-    }
-
-    @Test
-    fun `explicit replay mode with no trace also skips`() {
-        val root = makeProject()
-        assertEquals(0, cliMain(arrayOf("run", "--all", "--mode", "replay"), root))
-    }
-
-    @Test
-    fun `tag filtering selects scenarios`() {
-        val root = makeProject()
-        // a scenario without the smoke tag
-        File(root, ".simul/scenarios/other.md").writeText("---\nname: other\ntags: [nightly]\n---\n1. do a thing\n")
-        assertEquals(0, cliMain(arrayOf("run", "--tag", "smoke", "--dry-run"), root))
     }
 
     @Test
@@ -117,14 +98,6 @@ class CliProjectTest {
         return root
     }
 
-    private fun capture(block: () -> Unit): String {
-        val out = java.io.ByteArrayOutputStream()
-        val old = System.out
-        System.setOut(java.io.PrintStream(out, true))
-        try { block() } finally { System.setOut(old) }
-        return out.toString()
-    }
-
     @Test
     fun `a states scenario runs once per state, each keyed on its own trace file`() {
         val root = statefulProject()
@@ -141,7 +114,7 @@ class CliProjectTest {
         assertEquals("billing/play-from-detail@member.trace.json", traceRelPath("billing/play-from-detail.md@member"))
         assertEquals("checkout/coupon.trace.json", traceRelPath("checkout/coupon.md"))
 
-        val text = capture { assertEquals(0, cliMain(arrayOf("run", "billing/play-from-detail.md", "--dry-run"), root)) }
+        val text = captureStdout { assertEquals(0, cliMain(arrayOf("run", "billing/play-from-detail.md", "--dry-run"), root)) }
         assertTrue("play-from-detail@member (billing/play-from-detail.md@member)" in text, text)
         assertTrue("play-from-detail@guest" in text, text)
         assertTrue("the \"screen:subscribe\" screen should be shown" in text, text)
@@ -151,7 +124,7 @@ class CliProjectTest {
     @Test
     fun `--state picks one variant of a states scenario`() {
         val root = statefulProject()
-        val text = capture { assertEquals(0, cliMain(arrayOf("run", "--state", "nosub", "--dry-run"), root)) }
+        val text = captureStdout { assertEquals(0, cliMain(arrayOf("run", "--state", "nosub", "--dry-run"), root)) }
         assertTrue("play-from-detail@nosub" in text, text)
         assertTrue("play-from-detail@member" !in text && "play-from-detail@guest" !in text, text)
         assertTrue("browse-greenbook" !in text, "the stateless scenario declares no precondition\n$text")

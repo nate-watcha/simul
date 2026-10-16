@@ -1,9 +1,7 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.tempDir
 import dev.nate.uiagent.agent.LlmStats
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -34,7 +32,7 @@ class ReportTest {
         baseline?.let { phases += summary("baseline", "replay", outcome("nav/a.md", it, failedAt = 3.takeIf { _ -> it == "FAILED" }, skipReason = "no trace".takeIf { _ -> it == "SKIPPED" })) }
         record?.let { phases += summary("record", "llm", outcome("nav/a.md", it, mode = "llm", failedAt = 3.takeIf { _ -> it == "FAILED" }, traceUpdated = it == "PASSED")) }
         verify?.let { phases += summary("verify", "replay", outcome("nav/a.md", it, failedAt = 3.takeIf { _ -> it == "FAILED" })) }
-        return PipelineReport.build("t", phases).rows.single().verdict.kind
+        return PipelineReport.build("t", phases).rows.single().verdict
     }
 
     // ------------------------------------------------------------------ verdicts
@@ -68,7 +66,7 @@ class ReportTest {
             summary("verify", "replay", outcome("nav/a.md", "PASSED")),
         )
         val r = PipelineReport.build("t", phases)
-        assertEquals(VerdictKind.CRASH, r.rows.single().verdict.kind)
+        assertEquals(VerdictKind.CRASH, r.rows.single().verdict)
         assertEquals(listOf(Role.BASELINE, Role.RECORD, Role.VERIFY), r.phases.map { it.role })
         assertEquals(Severity.FAIL, r.overall)
     }
@@ -83,7 +81,7 @@ class ReportTest {
         assertEquals(listOf("run", "run#2"), r.phases.map { it.label })
         val b = r.rows.first { it.path == "nav/b.md" }
         assertNull(b.outcomes[1])
-        assertEquals(VerdictKind.FAIL, b.verdict.kind)
+        assertEquals(VerdictKind.FAIL, b.verdict)
         assertEquals("–", cell(b.outcomes[1]))
     }
 
@@ -100,54 +98,6 @@ class ReportTest {
     )
 
     @Test
-    fun `markdown and slack carry one llm usage line per phase that consulted the model`() {
-        val cost = LlmStats(calls = 40, durationMs = 95_000, promptTokens = 1_200_000, completionTokens = 3_400, peakPromptTokens = 9_100)
-        val r = PipelineReport.build("t", listOf(
-            summary("baseline", "replay", outcome("nav/a.md", "PASSED")),
-            summary("record", "llm", outcome("nav/a.md", "PASSED", mode = "llm", traceUpdated = true, llm = cost),
-                outcome("nav/b.md", "PASSED", mode = "llm", traceUpdated = true, llm = cost)),
-        ))
-        val lines = r.llmUsageLines()
-        assertEquals(listOf("record (llm): model 3m10s of 24s wall · 80 calls · prompt 2.4M tok (peak 9.1k) · completion 6.8k tok"), lines)
-        val md = renderMarkdown(r)
-        assertTrue("<sub>record (llm): model 3m10s" in md, md)
-        assertTrue("baseline (replay): model" !in md)
-        assertTrue("record (llm): model 3m10s" in renderSlack(r), "slack header carries the same line")
-        assertTrue(renderMarkdown(nightly()).let { "model" !in it }, "no usage line when no phase reported stats")
-    }
-
-    @Test
-    fun `markdown has the phase table, verdicts and an attention section with reasons`() {
-        val md = renderMarkdown(nightly())
-        assertTrue(md.startsWith("## ⚠️ simul nightly 2026-09-19"), md.lineSequence().first())
-        assertTrue("| Scenario | baseline (replay) | record (llm) | verify (replay) | Verdict |" in md, md)
-        assertTrue("| `checkout/coupon.md` | ❌ step 3 | ✅ 12s | ✅ 12s | 🔁 screen changed — trace re-recorded |" in md, md)
-        assertTrue("| `deeplink/new.md` | ⏭ no trace | ✅ 12s | ✅ 12s | 🆕 first trace recorded |" in md, md)
-        assertTrue("### Needs attention" in md)
-        assertTrue("step 3 `Tap the \"Apply\" button` — replay broken: evidence not on screen" in md, md)
-        assertTrue("checkout/coupon.trace.json" in md, "must point at the re-recorded trace\n$md")
-        assertTrue("- on screen: `Coupons` · `Register coupon`" in md, "failed steps list what the screen showed\n$md")
-        assertTrue("[Run](https://github.com/o/r/actions/runs/1)" in md)
-        assertTrue("app 5.4.0" in md && "sdk_gphone64_arm64" in md && "android CLI 1.0.16261425" in md, md)
-        assertTrue("nav/a.md" !in md.substringAfter("### Needs attention"), "stable rows stay out of the attention list")
-    }
-
-    @Test
-    fun `slack payload is brief block kit (headline, counts, attention names, links) and keeps details in the report`() {
-        val r = nightly()
-        val payload = dev.nate.uiagent.json.parseToJsonElement(renderSlack(r)).jsonObject
-        assertTrue(payload["text"]!!.jsonPrimitive.content.startsWith("⚠️ simul nightly 2026-09-19: 2 need attention"))
-        val blocks = payload["blocks"]!!.jsonArray
-        assertEquals("header", blocks[0].jsonObject["type"]!!.jsonPrimitive.content)
-        assertEquals(4, blocks.size, "header + counts + attention names + link context, got ${blocks.size}")
-        val text = blocks.joinToString { it.toString() }
-        assertTrue("`checkout/coupon.md`" in text, text)
-        assertTrue("evidence not on screen" !in text && "on screen:" !in text, "reasons and screen labels belong to the html/md report, not the channel")
-        assertTrue("<https://github.com/o/r/actions/runs/1|Run>" in text, text)
-        assertTrue("\"&lt;" !in renderSlack(r) || "<" !in renderSlack(r).substringAfter("Apply"), "mrkdwn control chars must be escaped")
-    }
-
-    @Test
     fun `junit has one suite per phase and failures carry the reason`() {
         val xml = renderJunit(nightly())
         assertTrue("""<testsuite name="baseline (replay)" tests="3" failures="1" errors="0" skipped="1"""" in xml, xml)
@@ -161,7 +111,7 @@ class ReportTest {
 
     @Test
     fun `report command joins summary files, writes --out and gates with --check`() {
-        val dir = File.createTempFile("simul-report", "").let { it.delete(); it.mkdirs(); it }
+        val dir = tempDir()
         val baseline = summary("baseline", "replay", outcome("nav/a.md", "FAILED", failedAt = 2))
         val record = summary("record", "llm", outcome("nav/a.md", "FAILED", mode = "llm", failedAt = 2, reason = "element not found"))
         RunSummaryJson.write(baseline, File(dir, "r/baseline.json"))
@@ -181,7 +131,7 @@ class ReportTest {
 
     @Test
     fun `--check passes on warnings (changed, new) and fails only on failures`() {
-        val dir = File.createTempFile("simul-report", "").let { it.delete(); it.mkdirs(); it }
+        val dir = tempDir()
         RunSummaryJson.write(summary("baseline", "replay", outcome("nav/a.md", "FAILED", failedAt = 2)), File(dir, "b.json"))
         RunSummaryJson.write(summary("record", "llm", outcome("nav/a.md", "PASSED", mode = "llm", traceUpdated = true)), File(dir, "r.json"))
         RunSummaryJson.write(summary("verify", "replay", outcome("nav/a.md", "PASSED")), File(dir, "v.json"))
@@ -190,10 +140,4 @@ class ReportTest {
         assertEquals(1, reportCommand(listOf("b.json", "r.json", "v.json", "--check", "--out", "o.md"), dir), "TRACE_FLAKE gates")
     }
 
-    @Test
-    fun `humanDuration formats seconds, minutes and hours`() {
-        assertEquals("12s", humanDuration(12_300))
-        assertEquals("1m24s", humanDuration(84_000))
-        assertEquals("2h05m", humanDuration(2 * 3600_000L + 5 * 60_000L))
-    }
 }

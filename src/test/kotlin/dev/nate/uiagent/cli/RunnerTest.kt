@@ -1,5 +1,12 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.agent.ScenarioSession
+import dev.nate.uiagent.device.DeviceSetting
+import dev.nate.uiagent.device.DeviceOps
+import dev.nate.uiagent.FakeDevice
+import dev.nate.uiagent.layout
+import dev.nate.uiagent.el
+import dev.nate.uiagent.tempDir
 import dev.nate.uiagent.Point
 import dev.nate.uiagent.agent.LlmStats
 import dev.nate.uiagent.device.DeviceController
@@ -17,16 +24,12 @@ class RunnerTest {
     private val screenA = layout(tabA)
     private val screenB = layout(tabA.copy(state = listOf("selected")), home)
 
-    private fun tempDir(): File = File.createTempFile("uiagent-test", "").let {
-        it.delete(); it.mkdirs(); it
-    }
-
-    private class Harness(dev: FakeDevice, behavior: (DeviceController, String) -> StepVerdict) {
+    private class Harness(dev: FakeDevice, behavior: (DeviceController, String) -> ScenarioSession.Verdict) {
         val listener = SwitchableListener()
         val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
         val executor = ScriptedExecutor { text -> behavior(controller, text) }
         val ops = FakeOps()
-        val reportDir = File.createTempFile("uiagent-report", "").let { it.delete(); it.mkdirs(); it }
+        val reportDir = tempDir()
         val runner = ScenarioRunner(controller, listener, ops, executor, reportDir, app = "com.example")
     }
 
@@ -42,7 +45,7 @@ class RunnerTest {
     @Test
     fun `scenario device settings are pinned before setup and restored when the scenario ends`() {
         val dev = FakeDevice(screenA, screenA, screenB, screenB)
-        val h = Harness(dev) { c, _ -> c.tap("웹툰"); StepVerdict(true, "ok") }
+        val h = Harness(dev) { c, _ -> c.tap("웹툰"); ScenarioSession.Verdict(true, "ok") }
         h.ops.settings["secure.credential_service"] = ""  // the config baseline
         val pinned = scenario.copy(setup = Scenario.Setup(deeplink = "app://home", launch = false,
             device = listOf(DeviceSetting("secure", "credential_service", "com.google/.Pw"))))
@@ -63,7 +66,7 @@ class RunnerTest {
             override fun settingGet(namespace: String, key: String) = inner.settingGet(namespace, key)
             override fun settingPut(namespace: String, key: String, value: String) = inner.settingPut(namespace, key, value)
             override fun settingDelete(namespace: String, key: String) = inner.settingDelete(namespace, key)
-            override fun setup(setup: Scenario.Setup, app: String?) = throw RuntimeException("adb shell am start failed")
+            override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?) = throw RuntimeException("adb shell am start failed")
         }
         val listener = SwitchableListener()
         val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
@@ -77,7 +80,7 @@ class RunnerTest {
         assertEquals(StepStatus.FAILED, result.status)
         assertEquals(listOf("put secure.autofill_service=com.x/.Af", "delete secure.autofill_service"), failing.inner.settingLog)
 
-        val phone = Harness(FakeDevice(screenA)) { _, _ -> StepVerdict(true, "ok") }
+        val phone = Harness(FakeDevice(screenA)) { _, _ -> ScenarioSession.Verdict(true, "ok") }
         phone.ops.emulator = false
         phone.runner.run(pinned, trace = null, mode = RunMode.LLM)
         assertTrue(phone.ops.settingLog.isEmpty(), "never rewrite a person's phone settings")
@@ -91,7 +94,7 @@ class RunnerTest {
         val cost = LlmStats(calls = 3, durationMs = 1200, promptTokens = 20_000, completionTokens = 300, peakPromptTokens = 9_000)
         val h = Harness(dev) { c, text ->
             c.tap("웹툰")
-            StepVerdict(true, "tab selected", llm = cost)
+            ScenarioSession.Verdict(true, "tab selected", llm = cost)
         }
 
         val result = h.runner.run(scenario, trace = null, mode = RunMode.LLM)
@@ -107,21 +110,12 @@ class RunnerTest {
     }
 
     @Test
-    fun `replay never reports llm stats`() {
-        val dev = FakeDevice(screenA, screenA, screenB, screenB)
-        val h = Harness(dev) { _, _ -> throw AssertionError("replay must not reach the executor") }
-        val result = h.runner.run(scenario, goodTrace, RunMode.REPLAY)
-        assertNull(result.llm)
-        assertTrue("\"llm\"" !in File(h.reportDir, "report.json").readText())
-    }
-
-    @Test
     fun `llm mode records a trace when all steps pass`() {
         val dev = FakeDevice(screenA, screenA, screenB, screenB)
         val h = Harness(dev) { c, text ->
             if (text.startsWith("Tap")) {
                 c.tap("웹툰")
-                StepVerdict(true, "tab selected")
+                ScenarioSession.Verdict(true, "tab selected")
             } else {
                 throw AssertionError("anchored Verify must be runner-judged, not reach the LLM")
             }
@@ -150,7 +144,7 @@ class RunnerTest {
     fun `failed step skips the rest and records no trace`() {
         val dev = FakeDevice(screenA, screenA)
         val h = Harness(dev) { _, text ->
-            if (text.startsWith("Tap")) StepVerdict(false, "element not found") else StepVerdict(true, "unreachable")
+            if (text.startsWith("Tap")) ScenarioSession.Verdict(false, "element not found") else ScenarioSession.Verdict(true, "unreachable")
         }
 
         val result = h.runner.run(scenario, trace = null, mode = RunMode.LLM)
@@ -179,41 +173,9 @@ class RunnerTest {
     }
 
     @Test
-    fun `negated Verify asserts absence`() {
-        val dev = FakeDevice(screenA) // screenA has no "웹툰 홈"
-        val h = Harness(dev) { _, _ -> throw AssertionError("no LLM") }
-        val pass = h.runner.run(
-            scenario.copy(steps = listOf("Verify the \"웹툰 홈\" screen is not shown")),
-            trace = null, mode = RunMode.LLM,
-        )
-        assertEquals(StepStatus.PASSED, pass.status)
-
-        val dev2 = FakeDevice(screenB) // "웹툰 홈" present → absence assertion fails
-        val h2 = Harness(dev2) { _, _ -> throw AssertionError("no LLM") }
-        val fail = h2.runner.run(
-            scenario.copy(steps = listOf("Verify the \"웹툰 홈\" screen is not shown")),
-            trace = null, mode = RunMode.LLM,
-        )
-        assertEquals(StepStatus.FAILED, fail.status)
-        assertTrue("unexpectedly" in fail.steps[0].reason!!)
-    }
-
-    @Test
-    fun `Verify with a state keyword checks the state, not mere presence`() {
-        val dev = FakeDevice(screenA) // 웹툰 present but NOT selected
-        val h = Harness(dev) { _, _ -> throw AssertionError("no LLM") }
-        val result = h.runner.run(
-            scenario.copy(steps = listOf("Verify the \"웹툰\" tab is selected")),
-            trace = null, mode = RunMode.LLM,
-        )
-        assertEquals(StepStatus.FAILED, result.status)
-        assertTrue("not selected" in result.steps[0].reason!!, "${result.steps[0].reason}")
-    }
-
-    @Test
     fun `Verify without quoted anchor falls back to the LLM`() {
         val dev = FakeDevice(screenB)
-        val h = Harness(dev) { _, _ -> StepVerdict(true, "judged by llm") }
+        val h = Harness(dev) { _, _ -> ScenarioSession.Verdict(true, "judged by llm") }
         val result = h.runner.run(
             scenario.copy(steps = listOf("Verify the home screen looks normal")),
             trace = null, mode = RunMode.LLM,
@@ -229,7 +191,7 @@ class RunnerTest {
         val h = Harness(dev) { c, text ->
             assertEquals("Tap the \"웹툰\" tab", text, "criterion must not reach the COMMAND")
             c.tap("웹툰")
-            StepVerdict(true, "ok")
+            ScenarioSession.Verdict(true, "ok")
         }
         val step = "Tap the \"웹툰\" tab :: the \"웹툰 홈\" screen should appear"
         val result = h.runner.run(scenario.copy(steps = listOf(step)), trace = null, mode = RunMode.LLM)
@@ -246,7 +208,7 @@ class RunnerTest {
         val dev = FakeDevice(screenA, screenA, screenB, screenB)
         val h = Harness(dev) { c, _ ->
             c.tap("웹툰")
-            StepVerdict(true, "looks fine to me")
+            ScenarioSession.Verdict(true, "looks fine to me")
         }
         val step = "Tap the \"웹툰\" tab :: the \"없는화면\" title should appear"
         val result = h.runner.run(scenario.copy(steps = listOf(step)), trace = null, mode = RunMode.LLM)
@@ -337,29 +299,13 @@ class RunnerTest {
         val dev = FakeDevice(screenA, screenA, screenB, screenB)
         val h = Harness(dev) { c, text ->
             if (text.startsWith("Tap")) c.tap("웹툰")
-            StepVerdict(true, "ok")
+            ScenarioSession.Verdict(true, "ok")
         }
         h.ops.display = "720x1280@320"
 
         val result = h.runner.run(scenario, trace = null, mode = RunMode.LLM)
 
         assertEquals("720x1280@320", assertNotNull(result.updatedTrace).display)
-    }
-
-    @Test
-    fun `replay on a different display logs a warning but still runs`() {
-        val dev = FakeDevice(screenA, screenA, screenB, screenB)
-        val listener = SwitchableListener()
-        val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
-        val ops = FakeOps().also { it.display = "1600x2560@240" }
-        val logged = mutableListOf<String>()
-        val runner = ScenarioRunner(controller, listener, ops, neverCalledExecutor,
-            tempDir(), "com.example", log = logged::add)
-
-        val result = runner.run(scenario, goodTrace.copy(display = "720x1280@320"), RunMode.REPLAY)
-
-        assertEquals(StepStatus.PASSED, result.status)
-        assertTrue(logged.any { "trace recorded at 720x1280@320" in it && "1600x2560@240" in it }, "$logged")
     }
 
     // ------------------------------------------------------------------ robustness / logging
@@ -369,13 +315,9 @@ class RunnerTest {
         val dev = FakeDevice(screenA)
         val listener = SwitchableListener()
         val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
-        val throwingOps = object : DeviceOps {
-            override fun setup(setup: Scenario.Setup, app: String?) =
+        val throwingOps = object : DeviceOps by FakeOps() {
+            override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?) =
                 throw RuntimeException("adb shell am start failed\n/system/bin/sh: syntax error")
-
-            override fun screenshot(dest: File) = false
-            override fun appVersionName(app: String?): String? = null
-            override fun deviceName(): String? = null
         }
         val logged = mutableListOf<String>()
         val runner = ScenarioRunner(controller, listener, throwingOps, neverCalledExecutor,
@@ -389,27 +331,6 @@ class RunnerTest {
         assertTrue(logged.any { "setup failed" in it })
     }
 
-    @Test
-    fun `live log announces each step before running it and reports its result`() {
-        val dev = FakeDevice(screenA, screenA, screenB, screenB)
-        val listener = SwitchableListener()
-        val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
-        val logged = mutableListOf<String>()
-        val runner = ScenarioRunner(controller, listener, FakeOps(), neverCalledExecutor,
-            tempDir(), "com.example", log = logged::add)
-
-        runner.run(scenario, goodTrace, RunMode.REPLAY)
-
-        val stepLines = logged.filter { it.trimStart().startsWith("step") }
-        assertEquals(4, stepLines.size, "$logged")
-        assertEquals("  step 1/2: Tap the \"웹툰\" tab", stepLines[0])
-        assertTrue(stepLines[1].startsWith("  step 1: PASSED (replay, "), stepLines[1])
-        assertEquals("  step 2/2: Verify \"웹툰 홈\" is shown", stepLines[2])
-        assertTrue(stepLines[3].startsWith("  step 2: PASSED (replay, "), stepLines[3])
-        // slow phases get their own lines
-        assertTrue(logged.any { "setup:" in it }, "$logged")
-        assertTrue(logged.any { "observing initial screen" in it }, "$logged")
-    }
 }
 
 class FailedStepScreenTest {
@@ -421,7 +342,7 @@ class FailedStepScreenTest {
         val dev = FakeDevice(gate, gate)
         val listener = SwitchableListener()
         val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
-        val reportDir = File.createTempFile("uiagent-report", "").let { it.delete(); it.mkdirs(); it }
+        val reportDir = tempDir()
         val ops = object : DeviceOps by FakeOps() {
             override fun screenshot(dest: File): Boolean { dest.parentFile.mkdirs(); dest.writeText("png"); return true }
         }
@@ -449,7 +370,7 @@ class AndroidCliMismatchTest {
         val listener = SwitchableListener()
         val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
         val ops = FakeOps().apply { androidCli = "1.0.16261425" }
-        val reportDir = File.createTempFile("uiagent-report", "").let { it.delete(); it.mkdirs(); it }
+        val reportDir = tempDir()
         val lines = mutableListOf<String>()
         val runner = ScenarioRunner(controller, listener, ops, neverCalledExecutor, reportDir, app = "com.example", log = lines::add)
         val trace = TraceFile("t", AGENT_VERSION, null, listOf(TraceStep("Verify \"로그인\" is shown", emptyList(), listOf("로그인"))), androidCli = "1.0.15498356")

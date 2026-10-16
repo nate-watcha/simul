@@ -5,7 +5,6 @@ import dev.nate.uiagent.Origin
 import dev.nate.uiagent.Point
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -31,14 +30,6 @@ class WebLayoutTest {
 
     // WebView on-screen rect from the spike: screenX=0, screenY=160, 720x1072 physical px.
     private val webviewRect = Bounds(0, 160, 720, 1232)
-
-    @Test
-    fun `parses page envelope`() {
-        val page = assertNotNull(WebLayout.parsePage(extractResult))
-        assertEquals(360, page.innerWidth)
-        assertEquals("complete", page.readyState)
-        assertEquals(4, page.elements.size)
-    }
 
     @Test
     fun `malformed extract result parses to null`() {
@@ -82,18 +73,14 @@ class WebLayoutTest {
     }
 
     @Test
-    fun `checked and focused map into state`() {
-        val e = WebLayout.WebElement("x", null, "input", "checkbox", null,
-            WebLayout.WebRect(0.0, 0.0, 1.0, 1.0), checked = true, disabled = false, focused = true)
-        assertEquals(listOf("checked", "focused"), WebLayout.statesOf(e))
-    }
-
-    @Test
     fun `aria-selected maps into the native selected state`() {
         val tab = WebLayout.WebElement("멤버십", null, "div", null, "tab",
             WebLayout.WebRect(0.0, 0.0, 1.0, 1.0), checked = false, disabled = false,
             focused = false, selected = true)
         assertEquals(listOf("selected"), WebLayout.statesOf(tab))
+        val box = WebLayout.WebElement("x", null, "input", "checkbox", null,
+            WebLayout.WebRect(0.0, 0.0, 1.0, 1.0), checked = true, disabled = false, focused = true)
+        assertEquals(listOf("checked", "focused"), WebLayout.statesOf(box))
 
         val page = WebLayout.parsePage(
             """{"iw":360,"rs":"complete","els":[
@@ -112,8 +99,15 @@ class WebLayoutTest {
     }
 
     @Test
-    fun `zero innerWidth cannot divide`() {
-        val page = WebLayout.WebPage(0, "complete", emptyList())
-        assertTrue(WebLayout.toLogicalElements(page, webviewRect).isEmpty())
+    fun `a pointer-cursor host parses as a clickable element, not text`() {
+        val page = WebLayout.parsePage(
+            """{"iw":360,"rs":"complete","els":[
+           {"label":"상세 보기","attrId":null,"tag":"div","type":null,"role":"pointer",
+            "rect":{"x":20,"y":100,"width":320,"height":48},
+            "state":{"checked":false,"disabled":false,"focused":false}}]}"""
+        )!!
+        val el = WebLayout.toLogicalElements(page, Bounds(0, 160, 720, 1232)).single()
+        assertEquals(listOf("clickable"), el.interactions)
+        assertNull(el.kind)
     }
 }

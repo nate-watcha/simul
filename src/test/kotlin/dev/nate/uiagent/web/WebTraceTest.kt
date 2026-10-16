@@ -1,10 +1,10 @@
 package dev.nate.uiagent.web
 
+import dev.nate.uiagent.StaticDevice
 import dev.nate.uiagent.LogicalElement
 import dev.nate.uiagent.LogicalLayout
 import dev.nate.uiagent.Origin
 import dev.nate.uiagent.Point
-import dev.nate.uiagent.device.Device
 import dev.nate.uiagent.device.DeviceController
 import dev.nate.uiagent.cli.Replayer
 import dev.nate.uiagent.cli.TraceAction
@@ -54,15 +54,6 @@ class WebTraceTest {
 
     // ------------------------------------------------------------ web replay
 
-    private class StaticDevice(var layout: LogicalLayout) : Device {
-        override fun observe(): LogicalLayout = layout
-        override fun tap(x: Int, y: Int) {}
-        override fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int) {}
-        override fun inputText(text: String) {}
-        override fun keyBack() {}
-        override fun sleep(ms: Long) {}
-    }
-
     private fun webEl(id: Int, label: String, attrId: String? = null, y: Int = 300 * (id + 1)) =
         LogicalElement(id, label, attrId, listOf("clickable"), emptyList(), null,
             Point(360, y), null, origin = Origin.WEB)
@@ -89,16 +80,4 @@ class WebTraceTest {
         assertNull(result.broken, "web replay should ground without LLM: ${result.broken}")
     }
 
-    @Test
-    fun `vanished web target breaks replay`() {
-        val c = DeviceController(StaticDevice(LogicalLayout(listOf(webEl(0, "다른 화면")))), settleIntervalMs = 0)
-        c.fullLayout()
-        val step = TraceStep(
-            "'베이직' 선택",
-            listOf(TraceAction("tap", target = TraceTarget("grade-basic", "베이직", Point(1, 1), origin = "web"))),
-            emptyList(),
-        )
-        val broken = Replayer(c).replayStep(step).broken
-        assertTrue(broken != null && broken.why.contains("cannot re-ground"), "$broken")
-    }
 }

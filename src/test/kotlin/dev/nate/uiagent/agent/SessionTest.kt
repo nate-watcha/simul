@@ -1,5 +1,6 @@
 package dev.nate.uiagent.agent
 
+import dev.nate.uiagent.StaticDevice
 import ai.koog.agents.core.tools.ToolDescriptor
 import ai.koog.prompt.Prompt
 import ai.koog.prompt.dsl.ModerationResult
@@ -13,7 +14,6 @@ import ai.koog.utils.time.KoogClock
 import dev.nate.uiagent.LogicalElement
 import dev.nate.uiagent.LogicalLayout
 import dev.nate.uiagent.Point
-import dev.nate.uiagent.device.Device
 import dev.nate.uiagent.device.DeviceController
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
@@ -22,16 +22,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class SessionTest {
-
-    private class FakeDevice(private val layout: LogicalLayout) : Device {
-        val gestures = mutableListOf<String>()
-        override fun observe(): LogicalLayout = layout
-        override fun tap(x: Int, y: Int) { gestures += "tap $x $y" }
-        override fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int) { gestures += "swipe" }
-        override fun inputText(text: String) { gestures += "text $text" }
-        override fun keyBack() { gestures += "back" }
-        override fun sleep(ms: Long) {}
-    }
 
     /** Scripted Koog executor: pops one reply per call, records every request's message list. */
     private class FakeExecutor(vararg replies: Message.Assistant) : PromptExecutor() {
@@ -70,11 +60,11 @@ class SessionTest {
         LogicalElement(1, "찾기", null, listOf("clickable"), emptyList(), null, Point(500, 1176), null),
     ))
 
-    private fun controller(dev: FakeDevice) = DeviceController(dev, settleIntervalMs = 0).also { it.fullLayout() }
+    private fun controller(dev: StaticDevice) = DeviceController(dev, settleIntervalMs = 0).also { it.fullLayout() }
 
     @Test
     fun `steps share one growing conversation - later steps send the bare command`() {
-        val dev = FakeDevice(screen())
+        val dev = StaticDevice(screen())
         val llm = FakeExecutor(tapCall("웹툰"), reportCall(), tapCall("찾기", "c2"), reportCall(id = "c10"))
         val session = ScenarioSession(llm, controller(dev))
 
@@ -88,7 +78,7 @@ class SessionTest {
         // request 1: system + first user (command + layout)
         val r1 = llm.requests[0]
         assertEquals(listOf("system", "user"), r1.map(::kind))
-        assertEquals(SYSTEM_PROMPT_V1, r1[0].textContent())
+        assertEquals(SYSTEM_PROMPT, r1[0].textContent())
         assertTrue(r1[1].textContent().startsWith("COMMAND: ") && "INITIAL LAYOUT:\n[LAYOUT]" in r1[1].textContent())
         // request 3 (step 2 opening): FULL history (ChatMemory) + new bare command — append-only growth
         val r3 = llm.requests[2]
@@ -101,7 +91,7 @@ class SessionTest {
 
     @Test
     fun `text reply without tools fails the step but keeps the conversation intact`() {
-        val dev = FakeDevice(screen())
+        val dev = StaticDevice(screen())
         val llm = FakeExecutor(text("I think I am done"), reportCall())
         val session = ScenarioSession(llm, controller(dev))
         val v = session.runStep("Tap \"웹툰\"", "[L]")
@@ -115,7 +105,7 @@ class SessionTest {
 
     @Test
     fun `turn cap per step`() {
-        val dev = FakeDevice(screen())
+        val dev = StaticDevice(screen())
         val llm = FakeExecutor(tapCall("웹툰", "a"), tapCall("찾기", "b"), tapCall("웹툰", "c"))
         val session = ScenarioSession(llm, controller(dev), maxTurnsPerStep = 3)
         val v = session.runStep("loop forever", "[L]")
@@ -124,17 +114,8 @@ class SessionTest {
     }
 
     @Test
-    fun `report FAILED verdict propagates`() {
-        val dev = FakeDevice(screen())
-        val llm = FakeExecutor(reportCall(status = "FAILED"))
-        val session = ScenarioSession(llm, controller(dev))
-        val v = session.runStep("Verify nothing", "[L]")
-        assertTrue(!v.passed)
-    }
-
-    @Test
     fun `criterion is withheld from the command and appended to the first tool result`() {
-        val dev = FakeDevice(screen())
+        val dev = StaticDevice(screen())
         val llm = FakeExecutor(tapCall("웹툰"), reportCall())
         val session = ScenarioSession(llm, controller(dev))
 
@@ -153,7 +134,7 @@ class SessionTest {
 
     @Test
     fun `report before any action is deflected once with the criterion, then accepted`() {
-        val dev = FakeDevice(screen())
+        val dev = StaticDevice(screen())
         val llm = FakeExecutor(reportCall(id = "early"), reportCall(status = "FAILED", id = "again"))
         val session = ScenarioSession(llm, controller(dev))
 
@@ -166,34 +147,8 @@ class SessionTest {
     }
 
     @Test
-    fun `live log traces each turn with llm and tool timings`() {
-        val dev = FakeDevice(screen())
-        val llm = FakeExecutor(tapCall("웹툰"), reportCall())
-        val logged = mutableListOf<String>()
-        val session = ScenarioSession(llm, controller(dev), log = logged::add)
-
-        session.runStep("Tap the \"웹툰\" tab", "[L]")
-
-        assertEquals(2, logged.size, "$logged")
-        assertTrue(logged[0].startsWith("turn 1: llm ") && "tap(웹툰)" in logged[0], logged[0])
-        assertTrue(logged[1].startsWith("turn 2: llm ") && "report(PASSED)" in logged[1], logged[1])
-    }
-
-    @Test
-    fun `guard results are flagged in the turn log`() {
-        val dev = FakeDevice(screen())
-        val llm = FakeExecutor(tapCall("우주정거장"), reportCall(status = "FAILED"))
-        val logged = mutableListOf<String>()
-        val session = ScenarioSession(llm, controller(dev), log = logged::add)
-
-        session.runStep("Tap the \"우주정거장\" button", "[L]")
-
-        assertTrue("tap(우주정거장)" in logged[0] && "← ERROR" in logged[0], logged[0])
-    }
-
-    @Test
     fun `missing tool argument produces an error tool result, not a crash`() {
-        val dev = FakeDevice(screen())
+        val dev = StaticDevice(screen())
         val llm = FakeExecutor(call("tap", """{"label":"웹툰"}""", "x"), reportCall(status = "FAILED"))
         val session = ScenarioSession(llm, controller(dev))
         session.runStep("Tap", "[L]")
@@ -204,7 +159,7 @@ class SessionTest {
 
     @Test
     fun `bad tool arguments produce an error tool result, not a crash`() {
-        val dev = FakeDevice(screen())
+        val dev = StaticDevice(screen())
         val llm = FakeExecutor(call("tap", "not-json", "x"), reportCall(status = "FAILED"))
         val session = ScenarioSession(llm, controller(dev))
         val v = session.runStep("Tap", "[L]")

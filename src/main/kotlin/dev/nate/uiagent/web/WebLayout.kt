@@ -12,7 +12,6 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.math.roundToInt
 
@@ -20,7 +19,7 @@ import kotlin.math.roundToInt
  * Web-page element extraction and conversion to [LogicalElement]s.
  *
  * The extraction JS runs once per observation via Runtime.evaluate and returns viewport,
- * readyState and elements in a single round trip. Two real-world lessons baked in (spike M0):
+ * readyState and elements in a single round trip. Two real-world lessons baked in:
  *  - React apps attach click listeners, so `[onclick]` finds nothing; ARIA roles and `label`
  *    elements must be part of the selector.
  *  - Custom radios/checkboxes are zero-size `<input>`s wrapped in a `<label>`: the label is
@@ -145,7 +144,6 @@ object WebLayout {
 
     data class WebPage(
         val innerWidth: Int,
-        val readyState: String,
         val elements: List<WebElement>,
         /** Viewport height, document scroll offset and total scroll height, in CSS px (0 = unknown). */
         val innerHeight: Int = 0,
@@ -185,7 +183,6 @@ object WebLayout {
     fun parsePage(value: String): WebPage? {
         val o = runCatching { json.parseToJsonElement(value) }.getOrNull() as? JsonObject ?: return null
         val iw = o["iw"]?.jsonPrimitive?.intOrNull ?: return null
-        val rs = o["rs"]?.jsonPrimitive?.contentOrNull ?: "unknown"
         val els = (o["els"] as? JsonArray)?.mapNotNull { el ->
             val e = el as? JsonObject ?: return@mapNotNull null
             val r = e["rect"] as? JsonObject ?: return@mapNotNull null
@@ -210,7 +207,7 @@ object WebLayout {
             )
         } ?: emptyList()
         return WebPage(
-            iw, rs, els,
+            iw, els,
             innerHeight = o["ih"]?.jsonPrimitive?.intOrNull ?: 0,
             scrollY = o["sy"]?.jsonPrimitive?.intOrNull ?: 0,
             scrollHeight = o["sh"]?.jsonPrimitive?.intOrNull ?: 0,

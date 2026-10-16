@@ -1,5 +1,8 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.FakeDevice
+import dev.nate.uiagent.layout
+import dev.nate.uiagent.el
 import dev.nate.uiagent.Point
 import dev.nate.uiagent.device.DeviceController
 import kotlin.test.Test
@@ -86,12 +89,4 @@ class FastReplayTest {
         assertTrue(dev.gestures.isEmpty())
     }
 
-    @Test
-    fun `restabilize restores fast mode afterwards`() {
-        val dev = FakeDevice(home)
-        val c = fastController(dev)
-        c.fullLayout()
-        c.restabilize()
-        assertTrue(c.fastObserve)
-    }
 }

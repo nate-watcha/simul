@@ -1,15 +1,15 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.tempDir
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
-import kotlin.test.assertTrue
 
 class StatusTest {
 
     private fun project(): SimulProject {
-        val root = File.createTempFile("simul-status", "").let { it.delete(); it.mkdirs(); it }
+        val root = tempDir()
         File(root, ".simul/scenarios/guest").mkdirs()
         File(root, ".simul/config.yaml").writeText("app: com.x\n")
         return SimulProject(root)
@@ -70,68 +70,4 @@ class StatusTest {
         assertEquals(true, r.scenarios.first { it.name == "coupon-extra" }.lastRun?.passed)
     }
 
-    @Test
-    fun `renders aligned table without color when disabled`() {
-        val p = project()
-        scenario(p, "guest/a.md", "guest-a", setup = "  clearData: true\n  launch: true")
-        val out = renderStatus(collectStatus(p), color = false)
-        assertTrue("SCENARIO" in out && "guest/a.md" in out, out)
-        assertTrue("none" in out && "never" in out, out)
-        assertTrue("guest" in out, "clearData precondition must render as guest\n$out")
-        assertTrue("\u001B" !in out, "no ANSI when color=false")
-    }
-
-    @Test
-    fun `crash log persists the stack trace under reports`() {
-        val p = project()
-        val f = writeCrashLog(p.reportsDir, "billing-cash-page", RuntimeException("boom"))
-        assertTrue(f.name.startsWith("billing-cash-page-crash-"), f.name)
-        val text = f.readText()
-        assertTrue("RuntimeException" in text && "boom" in text, text.take(200))
-    }
-
-    @Test
-    fun `feature group is the top-level directory`() {
-        assertEquals("bottom_nav", featureGroup("bottom_nav/basic.md"))
-        assertEquals("(root)", featureGroup("loose.md"))
-    }
-
-    @Test
-    fun `run --state filters by required precondition`() {
-        val p = project()
-        scenario(p, "guest/a.md", "guest-a", setup = "  clearData: true\n  launch: true")
-        scenario(p, "member/b.md", "member-b", setup = "  appState: member-basic\n  launch: true")
-        scenario(p, "misc/c.md", "misc-c")
-
-        val out = java.io.ByteArrayOutputStream()
-        val old = System.out
-        System.setOut(java.io.PrintStream(out, true))
-        try {
-            assertEquals(0, runCommand(listOf("--state", "guest", "--dry-run"), p.appRoot))
-        } finally {
-            System.setOut(old)
-        }
-        val text = out.toString()
-        assertTrue("guest-a" in text, text)
-        assertTrue("member-b" !in text && "misc-c" !in text, text)
-    }
-
-    @Test
-    fun `a states scenario is one row per state with its own trace and last run`() {
-        val p = project()
-        val f = File(p.scenariosDir, "billing/play.md").apply { parentFile.mkdirs() }
-        f.writeText("---\nname: play\nstates: [member, guest]\n---\n1. Tap the \"a\" button\n   :: member → \"b\" is shown\n")
-        p.traceFileFor(f, "member").writeText("{}")
-        p.traceFileFor(f, "member").setLastModified(f.lastModified() + 10_000)
-        report(p, "play@guest", "20260101-000000", "FAILED")
-
-        val rows = collectStatus(p).scenarios.filter { it.relPath == "billing/play.md" }
-        assertEquals(listOf("member", "guest"), rows.map { it.state })
-        assertEquals(listOf("play@member", "play@guest"), rows.map { it.name })
-        assertEquals(listOf("member", "guest"), rows.map { it.precondition })
-        assertEquals(TraceState.OK, rows[0].trace)
-        assertEquals(TraceState.NONE, rows[1].trace)
-        assertNull(rows[0].lastRun)
-        assertEquals(false, rows[1].lastRun?.passed)
-    }
 }

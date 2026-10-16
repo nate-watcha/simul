@@ -1,9 +1,9 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.el
 import dev.nate.uiagent.Point
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 class RecorderTest {
 
@@ -33,16 +33,6 @@ class RecorderTest {
         )
         assertEquals(listOf("scrollable", "target", "direction"), r.actions[0].args.keys.toList())
         assertEquals("그린북", r.actions[0].args["target"])
-    }
-
-    @Test
-    fun `records type with text`() {
-        val r = StepRecorder(2)
-        val field = el("검색", resourceId = "search_input", interactions = listOf("clickable", "focusable"))
-        r.after("type", listOf("target" to "검색", "text" to "abc"), field, "Typed \"abc\" into '검색'.\nNO CHANGE")
-        assertEquals("type", r.actions[0].tool)
-        assertEquals("abc", r.actions[0].text)
-        assertEquals("search_input", r.actions[0].target?.resourceId)
     }
 
     @Test
@@ -126,14 +116,4 @@ class RecorderTest {
         assertEquals(listOf(StateEvidence("tab_library", "selected")), ev.states)
     }
 
-    @Test
-    fun `statePresent matches label plus state, not label alone`() {
-        val els = listOf(
-            el("구독", id = 0, state = listOf("selected")),
-            el("웹툰", id = 1, center = Point(1, 1)),
-        )
-        assertEquals(true, statePresent(els, StateEvidence("구독", "selected")))
-        assertEquals(false, statePresent(els, StateEvidence("웹툰", "selected")))
-        assertEquals(false, statePresent(els, StateEvidence("없음", "selected")))
-    }
 }

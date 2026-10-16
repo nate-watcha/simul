@@ -28,7 +28,7 @@ import java.util.concurrent.TimeUnit
  * Minimal Chrome DevTools Protocol client for Android WebViews, deliberately library-free:
  * discovery via `adb shell` + HTTP GET /json, evaluation via the JDK 11 HttpClient WebSocket.
  *
- * Error policy (plan M1): observation failures must never kill the agent. [discover] returns a
+ * Error policy: observation failures must never kill the agent. [discover] returns a
  * [Discovery] whose `failure` explains why no target is available; [evaluate] returns
  * [Eval.Failed] instead of throwing. Callers degrade to native-only observation.
  */
@@ -37,8 +37,6 @@ open class CdpClient(private val adbBin: String = "adb") : AutoCloseable {
     /** One debuggable page inside a WebView, as listed by GET /json. */
     data class Target(
         val id: String,
-        val url: String,
-        val title: String,
         /** Full ws:// url through the forwarded local port. */
         val webSocketUrl: String,
         /** On-screen rect of the hosting WebView in physical px (from the description field). */
@@ -229,8 +227,6 @@ open class CdpClient(private val adbBin: String = "adb") : AutoCloseable {
                 }
                 Target(
                     id = id,
-                    url = o["url"]?.jsonPrimitive?.contentOrNull ?: "",
-                    title = o["title"]?.jsonPrimitive?.contentOrNull ?: "",
                     // rebuild against our forwarded port; the advertised url may embed another
                     webSocketUrl = "ws://localhost:$localPort/devtools/page/$id",
                     rect = rect,

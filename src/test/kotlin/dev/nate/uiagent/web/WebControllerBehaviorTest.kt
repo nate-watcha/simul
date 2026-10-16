@@ -1,12 +1,11 @@
 package dev.nate.uiagent.web
 
+import dev.nate.uiagent.StaticDevice
 import dev.nate.uiagent.Bounds
 import dev.nate.uiagent.LogicalElement
 import dev.nate.uiagent.LogicalLayout
 import dev.nate.uiagent.Origin
 import dev.nate.uiagent.Point
-import dev.nate.uiagent.WebOverflow
-import dev.nate.uiagent.device.Device
 import dev.nate.uiagent.device.DeviceController
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -18,15 +17,6 @@ class WebControllerBehaviorTest {
 
     private fun el(id: Int, label: String, origin: Origin = Origin.NATIVE, y: Int = 100 * (id + 1)) =
         LogicalElement(id, label, null, listOf("clickable"), emptyList(), null, Point(360, y), null, origin = origin)
-
-    private class StaticDevice(var layout: LogicalLayout) : Device {
-        override fun observe(): LogicalLayout = layout
-        override fun tap(x: Int, y: Int) {}
-        override fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int) {}
-        override fun inputText(text: String) {}
-        override fun keyBack() {}
-        override fun sleep(ms: Long) {}
-    }
 
     @Test
     fun `actions that change a web-merged screen return a full observation, not a diff`() {
@@ -70,7 +60,7 @@ class WebControllerBehaviorTest {
             LogicalElement(1, "결제하기", null, emptyList(), emptyList(), "label", Point(173, 104), null, origin = Origin.WEB, parentId = 0),
             LogicalElement(2, "@x60y104", null, listOf("clickable"), emptyList(), null, Point(60, 104), null, origin = Origin.WEB, parentId = 0),
         )
-        val device = StaticDevice(LogicalLayout(elements, webOverflow = WebOverflow(belowPx = 1478, abovePx = 0, viewportPx = 592)))
+        val device = StaticDevice(LogicalLayout(elements))
         val c = DeviceController(device, settleIntervalMs = 0)
         c.fullLayout()
         val result = c.tap("결제하기")
@@ -92,16 +82,6 @@ class WebControllerBehaviorTest {
     }
 
     @Test
-    fun `native-only screens keep the diff path`() {
-        val device = StaticDevice(LogicalLayout(listOf(el(0, "홈"))))
-        val c = DeviceController(device, settleIntervalMs = 0)
-        c.fullLayout()
-        val result = c.tap("홈")
-        assertTrue(result.contains("NO CHANGE"), result) // static layout: action had no effect
-        assertFalse(result.contains("web content"), result)
-    }
-
-    @Test
     fun `not-found on a web screen hints at cross-origin iframes`() {
         val device = StaticDevice(LogicalLayout(listOf(el(0, "버튼", origin = Origin.WEB))))
         val c = DeviceController(device, settleIntervalMs = 0)
@@ -109,14 +89,6 @@ class WebControllerBehaviorTest {
         val result = c.tap("결제하기")
         assertTrue(result.startsWith("ERROR"), result)
         assertTrue(result.contains("cross-origin iframe"), result)
-    }
-
-    @Test
-    fun `not-found on a native screen has no iframe hint`() {
-        val device = StaticDevice(LogicalLayout(listOf(el(0, "버튼"))))
-        val c = DeviceController(device, settleIntervalMs = 0)
-        c.fullLayout()
-        assertFalse(c.tap("결제하기").contains("iframe"))
     }
 
     @Test

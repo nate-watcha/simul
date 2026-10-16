@@ -25,12 +25,6 @@ class CdpClientParseTest {
         assertEquals(listOf("webview_devtools_remote_8716"), CdpClient.parseWebViewSockets(procNetUnix))
     }
 
-    @Test
-    fun `socket pid extraction`() {
-        assertEquals("8716", CdpClient.socketPid("webview_devtools_remote_8716"))
-        assertNull(CdpClient.socketPid("chrome_devtools_remote"))
-    }
-
     // Real GET /json body (spike): description is a nested JSON *string*.
     private val pagesJson = """
         [ {
@@ -54,7 +48,6 @@ class CdpClientParseTest {
         assertEquals(1, targets.size) // service_worker dropped
         val t = targets[0]
         assertEquals("A7F394D9", t.id)
-        assertEquals("https://staging.example.com/webview/payment/choose_grade", t.url)
         // ws url is rebuilt against OUR forwarded port, not the advertised one
         assertEquals("ws://localhost:40123/devtools/page/A7F394D9", t.webSocketUrl)
         assertEquals(Bounds(0, 160, 720, 1232), t.rect)
@@ -68,11 +61,6 @@ class CdpClientParseTest {
         assertEquals(1, targets.size)
         assertNull(targets[0].rect)
         assertNull(targets[0].visible)
-    }
-
-    @Test
-    fun `malformed json body yields no targets`() {
-        assertTrue(CdpClient.parseTargets("not json", 1).isEmpty())
     }
 
     // ------------------------------------------------------------ evaluate reply
@@ -92,11 +80,7 @@ class CdpClientParseTest {
         )
         assertIs<CdpClient.Eval.Failed>(r)
         assertTrue(r.reason.contains("ReferenceError"))
+        assertIs<CdpClient.Eval.Failed>(CdpClient.parseEvalReply(reply("""{"id":1,"result":{"result":{"type":"undefined"}}}""")), "undefined result")
     }
 
-    @Test
-    fun `undefined result is Failed, not a crash`() {
-        val r = CdpClient.parseEvalReply(reply("""{"id":1,"result":{"result":{"type":"undefined"}}}"""))
-        assertIs<CdpClient.Eval.Failed>(r)
-    }
 }

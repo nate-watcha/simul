@@ -64,12 +64,6 @@ internal object TuiText {
         return if (w > cols) clip(s, cols) else s + " ".repeat(cols - w)
     }
 
-    /** Pad on the left. */
-    fun padLeft(s: String, cols: Int): String {
-        val w = width(s)
-        return if (w > cols) clip(s, cols) else " ".repeat(cols - w) + s
-    }
-
     /**
      * Word-wrap plain text to [cols] columns; continuation rows are indented by [indent]
      * columns. Breaks at spaces when one is in reach, otherwise mid-word (CJK has no spaces).

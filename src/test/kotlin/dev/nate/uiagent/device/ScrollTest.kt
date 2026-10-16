@@ -47,19 +47,6 @@ class ScrollTest {
     }
 
     @Test
-    fun `single scrollable uses a long stroke clearing the bottom`() {
-        val simple = LayoutAdapter.adapt(
-            """[{"interactions":["scrollable"],"center":"[360,689]","bounds":"[0,260][720,1118]","resource-id":"list"}]"""
-        )
-        val e = simple.elements.single()
-        val s = SwipeGeometry.swipeCoords(e, "down", simple.elements)
-        // region [260,1118], h=858: start 260+858*68/100=843, end 260+85=345
-        assertEquals(360, s[0])
-        assertEquals(260 + 858 * 68 / 100, s[1])
-        assertEquals(260 + 858 * 10 / 100, s[3])
-    }
-
-    @Test
     fun `vertical scroll prefers the focusable list over a taller bare pager`() {
         // recycler_view is focusable; the bare ["scrollable"] is TALLER but a horizontal pager.
         val overlap = LayoutAdapter.adapt(

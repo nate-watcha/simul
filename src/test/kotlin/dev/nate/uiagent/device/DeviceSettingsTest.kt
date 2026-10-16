@@ -1,6 +1,7 @@
-package dev.nate.uiagent.cli
+package dev.nate.uiagent.device
 
-import java.io.File
+import dev.nate.uiagent.cli.FakeOps
+import dev.nate.uiagent.cli.MiniYaml
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -45,21 +46,6 @@ class DeviceSettingsTest {
         assertFailsWith<IllegalArgumentException> { DeviceSetting.parse(yaml("device:\n  settings:\n    secure.x: [a, b]")["device"], "t") }
     }
 
-    @Test
-    fun `config yaml device block loads and scaffolded template stays parseable`() {
-        val dir = File.createTempFile("simul-test", "").let { it.delete(); it.mkdirs(); it }
-        File(dir, "config.yaml").writeText(
-            """
-            app: com.example
-            device:
-              settings:
-                secure.credential_service: ""
-            """.trimIndent()
-        )
-        assertEquals(listOf(DeviceSetting("secure", "credential_service", "")), SimulConfig.load(File(dir, "config.yaml")).device)
-        assertEquals(emptyList(), SimulConfig.load(File(dir, "missing.yaml")).device)
-    }
-
     // ------------------------------------------------------------------ apply / restore
 
     @Test
@@ -75,7 +61,8 @@ class DeviceSettingsTest {
             DeviceSetting("secure", "autofill_service", "null-service"),
         )
 
-        val changes = DeviceSettings.apply(ops, wanted, logged::add)
+        val changes = mutableListOf<SettingChange>()
+        DeviceSettings.apply(ops, wanted, logged::add, changes)
 
         assertEquals(
             listOf("put secure.credential_service=", "put secure.autofill_service=null-service"),
@@ -97,7 +84,8 @@ class DeviceSettingsTest {
     fun `null value means delete, and a key already unset is a no-op`() {
         val ops = FakeOps()
         ops.settings["secure.autofill_service"] = "com.x/.Autofill"
-        val changes = DeviceSettings.apply(ops, listOf(DeviceSetting("secure", "autofill_service", null), DeviceSetting("secure", "other", null)), log = {})
+        val changes = mutableListOf<SettingChange>()
+        DeviceSettings.apply(ops, listOf(DeviceSetting("secure", "autofill_service", null), DeviceSetting("secure", "other", null)), log = {}, sink = changes)
         assertEquals(listOf("delete secure.autofill_service"), ops.settingLog)
         assertEquals(1, changes.size)
         DeviceSettings.restore(ops, changes, log = {})
@@ -108,7 +96,8 @@ class DeviceSettingsTest {
     fun `physical devices are never touched`() {
         val ops = FakeOps().also { it.emulator = false }
         val logged = mutableListOf<String>()
-        val changes = DeviceSettings.apply(ops, listOf(DeviceSetting("secure", "credential_service", "")), logged::add)
+        val changes = mutableListOf<SettingChange>()
+        DeviceSettings.apply(ops, listOf(DeviceSetting("secure", "credential_service", "")), logged::add, changes)
         assertTrue(changes.isEmpty() && ops.settingLog.isEmpty())
         assertTrue(logged.single().startsWith("warning:") && "not an emulator" in logged.single(), logged.toString())
     }

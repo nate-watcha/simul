@@ -1,11 +1,11 @@
 package dev.nate.uiagent.web
 
+import dev.nate.uiagent.StaticDevice
 import dev.nate.uiagent.Bounds
 import dev.nate.uiagent.LogicalElement
 import dev.nate.uiagent.LogicalLayout
 import dev.nate.uiagent.Origin
 import dev.nate.uiagent.Point
-import dev.nate.uiagent.device.Device
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -17,17 +17,8 @@ class WebAwareDeviceTest {
     private fun nativeEl(id: Int, label: String? = null, resourceId: String? = null, y: Int = 100) =
         LogicalElement(id, label, resourceId, listOf("clickable"), emptyList(), null, Point(360, y), null)
 
-    private class FakeDevice(var layout: LogicalLayout) : Device {
-        override fun observe(): LogicalLayout = layout
-        override fun tap(x: Int, y: Int) {}
-        override fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int) {}
-        override fun inputText(text: String) {}
-        override fun keyBack() {}
-        override fun sleep(ms: Long) {}
-    }
-
     private val target = CdpClient.Target(
-        id = "T1", url = "https://x/webview/a", title = "t",
+        id = "T1",
         webSocketUrl = "ws://localhost:1/devtools/page/T1",
         rect = Bounds(0, 160, 720, 1232), visible = true, attached = true,
     )
@@ -68,7 +59,7 @@ class WebAwareDeviceTest {
         // model, seeing nothing clickable, tapped page titles instead of scrolling.
         val native = LogicalLayout(listOf(nativeEl(0, resourceId = "webview", y = 696)))
         val cdp = FakeCdp(CdpClient.Discovery(listOf(target)), extractTallPage)
-        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        val merged = WebAwareDevice(StaticDevice(native), cdp, "com.x").observe()
         assertEquals(
             "the web page continues past the viewport (about 2.5 screens below)",
             merged.webNote,
@@ -79,24 +70,24 @@ class WebAwareDeviceTest {
     fun `a page that fits the viewport has no scroll hint`() {
         val fits = CdpClient.Eval.Ok("""{"iw":360,"ih":592,"sy":0,"sh":600,"rs":"complete","els":[]}""")
         val native = LogicalLayout(listOf(nativeEl(0, resourceId = "webview", y = 696)))
-        val merged = WebAwareDevice(FakeDevice(native), FakeCdp(CdpClient.Discovery(listOf(target)), fits), "com.x").observe()
+        val merged = WebAwareDevice(StaticDevice(native), FakeCdp(CdpClient.Discovery(listOf(target)), fits), "com.x").observe()
         assertNull(merged.webNote) // 8 px of overflow is not a screen's worth of content
     }
 
     @Test
     fun `scroll hint reports content above once scrolled down`() {
-        val page = WebLayout.WebPage(360, "complete", emptyList(), innerHeight = 592, scrollY = 1478, scrollHeight = 2070)
+        val page = WebLayout.WebPage(360, emptyList(), innerHeight = 592, scrollY = 1478, scrollHeight = 2070)
         assertEquals(
             "the web page continues past the viewport (about 2.5 screens above)",
             WebLayout.scrollHint(page),
         )
-        val mid = WebLayout.WebPage(360, "complete", emptyList(), innerHeight = 592, scrollY = 300, scrollHeight = 2070)
+        val mid = WebLayout.WebPage(360, emptyList(), innerHeight = 592, scrollY = 300, scrollHeight = 2070)
         assertEquals(
             "the web page continues past the viewport (about 2.0 screens below, less than 1 screen above)",
             WebLayout.scrollHint(mid),
         )
         // geometry absent (older extraction fixtures) -> no hint
-        assertNull(WebLayout.scrollHint(WebLayout.WebPage(360, "complete", emptyList())))
+        assertNull(WebLayout.scrollHint(WebLayout.WebPage(360, emptyList())))
     }
 
     private fun webEl(label: String, x0: Int, y0: Int, x1: Int, y1: Int) =
@@ -137,7 +128,7 @@ class WebAwareDeviceTest {
             LogicalElement(2, "확인", null, listOf("clickable"), emptyList(), null, Point(360, 900), null, parentId = 0), // a dialog button: shares nothing
         ))
         val cdp = FakeCdp(CdpClient.Discovery(listOf(target)), extract)
-        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        val merged = WebAwareDevice(StaticDevice(native), cdp, "com.x").observe()
         assertEquals(listOf(null, "확인", "할인", "소장", "11,000 캐시", "7,700 캐시"), merged.elements.map { it.label })
     }
 
@@ -147,29 +138,16 @@ class WebAwareDeviceTest {
         val host = LogicalElement(0, null, null, listOf("scrollable", "focusable"), emptyList(), null, Point(360, 696), Bounds(0, 160, 720, 1232))
         val native = LogicalLayout(listOf(host, nativeEl(1, label = "닫기", y = 104)))
         val cdp = FakeCdp(CdpClient.Discovery(listOf(target)), extractOk)
-        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        val merged = WebAwareDevice(StaticDevice(native), cdp, "com.x").observe()
         assertEquals(listOf(null, "구독 시작하기", "닫기"), merged.elements.map { it.label })
         assertEquals(listOf(null, 0, null), merged.elements.map { it.parentId })
-    }
-
-    @Test
-    fun `a pointer-cursor host parses as a clickable element, not text`() {
-        val page = WebLayout.parsePage(
-            """{"iw":360,"rs":"complete","els":[
-           {"label":"상세 보기","attrId":null,"tag":"div","type":null,"role":"pointer",
-            "rect":{"x":20,"y":100,"width":320,"height":48},
-            "state":{"checked":false,"disabled":false,"focused":false}}]}"""
-        )!!
-        val el = WebLayout.toLogicalElements(page, Bounds(0, 160, 720, 1232)).single()
-        assertEquals(listOf("clickable"), el.interactions)
-        assertNull(el.kind)
     }
 
     @Test
     fun `native-only screens pass through when discovery finds nothing`() {
         val native = LogicalLayout(listOf(nativeEl(0, label = "홈")))
         val cdp = FakeCdp(CdpClient.Discovery(emptyList(), "no webview_devtools socket on the device"), extractOk)
-        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        val merged = WebAwareDevice(StaticDevice(native), cdp, "com.x").observe()
         assertSame(native, merged) // no webview node -> no note either
         assertEquals(1, cdp.discoverCalls) // discovery always runs (the gate cannot be the layout)
     }
@@ -181,7 +159,7 @@ class WebAwareDeviceTest {
             nativeEl(1, label = "닫기", y = 104),
         ))
         val cdp = FakeCdp(CdpClient.Discovery(listOf(target)), extractOk)
-        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        val merged = WebAwareDevice(StaticDevice(native), cdp, "com.x").observe()
 
         assertEquals(3, merged.elements.size)
         assertTrue(merged.hasWeb)
@@ -199,7 +177,7 @@ class WebAwareDeviceTest {
     fun `web elements sit at the top level when no webview node is exposed`() {
         val native = LogicalLayout(listOf(nativeEl(0, label = "닫기", y = 104)))
         val cdp = FakeCdp(CdpClient.Discovery(listOf(target)), extractRadioAndButton)
-        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        val merged = WebAwareDevice(StaticDevice(native), cdp, "com.x").observe()
         // web siblings keep reading order: 베이직 (y 392) before 구독 시작하기 (y 1116)
         assertEquals(listOf("닫기", "베이직", "구독 시작하기"), merged.elements.map { it.label })
         assertTrue(merged.elements.all { it.parentId == null })
@@ -213,7 +191,7 @@ class WebAwareDeviceTest {
             nativeEl(2, label = "네", resourceId = "positive", y = 723).copy(parentId = 1), // dialog button: kept
         ))
         val cdp = FakeCdp(CdpClient.Discovery(listOf(target)), extractOk)
-        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        val merged = WebAwareDevice(StaticDevice(native), cdp, "com.x").observe()
         assertEquals(listOf(null, "네", "구독 시작하기"), merged.elements.map { it.label })
         assertEquals(listOf(null, 0, 0), merged.elements.map { it.parentId })
     }
@@ -240,7 +218,7 @@ class WebAwareDeviceTest {
             nativeEl(4, y = 696).copy(interactions = listOf("focusable", "scrollable")),
         ))
         val cdp = FakeCdp(CdpClient.Discovery(listOf(target)), extractRadioAndButton)
-        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        val merged = WebAwareDevice(StaticDevice(native), cdp, "com.x").observe()
 
         // projection nodes gone; CDP versions (with real state) and the container remain
         assertEquals(listOf("닫기", null, "베이직", "구독 시작하기"), merged.elements.map { it.label })
@@ -258,7 +236,7 @@ class WebAwareDeviceTest {
             nativeEl(2, label = "네", resourceId = "positive", y = 723),
         ))
         val cdp = FakeCdp(CdpClient.Discovery(listOf(target)), extractRadioAndButton)
-        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        val merged = WebAwareDevice(StaticDevice(native), cdp, "com.x").observe()
 
         assertTrue(merged.elements.any { it.label == "구독권 구매를 종료하시겠어요?" })
         assertTrue(merged.elements.any { it.label == "네" })
@@ -269,7 +247,7 @@ class WebAwareDeviceTest {
     fun `discover failure degrades to native with the release-build guard note`() {
         val native = LogicalLayout(listOf(nativeEl(0, resourceId = "webview")))
         val cdp = FakeCdp(CdpClient.Discovery(emptyList(), "no webview_devtools socket for com.x"), extractOk)
-        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        val merged = WebAwareDevice(StaticDevice(native), cdp, "com.x").observe()
 
         assertEquals(native.elements, merged.elements)
         assertTrue(merged.webNote!!.startsWith("WebView present but not inspectable (release build or debugging disabled)"))
@@ -280,7 +258,7 @@ class WebAwareDeviceTest {
     fun `evaluate failure degrades to native with a note`() {
         val native = LogicalLayout(listOf(nativeEl(0, resourceId = "webview")))
         val cdp = FakeCdp(CdpClient.Discovery(listOf(target)), CdpClient.Eval.Failed("evaluate timed out after 3000ms"))
-        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        val merged = WebAwareDevice(StaticDevice(native), cdp, "com.x").observe()
 
         assertEquals(native.elements, merged.elements)
         assertTrue(merged.webNote!!.contains("web content observation failed"))
@@ -301,7 +279,7 @@ class WebAwareDeviceTest {
 
             override fun readyState(target: Target) = "complete"
         }
-        WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        WebAwareDevice(StaticDevice(native), cdp, "com.x").observe()
         assertEquals("T1", cdp.evaluated!!.id)
     }
 
@@ -310,7 +288,7 @@ class WebAwareDeviceTest {
         val dying = target.copy(visible = false)
         val native = LogicalLayout(listOf(nativeEl(0, label = "웹툰")))
         val cdp = FakeCdp(CdpClient.Discovery(listOf(dying)), extractOk)
-        val merged = WebAwareDevice(FakeDevice(native), cdp, "com.x").observe()
+        val merged = WebAwareDevice(StaticDevice(native), cdp, "com.x").observe()
         assertSame(native, merged) // no webview node on screen -> plain native, no note
     }
 }

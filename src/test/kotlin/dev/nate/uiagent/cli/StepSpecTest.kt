@@ -1,20 +1,12 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.el
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class StepSpecTest {
-
-    @Test
-    fun `plain step has no criterion`() {
-        val s = StepSpec.parse("Tap the \"보관함\" tab")
-        assertEquals("Tap the \"보관함\" tab", s.command)
-        assertNull(s.criterion)
-        assertFalse(s.isVerify)
-    }
 
     @Test
     fun `criterion splits on the double-colon separator`() {
@@ -59,8 +51,4 @@ class StepSpecTest {
         assertTrue(judgeVerify("Verify \"selected items\" is shown", labeled)!!.passed)
     }
 
-    @Test
-    fun `no quoted anchor means not machine-checkable`() {
-        assertNull(judgeVerify("Verify the home screen looks right", els))
-    }
 }

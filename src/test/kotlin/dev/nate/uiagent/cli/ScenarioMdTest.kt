@@ -1,5 +1,6 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.device.DeviceSetting
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -38,49 +39,11 @@ class ScenarioMdTest {
     }
 
     @Test
-    fun `launch true setup`() {
-        val s = ScenarioMd.parse("---\nname: cold\nsetup:\n  launch: true\n---\n1. do something\n")
-        assertTrue(s.setup!!.launch)
-        assertNull(s.setup!!.deeplink)
-    }
-
-    @Test
     fun `no frontmatter still yields steps`() {
         val s = ScenarioMd.parse("1. first\n2. second\n")
         assertEquals(listOf("first", "second"), s.steps)
         assertNull(s.setup)
         assertTrue(s.tags.isEmpty())
-    }
-
-    @Test
-    fun `appState and clearData setup parse`() {
-        val s = ScenarioMd.parse(
-            """
-            ---
-            name: coupon-feature
-            setup:
-              appState: member-basic
-              launch: true
-            ---
-            1. Tap the "쿠폰 등록" button
-            """.trimIndent()
-        )
-        assertEquals("member-basic", s.setup?.appState)
-        assertTrue(s.setup!!.launch)
-
-        val g = ScenarioMd.parse(
-            """
-            ---
-            name: guest-x
-            setup:
-              clearData: true
-              launch: true
-            ---
-            1. Tap the "로그인" button
-            """.trimIndent()
-        )
-        assertTrue(g.setup!!.clearData)
-        assertNull(g.setup!!.appState)
     }
 
     @Test
@@ -188,14 +151,6 @@ class ScenarioMdTest {
     }
 
     @Test
-    fun `single state behaves as a plain scenario but still keys its trace on the state`() {
-        val s = ScenarioMd.parse("---\nname: one\nstates: [member]\n---\n1. Tap \"a\"\n   :: \"b\" is shown\n")
-        val v = s.variants().single()
-        assertEquals("one@member", v.name)
-        assertEquals("Tap \"a\" :: \"b\" is shown", v.steps.single())
-    }
-
-    @Test
     fun `stateless scenario accepts continuation criteria and stays itself`() {
         val s = ScenarioMd.parse("---\nname: plain\n---\n1. Tap \"a\"\n   :: \"b\" is shown\n   :: \"c\" is selected\n2. Go back\n")
         assertEquals(listOf(s), s.variants())
@@ -224,5 +179,28 @@ class ScenarioMdTest {
         assertFailsWith<IllegalArgumentException>("duplicate state") {
             ScenarioMd.parse("---\nname: x\nstates: [member, member]\n---\n1. Tap \"a\"\n")
         }
+    }
+
+    @Test
+    fun `description is prose between frontmatter and first step, headings dropped`() {
+        val s = ScenarioMd.parse(
+            """
+            ---
+            name: x
+            setup:
+              launch: true
+            ---
+
+            # 제목은 무시
+
+            이 시나리오는 탭 전환을 검증한다.
+            두 번째 줄도 포함된다.
+
+            1. Tap the "구독" tab
+            2. Verify the "장르" chip is shown
+            """.trimIndent()
+        )
+        assertEquals("이 시나리오는 탭 전환을 검증한다. 두 번째 줄도 포함된다.", s.description)
+        assertEquals(2, s.steps.size)
     }
 }

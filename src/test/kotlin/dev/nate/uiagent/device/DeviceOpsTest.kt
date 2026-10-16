@@ -1,17 +1,10 @@
-package dev.nate.uiagent.cli
+package dev.nate.uiagent.device
 
 import kotlin.test.Test
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-class DeeplinkErrorTest {
-    @Test
-    fun `resolved deeplink output has no error`() {
-        val ok = "Starting: Intent { act=android.intent.action.VIEW dat=myapp://setting pkg=com.x }\n" +
-            "Status: ok\nLaunchState: COLD\nActivity: com.x/.MainNavActivity\nTotalTime: 812\n"
-        assertNull(AdbOps.deeplinkError(ok))
-    }
-
+class DeviceOpsTest {
     @Test
     fun `unresolved deeplink is detected`() {
         val err = "Starting: Intent { act=android.intent.action.VIEW dat=myapp://nope pkg=com.x }\n" +

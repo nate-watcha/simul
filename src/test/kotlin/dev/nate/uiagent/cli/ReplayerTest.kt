@@ -1,5 +1,8 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.FakeDevice
+import dev.nate.uiagent.layout
+import dev.nate.uiagent.el
 import dev.nate.uiagent.Point
 import dev.nate.uiagent.device.Device
 import dev.nate.uiagent.device.DeviceController

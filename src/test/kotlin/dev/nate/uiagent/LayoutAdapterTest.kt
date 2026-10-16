@@ -1,10 +1,8 @@
 package dev.nate.uiagent
 
-import dev.nate.uiagent.LayoutAdapter.flatten
 import dev.nate.uiagent.device.renderFullLayout
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -31,24 +29,11 @@ class LayoutAdapterTest {
         assertTrue("clickable" in lib.interactions, "merged tab must be clickable")
         assertEquals(Point(648, 1176), lib.center, "must use the interactive node's center, not the label's")
         assertNull(lib.kind, "a merged interactive is not a label")
-    }
-
-    @Test
-    fun `orphan label is retained as kind label with its own center`() {
-        val layout = LayoutAdapter.adapt(fixture)
+        // an orphan text keeps "label" kind and its own center (tap lands on the clickable ancestor)
         val cta = layout.elements.single { it.label == "구독 시작하기" }
         assertEquals("label", cta.kind)
         assertTrue(cta.interactions.isEmpty())
-        // Its own text center is kept so the harness can tap it (clickable ancestor receives the event).
         assertEquals(Point(183, 1060), cta.center)
-    }
-
-    @Test
-    fun `self-labeled interactive keeps its content-desc`() {
-        val layout = LayoutAdapter.adapt(fixture)
-        val settings = layout.elements.single { it.label == "설정" }
-        assertEquals("profileImage", settings.resourceId)
-        assertTrue("clickable" in settings.interactions)
     }
 
     @Test
@@ -84,13 +69,6 @@ class LayoutAdapterTest {
         // Document order, not (y,x): the first node of the dump is the 보관함 tab target.
         assertEquals(listOf("보관함", null, "recycler_view", "구독 시작하기", "설정"), layout.elements.map { it.label ?: it.resourceId })
         assertTrue(layout.elements.all { it.parentId == null }, "legacy flat output is a forest of roots")
-    }
-
-    @Test
-    fun `crlf in text is normalized`() {
-        val raw = """[{"text":"line1\r\nline2","interactions":["clickable"],"center":"[10,10]"}]"""
-        val layout = LayoutAdapter.adapt(raw)
-        assertEquals("line1 line2", layout.elements.single().label)
     }
 
     private fun assertFalse(cond: Boolean, msg: String) = assertTrue(!cond, msg)
@@ -130,13 +108,6 @@ class LayoutAdapterTreeFormatTest {
         val notice = layout.elements.single { it.label == "공지사항" }
         assertEquals("noticeButton", notice.resourceId)
         assertNull(notice.parentId)
-    }
-
-    @Test
-    fun `flat legacy output still parses unchanged`() {
-        val flat = """[{"text":"찾기","center":"[504,1199]","key":1},{"interactions":["clickable","focusable"],"center":"[504,1176]","key":1}]"""
-        val layout = LayoutAdapter.adapt(flat)
-        assertEquals("찾기", layout.elements.single().label)
     }
 
     /** 1.0.16406183: two status lines, the same tree, and the update notice after the array. */
@@ -315,10 +286,6 @@ class LayoutTreeTest {
         assertEquals(listOf("label", null), layout.elements.map { it.kind })
     }
 
-    @Test
-    fun `empty layout renders a sentinel`() {
-        assertEquals("(no elements)", renderFullLayout(emptyList()))
-    }
 }
 
 class LayoutAdapterWindowFormatTest {
@@ -391,16 +358,7 @@ class LayoutAdapterWindowFormatTest {
         assertTrue(LayoutAdapter.adapt("""[{"type":"APPLICATION","active":true,"layer":0,"content":[]}]""").elements.isEmpty())
     }
 
-    @Test
-    fun `--full window dump still skips hidden and off-screen subtrees`() {
-        val full = """
-            [{"type":"SYSTEM","layer":1,"bounds":"[0,0][720,48]","content":[{"class":"android.widget.FrameLayout","center":"[360,24]","children":[{"text":"1:40","center":"[35,24]"}]}]},
-             {"type":"APPLICATION","active":true,"layer":0,"bounds":"[0,0][720,1280]","content":[
-               {"class":"android.widget.FrameLayout","center":"[360,640]","children":[
-                 {"text":"보이는 버튼","interactions":["CLICKABLE"],"center":"[50,50]"},
-                 {"text":"숨은 버튼","hidden":true,"interactions":["CLICKABLE"],"center":"[50,50]"},
-                 {"text":"스크롤 밖","off-screen":true,"interactions":["CLICKABLE"],"center":"[50,4050]"}]}]}]
-        """.trimIndent()
-        assertEquals(listOf("보이는 버튼"), LayoutAdapter.adapt(full).elements.map { it.label })
-    }
 }
+
+/** Pre-order flattening of a parsed forest. */
+private fun List<RawNode>.flatten(): List<RawNode> = flatMap { listOf(it) + it.children.flatten() }

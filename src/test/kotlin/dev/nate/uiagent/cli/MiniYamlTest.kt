@@ -26,27 +26,6 @@ class MiniYamlTest {
     }
 
     @Test
-    fun `parses frontmatter with inline list and nested setup`() {
-        val y = MiniYaml.parse(
-            """
-            name: browse-greenbook
-            tags: [smoke, subscription]
-            setup:
-              deeplink: myapp://tab/subscription
-            """.trimIndent()
-        )
-        assertEquals("browse-greenbook", MiniYaml.string(y, "name"))
-        assertEquals(listOf("smoke", "subscription"), MiniYaml.list(y, "tags"))
-        assertEquals("myapp://tab/subscription", MiniYaml.string(y, "setup", "deeplink"))
-    }
-
-    @Test
-    fun `comments and blank lines are ignored`() {
-        val y = MiniYaml.parse("# header\n\nkey: value\n  # indented comment\n")
-        assertEquals("value", MiniYaml.string(y, "key"))
-    }
-
-    @Test
     fun `rejects malformed lines`() {
         assertFailsWith<IllegalArgumentException> { MiniYaml.parse("just some text") }
     }

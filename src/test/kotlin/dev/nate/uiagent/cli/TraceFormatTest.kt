@@ -4,6 +4,7 @@ import dev.nate.uiagent.Point
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class TraceFormatTest {
@@ -73,5 +74,35 @@ class TraceAndroidCliStampTest {
         val without = TraceJson.render(TraceFile("s", AGENT_VERSION, null, emptyList()))
         assertTrue("androidCli" !in without, "absent → omitted, old traces stay byte-identical")
         assertEquals(null, TraceJson.parse(without).androidCli)
+    }
+
+    @Test
+    fun `state evidence round-trips through trace json and stays optional`() {
+        val step = TraceStep("t", emptyList(), listOf("구독"),
+            stateEvidence = listOf(StateEvidence("구독", "selected")))
+        val t = TraceFile("s", "v", null, listOf(step))
+        val parsed = TraceJson.parse(TraceJson.render(t))
+        assertEquals(listOf(StateEvidence("구독", "selected")), parsed.steps[0].stateEvidence)
+
+        // steps without state evidence emit no "states" field; old traces parse to empty
+        val plain = TraceJson.render(TraceFile("s", "v", null, listOf(TraceStep("t", emptyList(), listOf("a")))))
+        assertEquals(false, plain.contains("states"))
+        val legacy = TraceJson.parse(
+            """{"scenario":"s","recordedWith":{"agentVersion":"v"},"steps":[
+                 {"text":"t","actions":[],"evidence":{"appeared":["a"]}}]}"""
+        )
+        assertEquals(emptyList(), legacy.steps[0].stateEvidence)
+    }
+
+    @Test
+    fun `trace display stamp round-trips and stays optional`() {
+        val stamped = TraceFile("s", "0.2.0", "1.0", emptyList(), display = "720x1280@320")
+        val parsed = TraceJson.parse(TraceJson.render(stamped))
+        assertEquals("720x1280@320", parsed.display)
+
+        // pre-display traces keep parsing, and rendering without a stamp emits no field
+        val legacy = TraceJson.parse("""{"scenario":"s","recordedWith":{"agentVersion":"v"},"steps":[]}""")
+        assertNull(legacy.display)
+        assertEquals(false, TraceJson.render(TraceFile("s", "v", null, emptyList())).contains("display"))
     }
 }

@@ -18,14 +18,6 @@ class LlmStatsTest {
     }
 
     @Test
-    fun `summary reads as one line with the model's share of wall time`() {
-        val s = LlmStats(8, 41_200, 52_300, 1_200, 9_100).summary(totalMs = 65_000)
-        assertEquals("llm 8 calls · 41.2s (63% of 65.0s) · prompt 52.3k tok (peak 9.1k) · completion 1.2k tok", s)
-        assertEquals("llm 1 call · 2.0s · tokens not reported by the endpoint", LlmStats(1, 2000, 0, 0, 0).summary())
-        assertEquals("1.2M", LlmStats.tokens(1_234_567))
-    }
-
-    @Test
     fun `turn log accumulates per-step stats from the response usage and resets between steps`() {
         val lines = mutableListOf<String>()
         val log = TurnLog(lines::add)

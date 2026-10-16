@@ -1,10 +1,10 @@
 package dev.nate.uiagent.agent
 
+import dev.nate.uiagent.layout
+import dev.nate.uiagent.el
+import dev.nate.uiagent.StaticDevice
 import com.sun.net.httpserver.HttpServer
-import dev.nate.uiagent.LogicalElement
-import dev.nate.uiagent.LogicalLayout
 import dev.nate.uiagent.Point
-import dev.nate.uiagent.device.Device
 import dev.nate.uiagent.device.DeviceController
 import java.net.InetSocketAddress
 import kotlin.test.Test
@@ -16,16 +16,6 @@ import kotlin.test.assertTrue
  * Pins what simul needs from every request regardless of how Koog assembles it.
  */
 class LlmWiringTest {
-
-    private class NoopDevice : Device {
-        override fun observe() = LogicalLayout(listOf(
-            LogicalElement(0, "웹툰", null, listOf("clickable"), emptyList(), null, Point(1, 1), null)))
-        override fun tap(x: Int, y: Int) {}
-        override fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int) {}
-        override fun inputText(text: String) {}
-        override fun keyBack() {}
-        override fun sleep(ms: Long) {}
-    }
 
     private class Seen(var auth: String? = null, val bodies: MutableList<String> = mutableListOf())
 
@@ -50,7 +40,7 @@ class LlmWiringTest {
     }
 
     private fun run(url: String, apiKey: String?): ScenarioSession.Verdict {
-        val controller = DeviceController(NoopDevice(), settleIntervalMs = 0)
+        val controller = DeviceController(StaticDevice(layout(el("웹툰", interactions = listOf("clickable"), center = Point(1, 1)))), settleIntervalMs = 0)
         val session = ScenarioSession(SimulLlm.executor(url, apiKey), controller, model = SimulLlm.model("qwen"))
         return session.runStep("Tap \"웹툰\"", controller.fullLayout())
     }
@@ -68,7 +58,7 @@ class LlmWiringTest {
         assertTrue(""""chat_template_kwargs":{"enable_thinking":false}""" in first,
             "every request must disable thinking — simul never wants thinking tokens: ${first.take(300)}")
         assertTrue(""""name":"report"""" in first && """"name":"scrollToFind"""" in first, "tool schemas must be included")
-        assertTrue(""""role":"system"""" in first && SYSTEM_PROMPT_V1.lineSequence().first() in first)
+        assertTrue(""""role":"system"""" in first && SYSTEM_PROMPT.lineSequence().first() in first)
         assertTrue("COMMAND: Tap" in first)
 
         // second request = first request's messages + the assistant's tool call + its result (append-only)
