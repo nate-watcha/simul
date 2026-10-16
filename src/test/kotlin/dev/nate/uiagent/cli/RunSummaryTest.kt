@@ -100,9 +100,10 @@ class RunSummaryTest {
     @Test
     fun `summary json round-trips and omits absent fields`() {
         val p = project()
-        val md = File(p.scenariosDir, "nav/basic.md").apply { writeText("---\nname: nav-basic\n---\n1. a\n") }
+        val md = File(p.scenariosDir, "nav/basic.md").apply { writeText("---\nname: nav-basic\n---\n\n탭 바로 화면을 오간다.\n\n1. a\n") }
+        val bare = File(p.scenariosDir, "nav/bare.md").apply { writeText("---\nname: nav-bare\n---\n1. a\n") }
         val skipped = outcomeWithout(p, md, ScenarioMd.parse(md), "SKIPPED", "no trace")
-        val crashed = outcomeWithout(p, md, ScenarioMd.parse(md), "CRASH", "OutOfMemoryError: boom", crashLog = File(p.reportsDir, "nav-basic-crash-1.log"))
+        val crashed = outcomeWithout(p, bare, ScenarioMd.parse(bare), "CRASH", "OutOfMemoryError: boom", crashLog = File(p.reportsDir, "nav-basic-crash-1.log"))
         val s = RunSummary("record", "llm", "2026-09-19T02:00:00+09:00", 5000, AGENT_VERSION, null, "emu", listOf(skipped, crashed), androidCli = "1.0.16261425")
 
         val file = File(p.reportsDir, "nightly/record.json")
@@ -110,9 +111,11 @@ class RunSummaryTest {
         val text = file.readText()
         assertTrue("\"failedStep\"" !in text, "absent failedStep must be omitted\n$text")
         assertTrue("\"appVersionName\": null" in text)
+        assertEquals(1, Regex("\"description\"").findAll(text).count(), "description travels, and is omitted when the scenario has none\n$text")
 
         val back = RunSummaryJson.read(file)
         assertEquals(s, back)
+        assertEquals("탭 바로 화면을 오간다.", back.scenarios[0].description)
         assertEquals(".simul/reports/nav-basic-crash-1.log", back.scenarios[1].reportDir)
     }
 

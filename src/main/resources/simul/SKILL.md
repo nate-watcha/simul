@@ -5,7 +5,7 @@ description: simul(Android UI 테스트 러너)용 시나리오를 새로 쓰거
 
 simul 시나리오는 자연어로 쓴 유저 흐름이다. LLM 에이전트가 한 번 수행하며 trace를
 녹화하고(`--mode llm`), CI는 그 trace를 LLM 없이 재생한다(`--mode replay`). replay에
-`--gif`를 붙이면(TUI에서는 `v`) 화면 녹화가 리포트 폴더에 `run.gif`/`run.mp4`로 남아 팀원이 본다.
+`--gif`를 붙이면(TUI에서는 `v`) 화면 녹화가 리포트 폴더에 `run.gif`(1.5배속)로 남아 팀원이 본다(`--video`면 `run.mp4` 원본).
 
 replay는 스텝마다 그 스텝이 실제로 일어났는지를 판정한다. 근거는 액션으로 새로 나타난
 `resourceId`, 얻은 `selected`/`checked` 상태, 스텝에 쓴 따옴표 앵커의 존재다. 매번

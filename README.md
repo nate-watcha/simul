@@ -25,7 +25,7 @@ simul run --all                  # CI: 기본 auto = 트레이스 재생(LLM 0�
 simul run foo.md --mode replay   # 순수 재생 — 깨진 스텝은 FAILED (replay는 LLM 0회 보장)
 simul run --tag billing          # 태그 필터 (--state <name>도 동일 형식)
 simul run --all --summary r.json --label verify   # 배치 요약 JSON (simul report 입력)
-simul run foo.md --mode replay --gif   # 화면 녹화 → 리포트 폴더에 run.gif + run.mp4 (TUI에선 v)
+simul run foo.md --mode replay --gif   # 화면 녹화 → 리포트 폴더에 run.gif(1.5배속; --video면 run.mp4 원본) (TUI에선 v)
 simul report r/*.json --format md|slack|junit|html [--check]   # 나이틀리 3단계 병합 리포트 (아래)
 simul list                       # 시나리오 목록 + 트레이스 유무/신선도
 simul state save <name>          # 현재 앱 데이터를 .simul/states/<name>.tar 스냅샷으로 저장
@@ -62,10 +62,13 @@ phase 역할은 라벨이 아니라 **mode와 순서**로 정해진다: 첫 llm 
 
 **리포트가 담는 것**
 
-- `--format html`: verdict 표 + 시나리오별 상세. 시나리오를 펼치면 phase마다 **왼쪽에 스텝 목록
-  (PASSED/FAILED, 사유, 실패 화면의 라벨과 스크린샷 썸네일), 오른쪽에 그 replay의 gif**가 같이 보인다.
-  gif는 시나리오당 수 MB라 인라인하지 않고 `--out` 옆 `media/<시나리오>-<phase>.gif`로 복사해 참조한다 —
-  **아티팩트는 `report.html` + `media/` 폴더를 함께** 올린다. 스크린샷 썸네일은 data URI라 폴더 밖이어도 보인다.
+- `--format html`: **모두가 보는 페이지**. 시나리오당 카드 하나 — 시나리오 md의 설명 한 줄(frontmatter 아래 첫
+  산문, summary.json `description`)이 제목, 그 옆에 replay gif, 실패했으면 **어느 phase의 몇 번 스텝**이 왜 깨졌는지와
+  그 순간 스크린샷. 스텝 목록은 "N steps"로 접혀 있고 phase별 ✅/❌/⏭ 격자만 보여준다. 주의 시나리오가 먼저 오고
+  상단에 점프 칩이 있다. mode·소요시간·llm 토큰·evidence·에이전트 보고문 같은 디버그 정보는 여기 없다 —
+  `--out` 옆에 같이 써지는 **`report.debug.html`**(카드의 `debug` 링크, phase마다 전체 스텝 상세)에 있다.
+  gif는 시나리오당 수 MB라 인라인하지 않고 `--out` 옆 `media/<시나리오>-<phase>.gif`로 복사해 두 페이지가 같이 참조한다 —
+  **아티팩트는 `report.html` + `report.debug.html` + `media/` 폴더를 함께** 올린다. 스크린샷 썸네일은 data URI라 폴더 밖이어도 보인다.
 - `--format md`: GitHub 잡 서머리·PR 본문용. 표 + "Needs attention"에 실패 사유·스크린샷·리포트 폴더·gif 경로.
 - `--format slack`: Block Kit payload(incoming webhook 또는 `chat.postMessage`). **일부러 짧다** — 헤드라인, 성공/실패
   집계, 주의 시나리오 이름(verdict별 8개까지), 링크. 사유·스크린샷·gif는 채널에 안 보내고 HTML 리포트로 보낸다:
@@ -73,8 +76,10 @@ phase 역할은 라벨이 아니라 **mode와 순서**로 정해진다: 첫 llm 
   (GitHub Actions면 `actions/upload-artifact@v4`의 `artifact-url` 출력).
 - `--format junit`: phase=testsuite, 시나리오=testcase.
 - 입력 summary.json의 시나리오 항목에 `gif`가 있어야 html에 gif가 붙는다 — 즉 **replay에 `--gif`를 붙인 런만**.
-  gif는 `adb shell screenrecord`(180s 세그먼트 자동 이어붙임) → `run.mp4` → ffmpeg(2-pass 팔레트, 360px·10fps)
-  → `run.gif`. 러너에 ffmpeg이 없으면 mp4만 남고 리포트엔 gif가 빠진다(FAILED 아님).
+  gif는 `adb shell screenrecord`(180s 세그먼트 자동 이어붙임) → `run.mp4` → ffmpeg(2-pass 팔레트, 360px·10fps,
+  **1.5배속** — replay는 대부분 화면 정착 대기라 빨리 돌려야 읽힌다) → `run.gif`. gif가 만들어지면 중간 산물 mp4는 지운다
+  (리포트 폴더 아티팩트에 둘 다 실리지 않게; 원본 타이밍이 필요하면 `--video`). 러너에 ffmpeg이 없으면 mp4만 남고
+  리포트엔 gif가 빠진다(FAILED 아님).
 
 세 결과가 시나리오당 하나의 verdict로 접힌다:
 
@@ -99,7 +104,7 @@ record가 다시 쓴 `.simul/scenarios/**/*.trace.json`은 워크플로가 PR로
 - debug 빌드 설치(WebView 채널이 debuggable 전제), `.simul/config.yaml llm.url`에 닿는 OpenAI 호환 LLM —
   키는 `llm.apiKey: ${VAR}` + 러너 시크릿. **replay 두 단계는 키 없이 돈다**
 - 로그인 등 상태 스냅샷(`.simul/states/*.tar`, gitignored)은 러너 로컬 디렉터리에서 체크아웃 뒤 복사
-- 끝나면 `adb emu kill`; 아티팩트로 `report.html + media/`(30일)와 `.simul/reports/` 전체(스크린샷·agent.jsonl·mp4, 14일)
+- 끝나면 `adb emu kill`; 아티팩트로 `report.html + report.debug.html + media/`(30일)와 `.simul/reports/` 전체(스크린샷·agent.jsonl, 14일)
 
 ## 구조 (`dev.nate.uiagent`)
 

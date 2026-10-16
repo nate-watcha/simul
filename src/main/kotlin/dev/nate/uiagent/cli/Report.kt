@@ -58,18 +58,21 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
         runCatching { RunSummaryJson.read(f) }.getOrElse { return reportErr("cannot parse $p: ${it.message}") }
     }
     val report = PipelineReport.build(title, summaries, links)
+    val outFile = out?.let { resolve(it, cwd).absoluteFile }
+    // html with --out is a folder: report.html + report.debug.html + media/ (gifs are copied there — too big to inline)
+    val debugFile = outFile?.takeIf { format == "html" }?.let(HtmlReport::debugFileFor)
+    val mediaDir = outFile?.let { File(it.parentFile, "media") }
     val text = when (format) {
         "md" -> renderMarkdown(report)
         "slack" -> renderSlack(report)
-        // gifs are copied next to the html (media/) — too big to inline, and the artifact is a folder anyway
-        "html" -> HtmlReport.render(report, cwd, mediaDir = out?.let { File(resolve(it, cwd).absoluteFile.parentFile, "media") })
+        "html" -> HtmlReport.render(report, cwd, mediaDir, debugHref = debugFile?.name)
         else -> renderJunit(report)
     }
-    if (out != null) {
-        val f = resolve(out, cwd)
-        f.absoluteFile.parentFile?.mkdirs()
-        f.writeText(text)
-        System.err.println("report: ${f.relativeToOrSelf(cwd).path} — ${report.headline()}")
+    if (outFile != null) {
+        outFile.parentFile?.mkdirs()
+        outFile.writeText(text)
+        debugFile?.writeText(HtmlReport.renderDebug(report, cwd, mediaDir, reportHref = outFile.name))
+        System.err.println("report: ${outFile.relativeToOrSelf(cwd.absoluteFile).path}" + (debugFile?.let { " (+ ${it.name})" } ?: "") + " — ${report.headline()}")
     } else {
         print(text)
     }

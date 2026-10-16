@@ -134,13 +134,19 @@ class ScreenRecorder(
     }
 }
 
-/** mp4 → GIF via ffmpeg (two-pass palette, so UI text stays crisp at a small size). */
+/**
+ * mp4 → GIF via ffmpeg (two-pass palette, so UI text stays crisp at a small size), played
+ * back at [DEFAULT_SPEED]× — a replay spends most of its time waiting for the screen to
+ * settle, and a 40s journey reads better in 27s; the mp4 keeps the real timing.
+ */
 object Gif {
     const val DEFAULT_WIDTH = 360
     const val DEFAULT_FPS = 10
+    const val DEFAULT_SPEED = 1.5
 
-    fun filter(width: Int, fps: Int): String =
-        "fps=$fps,scale=$width:-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];" +
+    fun filter(width: Int, fps: Int, speed: Double = DEFAULT_SPEED): String =
+        (if (speed != 1.0) "setpts=PTS/$speed," else "") +
+            "fps=$fps,scale=$width:-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];" +
             "[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
 
     /** Error text when conversion failed (ffmpeg missing, bad input); null on success. */
@@ -149,10 +155,11 @@ object Gif {
         gif: File,
         width: Int = DEFAULT_WIDTH,
         fps: Int = DEFAULT_FPS,
+        speed: Double = DEFAULT_SPEED,
         ffmpegBin: String = "ffmpeg",
         run: (List<String>, Long) -> String = { argv, timeout -> runProcess(argv, timeout) },
     ): String? {
-        val argv = listOf(ffmpegBin, "-y", "-loglevel", "error", "-i", mp4.path, "-vf", filter(width, fps), "-loop", "0", gif.path)
+        val argv = listOf(ffmpegBin, "-y", "-loglevel", "error", "-i", mp4.path, "-vf", filter(width, fps, speed), "-loop", "0", gif.path)
         return try {
             run(argv, 600_000)
             if (gif.length() > 0) null else "ffmpeg wrote an empty gif"

@@ -65,7 +65,7 @@ private fun printUsage() {
           simul                               interactive mode (full-screen, TTY + .simul/ 필요)
           simul init [--app <package>]        set up .simul/ + the scenario-authoring Claude skill
           simul run <scenario.md>... [--mode replay|llm|auto] [--dry-run] [--url U]
-                    [--gif | --video]                     record the screen → run.gif / run.mp4 in the report dir
+                    [--gif | --video]                     record the screen → run.gif (1.5×) / run.mp4 in the report dir
           simul run --tag <tag> | --state <name> | --all [same options]
                     [--summary <file.json> [--label <phase>]]   batch summary for `simul report`
           simul report <summary.json>... [--format md|slack|junit|html] [--title T]
@@ -319,9 +319,11 @@ internal fun executeScenario(
         recorder.problem?.let { log("  video: $it") }
         media.forEach { log("  video: ${rel(it)}") }
         if (video == VideoOutput.GIF && media.size == 1) {
+            // --gif wants the gif only: the mp4 is the intermediate and goes, so an artifact of the
+            // report dir does not carry both (--video is the way to keep the raw recording)
             val gif = File(reportDir, "run.gif")
             val failure = Gif.convert(media[0], gif)
-            if (failure == null) { media = media + gif; log("  gif: ${rel(gif)}") }
+            if (failure == null) { media[0].delete(); media = listOf(gif); log("  gif: ${rel(gif)}") }
             else log("  gif: $failure")
         }
     }

@@ -66,6 +66,8 @@ data class ScenarioOutcome(
     val llm: LlmStats? = null,
     /** Screen recording of the run as a GIF (`--gif`), relative to the app root; null when not recorded. */
     val gif: String? = null,
+    /** The scenario's one-line prose (what the journey checks) — what a report shows as its title. */
+    val description: String = "",
 ) {
     val passed get() = status == "PASSED"
 }
@@ -125,6 +127,7 @@ fun outcomeOf(project: SimulProject, md: File, scenario: Scenario, r: ScenarioRu
         reason = null,
         llm = r.llm,
         gif = r.media.firstOrNull { it.extension == "gif" }?.relativeToOrSelf(project.appRoot)?.path,
+        description = scenario.description,
     )
 }
 
@@ -142,6 +145,7 @@ fun outcomeWithout(project: SimulProject, md: File, scenario: Scenario, status: 
         passedSteps = 0, failedSteps = 0, skippedSteps = scenario.steps.size,
         failedStep = null,
         reason = reason,
+        description = scenario.description,
     )
 
 @OptIn(ExperimentalSerializationApi::class)
@@ -195,6 +199,7 @@ object RunSummaryJson {
                     o.reason?.let { put("reason", it) }
                     o.llm?.let { put("llm", llmJson(it)) }
                     o.gif?.let { put("gif", it) }
+                    if (o.description.isNotEmpty()) put("description", o.description)
                 })
             }
         })
@@ -243,6 +248,7 @@ object RunSummaryJson {
                     reason = str(s, "reason"),
                     llm = llmFromJson(s["llm"] as? JsonObject),
                     gif = str(s, "gif"),
+                    description = str(s, "description") ?: "",
                 )
             } ?: emptyList(),
         )

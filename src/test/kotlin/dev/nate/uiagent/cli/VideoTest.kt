@@ -157,8 +157,9 @@ class VideoTest {
         assertEquals("ffmpeg", argv[0])
         assertEquals(mp4.path, argv[argv.indexOf("-i") + 1])
         val vf = argv[argv.indexOf("-vf") + 1]
-        assertTrue(vf.startsWith("fps=8,scale=300:-2") && "palettegen" in vf && "paletteuse" in vf, vf)
+        assertTrue(vf.startsWith("setpts=PTS/1.5,fps=8,scale=300:-2") && "palettegen" in vf && "paletteuse" in vf, "1.5× by default: $vf")
         assertEquals(gif.path, argv.last())
+        assertTrue(Gif.filter(300, 8, speed = 1.0).startsWith("fps=8,"), "real time → no setpts")
         dir.deleteRecursively()
     }
 
