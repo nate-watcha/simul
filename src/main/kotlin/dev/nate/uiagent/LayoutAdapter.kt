@@ -106,9 +106,6 @@ object LayoutAdapter {
         return apps.filter { it["active"].isTrue() }.ifEmpty { apps }
     }
 
-    /** Pre-order flattening of a parsed forest (tests and debugging). */
-    fun List<RawNode>.flatten(): List<RawNode> = flatMap { listOf(it) + it.children.flatten() }
-
     private fun JsonElement?.isTrue(): Boolean = (this as? JsonPrimitive)?.contentOrNull == "true"
 
     private val fullIdPrefix = Regex("^[A-Za-z0-9_.]+:id/")
@@ -179,7 +176,7 @@ object LayoutAdapter {
                 val nearest = if (!c.isLabel) null else interactives
                     .filter { "scrollable" !in it.raw.interactions }
                     .filter { abs(it.raw.center.x - c.raw.center.x) <= MAX_DX && abs(it.raw.center.y - c.raw.center.y) <= MAX_DY }
-                    .minByOrNull { dist2(it.raw.center, c.raw.center) }
+                    .minByOrNull { it.raw.center.dist2(c.raw.center) }
                 val consumed = when {
                     nearest == null -> false
                     nearest.label == null -> { nearest.label = c.label; c.raw.resourceId == null }
@@ -245,10 +242,4 @@ object LayoutAdapter {
 
     private fun ints(s: String): List<Int> =
         Regex("-?\\d+").findAll(s).map { it.value.toInt() }.toList()
-
-    private fun dist2(a: Point, b: Point): Int {
-        val dx = a.x - b.x
-        val dy = a.y - b.y
-        return dx * dx + dy * dy
-    }
 }

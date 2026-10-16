@@ -1,5 +1,6 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.LogicalElement
 import dev.nate.uiagent.Point
 import dev.nate.uiagent.device.DeviceController
 import dev.nate.uiagent.device.DeviceController.Resolution
@@ -110,7 +111,7 @@ class Replayer(
 
     // ------------------------------------------------------------------ grounding
 
-    private class Grounded(val element: dev.nate.uiagent.LogicalElement, val usedCoords: Boolean) {
+    private class Grounded(val element: LogicalElement, val usedCoords: Boolean) {
         val handle: String get() = syntheticHandle(element) // exact center → unambiguous resolve
     }
 
@@ -126,8 +127,8 @@ class Replayer(
                 is Resolution.Ambiguous -> {
                     val c = t.lastCoords ?: return null
                     val near = r.candidates
-                        .minByOrNull { dist2(it.center, c) }
-                        ?.takeIf { dist2(it.center, c) <= coordTolerance * coordTolerance }
+                        .minByOrNull { it.center.dist2(c) }
+                        ?.takeIf { it.center.dist2(c) <= coordTolerance * coordTolerance }
                         ?: return null
                     return Grounded(near, usedCoords = true)
                 }
@@ -136,15 +137,9 @@ class Replayer(
         }
         // 3. never-labeled target: nearest element to the recorded coordinates.
         t.lastCoords?.let { c ->
-            (controller.resolve("@x${c.x}y${c.y}") as? Resolution.Match)
+            (controller.resolve(syntheticHandle(c)) as? Resolution.Match)
                 ?.let { return Grounded(it.element, usedCoords = it.element.center != c) }
         }
         return null
-    }
-
-    private fun dist2(a: Point, b: Point): Int {
-        val dx = a.x - b.x
-        val dy = a.y - b.y
-        return dx * dx + dy * dy
     }
 }

@@ -1,9 +1,12 @@
 package dev.nate.uiagent.cli
 
 import dev.nate.uiagent.Point
-import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
+import dev.nate.uiagent.arr
+import dev.nate.uiagent.json
+import dev.nate.uiagent.obj
+import dev.nate.uiagent.prettyJson
+import dev.nate.uiagent.str
+import dev.nate.uiagent.strList
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -11,7 +14,6 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.int
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -22,7 +24,7 @@ import java.io.File
  * readability: 2-space pretty print, fixed key order (insertion order of buildJsonObject),
  * and NO volatile values — no timestamps, durations, or raw responses. lastCoords is the one
  * coordinate exception (replay hint) and is only rewritten when grounding actually fell back
- * to coordinates or the step was healed.
+ * to coordinates.
  */
 data class TraceFile(
     val scenario: String,
@@ -75,15 +77,11 @@ data class TraceTarget(
     val origin: String? = null,
 )
 
-@OptIn(ExperimentalSerializationApi::class)
 object TraceJson {
-
-    private val json = Json { prettyPrint = true; prettyPrintIndent = "  " }
-    private val parser = Json { ignoreUnknownKeys = true; isLenient = true }
 
     // ------------------------------------------------------------------ write
 
-    fun render(t: TraceFile): String = json.encodeToString(JsonObject.serializer(), toJson(t)) + "\n"
+    fun render(t: TraceFile): String = prettyJson.encodeToString(JsonObject.serializer(), toJson(t)) + "\n"
 
     fun write(t: TraceFile, file: File) {
         file.parentFile?.mkdirs()
@@ -139,49 +137,47 @@ object TraceJson {
     fun read(file: File): TraceFile = parse(file.readText())
 
     fun parse(text: String): TraceFile {
-        val o = parser.parseToJsonElement(text).jsonObject
-        val recorded = o["recordedWith"]?.jsonObject
+        val o = json.parseToJsonElement(text).jsonObject
+        val recorded = o.obj("recordedWith")
         return TraceFile(
-            scenario = o["scenario"]?.jsonPrimitive?.contentOrNull ?: "",
-            agentVersion = recorded?.get("agentVersion")?.jsonPrimitive?.contentOrNull ?: "",
-            appVersionName = recorded?.get("appVersionName")?.let { it as? JsonPrimitive }?.contentOrNull,
-            steps = (o["steps"] as? JsonArray)?.map { parseStep(it.jsonObject) } ?: emptyList(),
-            display = recorded?.get("display")?.let { it as? JsonPrimitive }?.contentOrNull,
-            androidCli = recorded?.get("androidCli")?.let { it as? JsonPrimitive }?.contentOrNull,
+            scenario = o.str("scenario") ?: "",
+            agentVersion = recorded?.str("agentVersion") ?: "",
+            appVersionName = recorded?.str("appVersionName"),
+            steps = o.arr("steps")?.map { parseStep(it.jsonObject) } ?: emptyList(),
+            display = recorded?.str("display"),
+            androidCli = recorded?.str("androidCli"),
         )
     }
 
-    private fun parseStep(o: JsonObject): TraceStep = TraceStep(
-        text = o["text"]?.jsonPrimitive?.contentOrNull ?: "",
-        actions = (o["actions"] as? JsonArray)?.map { parseAction(it.jsonObject) } ?: emptyList(),
-        evidence = (o["evidence"]?.jsonObject?.get("appeared") as? JsonArray)
-            ?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
-        stateEvidence = (o["evidence"]?.jsonObject?.get("states") as? JsonArray)?.mapNotNull { el ->
-            val se = el as? JsonObject ?: return@mapNotNull null
-            val ref = (se["ref"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
-            val state = (se["state"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
-            StateEvidence(ref, state)
-        } ?: emptyList(),
-    )
+    private fun parseStep(o: JsonObject): TraceStep {
+        val evidence = o.obj("evidence")
+        return TraceStep(
+            text = o.str("text") ?: "",
+            actions = o.arr("actions")?.map { parseAction(it.jsonObject) } ?: emptyList(),
+            evidence = evidence?.strList("appeared") ?: emptyList(),
+            stateEvidence = evidence?.arr("states")?.mapNotNull { el ->
+                val se = el as? JsonObject ?: return@mapNotNull null
+                StateEvidence(se.str("ref") ?: return@mapNotNull null, se.str("state") ?: return@mapNotNull null)
+            } ?: emptyList(),
+        )
+    }
 
     private fun parseAction(o: JsonObject): TraceAction {
-        val targetObj = o["target"] as? JsonObject
-        val target = targetObj?.let { t ->
+        val target = o.obj("target")?.let { t ->
             TraceTarget(
-                resourceId = (t["resourceId"] as? JsonPrimitive)?.contentOrNull,
-                label = (t["label"] as? JsonPrimitive)?.contentOrNull,
-                lastCoords = (t["lastCoords"] as? JsonArray)?.takeIf { it.size >= 2 }
+                resourceId = t.str("resourceId"),
+                label = t.str("label"),
+                lastCoords = t.arr("lastCoords")?.takeIf { it.size >= 2 }
                     ?.let { Point(it[0].jsonPrimitive.int, it[1].jsonPrimitive.int) },
-                origin = (t["origin"] as? JsonPrimitive)?.contentOrNull,
+                origin = t.str("origin"),
             )
         }
         return TraceAction(
-            tool = o["tool"]?.jsonPrimitive?.contentOrNull ?: "",
-            args = (o["args"] as? JsonObject)
-                ?.mapNotNull { (k, v) -> (v as? JsonPrimitive)?.contentOrNull?.let { k to it } }
+            tool = o.str("tool") ?: "",
+            args = o.obj("args")?.mapNotNull { (k, v) -> (v as? JsonPrimitive)?.contentOrNull?.let { k to it } }
                 ?.toMap(LinkedHashMap()) ?: emptyMap(),
             target = target,
-            text = (o["text"] as? JsonPrimitive)?.contentOrNull,
+            text = o.str("text"),
         )
     }
 }

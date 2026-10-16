@@ -1,5 +1,6 @@
 package dev.nate.uiagent.device
 
+import dev.nate.uiagent.Defaults
 import dev.nate.uiagent.Trace
 import dev.nate.uiagent.LogicalElement
 import dev.nate.uiagent.LogicalLayout
@@ -18,14 +19,14 @@ class DeviceController(
     private val trace: Trace = Trace.DISABLED,
     private val settleIntervalMs: Long = 400,
     private val maxSettlePolls: Int = 7,
-    private val maxScrollRounds: Int = 3,
+    private val maxScrollRounds: Int = Defaults.SCROLL_LIMIT,
     private val listener: ActionListener? = null,
 ) {
     private var grounding: LogicalLayout? = null
 
     /**
      * Single-dump observations: skip the "two identical consecutive observations" settle
-     * confirmation, saving one ~3.5s `android layout` per action. Only the replay happy path
+     * confirmation, saving one ~1s `android layout` per action. Only the replay happy path
      * turns this on — an observation may then catch a mid-transition frame, so replay retries
      * failures once after an explicit [restabilize]. LLM mode keeps full stabilization (diff
      * quality depends on it).
@@ -90,7 +91,7 @@ class DeviceController(
         grounding = after
         val diff = computeDiff(before.elements, after.elements, volatileKeys)
         // SPA re-renders churn identity-less elements, so diffs on web-merged observations are
-        // noise; return the full merged observation instead (plan M2). An empty diff is not
+        // noise; return the full merged observation instead. An empty diff is not
         // noise though: it is the NO CHANGE sentinel the prompt rules key on (a tap on a page
         // title went unanswered and the model never learned it was a no-op, 실측 결제 페이지).
         if ((before.hasWeb || after.hasWeb) && !diff.isEmpty) {
@@ -115,31 +116,21 @@ class DeviceController(
         data object NotFound : Resolution
     }
 
-    private val syntheticRegex = Regex("@x(-?\\d+)y(-?\\d+)")
-
     /** Resolve a model-provided handle against the current grounding map. */
     fun resolve(target: String): Resolution {
         val elements = (grounding ?: return Resolution.NotFound).elements
         val t = target.trim()
 
-        syntheticRegex.matchEntireOrNull(t)?.let { m ->
-            val (x, y) = m.destructured.let { (a, b) -> a.toInt() to b.toInt() }
-            elements.firstOrNull { it.center.x == x && it.center.y == y }?.let { return Resolution.Match(it) }
+        parseSyntheticHandle(t)?.let { p ->
+            elements.firstOrNull { it.center == p }?.let { return Resolution.Match(it) }
             // handle from a stale observation: accept the nearest element within a small radius
-            elements.minByOrNull { sq(it.center.x - x) + sq(it.center.y - y) }
-                ?.takeIf { sq(it.center.x - x) + sq(it.center.y - y) <= 50 * 50 }
+            elements.minByOrNull { it.center.dist2(p) }
+                ?.takeIf { it.center.dist2(p) <= 50 * 50 }
                 ?.let { return Resolution.Match(it) }
             return Resolution.NotFound
         }
 
-        val exact = elements.filter { e ->
-            e.label?.equals(t, ignoreCase = true) == true ||
-                e.label?.split(" / ")?.any { it.equals(t, ignoreCase = true) } == true ||
-                e.resourceId?.equals(t, ignoreCase = true) == true
-        }
-        val matches = exact.ifEmpty {
-            elements.filter { it.label?.contains(t, ignoreCase = true) == true }
-        }
+        val matches = elements.filter { it.matchesExact(t) }.ifEmpty { elements.filter { it.matchesLoose(t) } }
         return when {
             matches.isEmpty() -> Resolution.NotFound
             matches.size == 1 -> Resolution.Match(matches[0])
@@ -149,8 +140,6 @@ class DeviceController(
             else -> Resolution.Ambiguous(matches)
         }
     }
-
-    private fun sq(v: Int) = v * v
 
     private fun notFoundMsg(target: String): String {
         val webHint = if (grounding?.hasWeb == true)
@@ -354,8 +343,6 @@ class DeviceController(
         return result
     }
 }
-
-private fun Regex.matchEntireOrNull(s: String): MatchResult? = matchEntire(s)
 
 /**
  * Harness-side observer of tool executions (record & replay, screenshots). Sees every tool

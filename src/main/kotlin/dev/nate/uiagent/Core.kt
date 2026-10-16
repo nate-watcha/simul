@@ -1,6 +1,14 @@
 package dev.nate.uiagent
 
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
 
 /**
  * Shared JSON instances and core data types.
@@ -15,21 +23,45 @@ internal val json = Json {
     isLenient = true
 }
 
-internal val prettyJson = Json {
-    ignoreUnknownKeys = true
-    isLenient = true
-    prettyPrint = true
+/** The one pretty printer for committed/reported JSON (trace, summary, report): 2-space, fixed key order. */
+@OptIn(ExperimentalSerializationApi::class)
+internal val prettyJson = Json { prettyPrint = true; prettyPrintIndent = "  " }
+
+// Tolerant field readers for the hand-parsed JSON above: a missing or mistyped field is null, never a throw.
+internal fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
+internal fun JsonObject.long(key: String): Long? = (this[key] as? JsonPrimitive)?.longOrNull
+internal fun JsonObject.int(key: String): Int? = (this[key] as? JsonPrimitive)?.intOrNull
+internal fun JsonObject.bool(key: String): Boolean? = (this[key] as? JsonPrimitive)?.booleanOrNull
+internal fun JsonObject.obj(key: String): JsonObject? = this[key] as? JsonObject
+internal fun JsonObject.arr(key: String): JsonArray? = this[key] as? JsonArray
+internal fun JsonObject.strList(key: String): List<String> = arr(key)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList()
+
+/** Tunables config.yaml can override; the same numbers the init template documents. */
+object Defaults {
+    /** LLM turns a step may spend before it FAILS without a report(). */
+    const val MAX_TURNS = 12
+    /** scrollToFind rounds before NOT_FOUND. */
+    const val SCROLL_LIMIT = 3
 }
 
 // -------------------------------------------------------------------- geometry
 
-data class Point(val x: Int, val y: Int)
+data class Point(val x: Int, val y: Int) {
+    /** Squared distance — all proximity checks compare against a squared tolerance. */
+    fun dist2(o: Point): Int {
+        val dx = x - o.x
+        val dy = y - o.y
+        return dx * dx + dy * dy
+    }
+}
 
 data class Bounds(val x0: Int, val y0: Int, val x1: Int, val y1: Int) {
     val width get() = x1 - x0
     val height get() = y1 - y0
     val centerX get() = (x0 + x1) / 2
     val centerY get() = (y0 + y1) / 2
+
+    operator fun contains(p: Point): Boolean = p.x in x0..x1 && p.y in y0..y1
 }
 
 // -------------------------------------------------------------------- raw layout
@@ -80,7 +112,19 @@ data class LogicalElement(
     val origin: Origin = Origin.NATIVE,
     /** Id of the enclosing element (a list row's card, a card's button); null at the top level. */
     val parentId: Int? = null,
-)
+) {
+    /**
+     * Does [t] name this element exactly: the label, one `" / "`-joined part of it (text / content-desc),
+     * or the resourceId — case-insensitive. The matching family grounding, evidence and replay share.
+     */
+    fun matchesExact(t: String): Boolean =
+        label?.equals(t, ignoreCase = true) == true ||
+            label?.split(" / ")?.any { it.equals(t, ignoreCase = true) } == true ||
+            resourceId?.equals(t, ignoreCase = true) == true
+
+    /** Looser fallback: [t] is a substring of the label. */
+    fun matchesLoose(t: String): Boolean = label?.contains(t, ignoreCase = true) == true
+}
 
 /**
  * One observation. Hierarchy lives only in [LogicalElement.parentId]; [elements] is ALWAYS the
@@ -95,8 +139,6 @@ class LogicalLayout(
      * (e.g. "WebView present but not inspectable"). Null when web observation is fine or N/A.
      */
     val webNote: String? = null,
-    /** How far the web page extends past the viewport, when known. Null for native screens. */
-    val webOverflow: WebOverflow? = null,
 ) {
     /** True when web content was merged into this observation (diffing is disabled then). */
     val hasWeb: Boolean by lazy { elements.any { it.origin == Origin.WEB } }

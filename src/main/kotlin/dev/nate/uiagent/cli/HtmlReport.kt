@@ -1,14 +1,6 @@
 package dev.nate.uiagent.cli
 
-import dev.nate.uiagent.agent.LlmStats
-import dev.nate.uiagent.json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.longOrNull
+import dev.nate.uiagent.humanDuration
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -27,7 +19,7 @@ import javax.imageio.ImageIO
  *
  * [renderDebug] is the page for whoever has to find out why: every step of every phase with
  * mode, duration, model usage, harness reason, evidence, on-screen labels and the screenshots
- * of the failing moment — what the first page used to be. The cards link to it per scenario.
+ * of the failing moment — pipeline phases, modes, durations and evidence. The cards link to it per scenario.
  *
  * Both are self-contained apart from gifs: screenshots are inlined as JPEG data URIs so the
  * file opens anywhere the artifact lands; gifs are megabytes each, so with a [mediaDir] they
@@ -37,33 +29,6 @@ import javax.imageio.ImageIO
  * to what the summary carries (the failed step, the counts).
  */
 object HtmlReport {
-
-    /** One step as report.json records it. */
-    data class Step(
-        val index: Int, val text: String, val status: String, val mode: String?, val reason: String?,
-        val durationMs: Long, val screenshots: List<String>, val screen: List<String>, val evidence: List<String>,
-        val llm: LlmStats? = null,
-    )
-
-    fun readSteps(reportJson: File): List<Step> {
-        val o = runCatching { json.parseToJsonElement(reportJson.readText()).jsonObject }.getOrNull() ?: return emptyList()
-        fun strs(a: JsonArray?) = a?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList()
-        return (o["steps"] as? JsonArray)?.mapNotNull { el ->
-            val s = el as? JsonObject ?: return@mapNotNull null
-            Step(
-                index = (s["step"] as? JsonPrimitive)?.intOrNull ?: 0,
-                text = (s["text"] as? JsonPrimitive)?.contentOrNull ?: "",
-                status = (s["status"] as? JsonPrimitive)?.contentOrNull ?: "",
-                mode = (s["mode"] as? JsonPrimitive)?.contentOrNull,
-                reason = (s["reason"] as? JsonPrimitive)?.contentOrNull,
-                durationMs = (s["durationMs"] as? JsonPrimitive)?.longOrNull ?: 0,
-                screenshots = strs(s["screenshots"] as? JsonArray),
-                screen = strs(s["screen"] as? JsonArray),
-                evidence = strs(s["evidence"] as? JsonArray),
-                llm = llmFromJson(s["llm"] as? JsonObject),
-            )
-        } ?: emptyList()
-    }
 
     /** Downscaled JPEG data URI of a PNG screenshot, or null when unreadable. */
     fun thumbnail(png: File, width: Int = 260): String? = runCatching {
@@ -80,14 +45,11 @@ object HtmlReport {
     }.getOrNull()
 
     /** The gif a phase outcome recorded (`--gif`), when the summary names one and the file is still there. */
-    fun gifOf(o: ScenarioOutcome, root: File): File? =
-        o.gif?.let { File(it).takeIf { f -> f.isAbsolute } ?: File(root, it) }?.takeIf { it.isFile }
+    fun gifOf(o: ScenarioOutcome, root: File): File? = o.gif?.let { resolvePath(root, it) }?.takeIf { it.isFile }
 
     /** `report.html` → `report.debug.html`: where the debug page goes next to the main one. */
     fun debugFileFor(out: File): File =
         File(out.parentFile, out.name.substringBeforeLast('.') + ".debug." + out.extension.ifEmpty { "html" })
-
-    private fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 
     private const val MAX_IMAGES = 200
 
@@ -107,13 +69,13 @@ object HtmlReport {
     private class Ctx(val root: File, val mediaDir: File?) {
         private var images = 0
         private val gifs = HashMap<String, String>()
-        private val steps = HashMap<String, List<Step>>()
+        private val steps = HashMap<String, List<StepReport>>()
 
-        fun resolve(path: String): File = File(path).takeIf { it.isAbsolute } ?: File(root, path)
+        fun resolve(path: String): File = resolvePath(root, path)
         fun reportDir(o: ScenarioOutcome): File? = o.reportDir?.let(::resolve)
 
-        fun stepsOf(o: ScenarioOutcome): List<Step> = o.reportDir?.let { dir ->
-            steps.getOrPut(dir) { File(resolve(dir), "report.json").takeIf { it.isFile }?.let(::readSteps) ?: emptyList() }
+        fun stepsOf(o: ScenarioOutcome): List<StepReport> = o.reportDir?.let { dir ->
+            steps.getOrPut(dir) { File(resolve(dir), "report.json").takeIf { it.isFile }?.let(ReportJson::readSteps) ?: emptyList() }
         } ?: emptyList()
 
         fun thumb(file: File): String? = if (images < MAX_IMAGES) thumbnail(file)?.also { images++ } else null
@@ -132,35 +94,24 @@ object HtmlReport {
 
     private fun head(sb: StringBuilder, title: String) {
         sb.append("<!doctype html><html lang=\"ko\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">")
-        sb.append("<title>").append(esc(title)).append("</title><style>").append(CSS).append("</style></head><body>")
+        sb.append("<title>").append(escapeHtml(title)).append("</title><style>").append(CSS).append("</style></head><body>")
     }
 
-    private fun envLine(r: PipelineReport): String = listOfNotNull(
-        r.appVersionName?.let { "app $it" }, r.device?.let { "device $it" }, r.agentVersion?.let { "simul $it" },
-        r.androidCli?.let { "android CLI $it" }, r.startedAt?.let { "started $it" },
-    ).joinToString(" · ")
+    private fun envLine(r: PipelineReport): String = r.envParts().joinToString(" · ")
 
     private fun gifFigure(sb: StringBuilder, ctx: Ctx, row: ScenarioRow, phase: Phase, o: ScenarioOutcome, gif: File) {
         val src = ctx.gifSrc(gif, row.path, phase.label)
-        sb.append("<figure class=gif><img src=\"").append(esc(src)).append("\" alt=\"").append(esc("${row.path} · ${phase.label}")).append("\" loading=\"lazy\">")
-        sb.append("<figcaption><a href=\"").append(esc(src)).append("\">").append(esc(phase.label)).append(" · ").append(humanDuration(o.durationMs)).append("</a></figcaption></figure>")
+        sb.append("<figure class=gif><img src=\"").append(escapeHtml(src)).append("\" alt=\"").append(escapeHtml("${row.path} · ${phase.label}")).append("\" loading=\"lazy\">")
+        sb.append("<figcaption><a href=\"").append(escapeHtml(src)).append("\">").append(escapeHtml(phase.label)).append(" · ").append(humanDuration(o.durationMs)).append("</a></figcaption></figure>")
     }
 
-    private fun cardHead(sb: StringBuilder, r: PipelineReport, row: ScenarioRow, phases: Boolean) {
-        sb.append("<div class=head><span class=badge>").append(row.verdict.kind.emoji).append(' ').append(esc(row.verdict.kind.title)).append("</span>")
-        sb.append("<h2>").append(esc(titleOf(row))).append("</h2>")
-        sb.append("<p class=meta><code>").append(esc(row.path)).append("</code>")
-        if (phases) for ((pi, o) in row.outcomes.withIndex()) {
-            if (o == null) continue
-            sb.append(" <span class=\"ph ph-").append(o.status.lowercase()).append("\">").append(esc(r.phases[pi].label)).append(' ').append(esc(cell(o))).append("</span>")
-        }
-        sb.append("</p></div>")
+    private fun cardHead(sb: StringBuilder, row: ScenarioRow) {
+        sb.append("<div class=head><span class=badge>").append(row.verdict.emoji).append(' ').append(escapeHtml(row.verdict.title)).append("</span>")
+        sb.append("<h2>").append(escapeHtml(titleOf(row))).append("</h2>")
+        sb.append("<p class=meta><code>").append(escapeHtml(row.path)).append("</code></p></div>")
     }
 
     // ------------------------------------------------------------------ the report
-
-    /** `billing/play/x.md@member` → `billing/play`; root-level scenarios group under "". */
-    fun groupOf(path: String): String = path.substringBeforeLast('/', "")
 
     /** What a scenario is, for someone who asks "does the app work?" — the pipeline verdicts folded to five answers. */
     enum class State(val icon: String, val label: String, val cls: String) {
@@ -179,16 +130,16 @@ object HtmlReport {
 
     /** A feature area = a scenario directory; its display name is the first line of its README.md when there is one. */
     private class Group(val dir: String, val name: String, val rows: List<ScenarioRow>) {
-        val states = rows.groupingBy { stateOf(it.verdict.kind) }.eachCount()
+        val states = rows.groupingBy { stateOf(it.verdict) }.eachCount()
         val worst: State = State.entries.first { it in states }
         val id get() = "g-" + dir.ifEmpty { "root" }.replace(Regex("[^A-Za-z0-9_-]+"), "_")
     }
 
     private fun groups(r: PipelineReport, root: File): List<Group> =
-        r.rows.groupBy { groupOf(it.path) }.map { (dir, rows) ->
+        r.rows.groupBy { areaOf(it.path) }.map { (dir, rows) ->
             val readme = File(root, ".simul/scenarios/$dir/README.md")
             val name = readme.takeIf { it.isFile }?.readLines()?.firstOrNull { it.isNotBlank() }?.trimStart('#', ' ')?.trim()
-            Group(dir, name?.takeIf { it.isNotEmpty() } ?: dir.ifEmpty { "(root)" }, rows.sortedBy { stateOf(it.verdict.kind).ordinal })
+            Group(dir, name?.takeIf { it.isNotEmpty() } ?: dir.ifEmpty { "(root)" }, rows.sortedBy { stateOf(it.verdict).ordinal })
         }.sortedWith(compareBy({ it.worst.ordinal }, { it.dir.ifEmpty { "\uffff" } })) // root-level last
 
     /** `❌ 2 안 됨 · ✅ 7 동작` — the counts of a group or of the whole run, worst first. */
@@ -206,10 +157,10 @@ object HtmlReport {
     fun render(r: PipelineReport, root: File, mediaDir: File? = null, debugHref: String? = null): String {
         val ctx = Ctx(root, mediaDir)
         val groups = groups(r, root)
-        val states = r.rows.groupingBy { stateOf(it.verdict.kind) }.eachCount()
-        val broken = r.rows.filter { stateOf(it.verdict.kind) == State.BROKEN }
-        val flaky = r.rows.filter { stateOf(it.verdict.kind) == State.FLAKY }
-        val review = r.rows.filter { stateOf(it.verdict.kind) in setOf(State.CHANGED, State.NEW) }
+        val states = r.rows.groupingBy { stateOf(it.verdict) }.eachCount()
+        val broken = r.rows.filter { stateOf(it.verdict) == State.BROKEN }
+        val flaky = r.rows.filter { stateOf(it.verdict) == State.FLAKY }
+        val review = r.rows.filter { stateOf(it.verdict) in setOf(State.CHANGED, State.NEW) }
         val sb = StringBuilder()
         head(sb, r.title)
 
@@ -220,21 +171,21 @@ object HtmlReport {
             states.keys.all { it == State.SKIPPED } -> "⏭ 실행된 시나리오 없음"
             else -> "✅ 앱 정상"
         }
-        sb.append("<header><h1>").append(esc(r.title)).append("</h1>")
-        sb.append("<p class=\"headline ").append((if (broken.isNotEmpty()) State.BROKEN else if (flaky.isNotEmpty() || review.isNotEmpty()) State.CHANGED else State.OK).cls).append("\">").append(esc(headline)).append("</p>")
-        sb.append("<p class=counts>").append(r.rows.size).append("개 시나리오 · ").append(esc(stateCounts(states))).append("</p>")
-        envLine(r).takeIf { it.isNotEmpty() }?.let { sb.append("<p class=env>").append(esc(it)).append("</p>") }
-        val links = r.links.map { (n, u) -> "<a href=\"${esc(u)}\">${esc(n)}</a>" } +
-            listOfNotNull(debugHref?.let { "<a href=\"${esc(it)}\">debug</a>" })
+        sb.append("<header><h1>").append(escapeHtml(r.title)).append("</h1>")
+        sb.append("<p class=\"headline ").append((if (broken.isNotEmpty()) State.BROKEN else if (flaky.isNotEmpty() || review.isNotEmpty()) State.CHANGED else State.OK).cls).append("\">").append(escapeHtml(headline)).append("</p>")
+        sb.append("<p class=counts>").append(r.rows.size).append("개 시나리오 · ").append(escapeHtml(stateCounts(states))).append("</p>")
+        envLine(r).takeIf { it.isNotEmpty() }?.let { sb.append("<p class=env>").append(escapeHtml(it)).append("</p>") }
+        val links = r.links.map { (n, u) -> "<a href=\"${escapeHtml(u)}\">${escapeHtml(n)}</a>" } +
+            listOfNotNull(debugHref?.let { "<a href=\"${escapeHtml(it)}\">debug</a>" })
         if (links.isNotEmpty()) sb.append("<p class=links>").append(links.joinToString(" · ")).append("</p>")
         sb.append("</header><main>")
 
         // ---- feature tiles
         sb.append("<nav class=tiles>")
         for (g in groups) {
-            sb.append("<a class=\"tile ").append(g.worst.cls).append("\" href=\"#").append(g.id).append("\"><span class=name>").append(esc(g.name)).append("</span>")
-            if (g.name != g.dir) sb.append("<span class=dir>").append(esc(g.dir.ifEmpty { "." })).append("/</span>")
-            sb.append("<span class=state>").append(esc(stateCounts(g.states))).append("</span></a>")
+            sb.append("<a class=\"tile ").append(g.worst.cls).append("\" href=\"#").append(g.id).append("\"><span class=name>").append(escapeHtml(g.name)).append("</span>")
+            if (g.name != g.dir) sb.append("<span class=dir>").append(escapeHtml(g.dir.ifEmpty { "." })).append("/</span>")
+            sb.append("<span class=state>").append(escapeHtml(stateCounts(g.states))).append("</span></a>")
         }
         sb.append("</nav>")
 
@@ -249,9 +200,9 @@ object HtmlReport {
             sb.append("<section class=review><h2>확인 필요 <span class=dim>화면이 바뀌어 다시 녹화됐거나 처음 녹화된 것 — trace diff를 보고 머지</span></h2><ul>")
             for (row in review) {
                 val i = r.rows.indexOf(row)
-                val st = stateOf(row.verdict.kind)
-                sb.append("<li>").append(st.icon).append(" <a href=\"#s").append(i).append("\">").append(esc(titleOf(row))).append("</a> <span class=dim>").append(esc(row.path))
-                row.outcomes.filterNotNull().firstOrNull { it.traceUpdated }?.let { sb.append(" · .simul/scenarios/").append(esc(traceRelPath(it.path))) }
+                val st = stateOf(row.verdict)
+                sb.append("<li>").append(st.icon).append(" <a href=\"#s").append(i).append("\">").append(escapeHtml(titleOf(row))).append("</a> <span class=dim>").append(escapeHtml(row.path))
+                row.outcomes.filterNotNull().firstOrNull { it.traceUpdated }?.let { sb.append(" · .simul/scenarios/").append(escapeHtml(traceRelPath(it.path))) }
                 sb.append("</span></li>")
             }
             sb.append("</ul></section>")
@@ -259,13 +210,13 @@ object HtmlReport {
 
         // ---- every area, as a checklist of how its screens behave
         for (g in groups) {
-            sb.append("<section class=area id=\"").append(g.id).append("\"><h2>").append(esc(g.name))
-            if (g.name != g.dir) sb.append(" <span class=dir>").append(esc(g.dir.ifEmpty { "." })).append("/</span>")
-            sb.append(" <span class=\"dim counts\">").append(esc(stateCounts(g.states))).append("</span></h2><ul class=list>")
+            sb.append("<section class=area id=\"").append(g.id).append("\"><h2>").append(escapeHtml(g.name))
+            if (g.name != g.dir) sb.append(" <span class=dir>").append(escapeHtml(g.dir.ifEmpty { "." })).append("/</span>")
+            sb.append(" <span class=\"dim counts\">").append(escapeHtml(stateCounts(g.states))).append("</span></h2><ul class=list>")
             for (row in g.rows) listItem(sb, r, row, ctx, debugHref)
             sb.append("</ul></section>")
         }
-        sb.append("</main><footer class=dim>generated by simul ").append(esc(r.agentVersion ?: "")).append("</footer></body></html>\n")
+        sb.append("</main><footer class=dim>generated by simul ").append(escapeHtml(r.agentVersion ?: "")).append("</footer></body></html>\n")
         return sb.toString()
     }
 
@@ -275,7 +226,7 @@ object HtmlReport {
             "FAILED" -> {
                 sb.append("<div class=fail>")
                 val f = o.failedStep
-                if (f == null) sb.append("<p class=where>❌ <b>").append(esc(phase.label)).append("</b> failed</p>")
+                if (f == null) sb.append("<p class=where>❌ <b>").append(escapeHtml(phase.label)).append("</b> failed</p>")
                 else {
                     // the failing moment: the summary's last screenshot, else the step's last one from
                     // report.json — first in the markup so it floats beside the text, not under it
@@ -283,18 +234,18 @@ object HtmlReport {
                         ?: ctx.stepsOf(o).firstOrNull { it.index == f.index }?.screenshots?.lastOrNull()?.let { s -> ctx.reportDir(o)?.let { File(it, s) } }
                     val uri = shot?.let(ctx::thumb)
                     if (shot != null && uri != null) {
-                        sb.append("<figure class=shot><img src=\"").append(uri).append("\" alt=\"").append(esc(shot.name)).append("\"><figcaption>").append(esc(shot.name)).append("</figcaption></figure>")
+                        sb.append("<figure class=shot><img src=\"").append(uri).append("\" alt=\"").append(escapeHtml(shot.name)).append("\"><figcaption>").append(escapeHtml(shot.name)).append("</figcaption></figure>")
                     }
-                    sb.append("<p class=where>❌ <b>").append(esc(phase.label)).append("</b> · ")
-                    if (f.reason?.startsWith("setup failed") == true) sb.append("setup")
-                    else sb.append("step ").append(f.index).append(" <q>").append(esc(f.text)).append("</q>")
+                    sb.append("<p class=where>❌ <b>").append(escapeHtml(phase.label)).append("</b> · ")
+                    if (f.isSetup) sb.append("setup")
+                    else sb.append("step ").append(f.index).append(" <q>").append(escapeHtml(f.text)).append("</q>")
                     sb.append("</p>")
-                    f.reason?.let { sb.append("<p class=reason>").append(esc(it)).append("</p>") }
-                    if (f.screen.isNotEmpty()) sb.append("<p class=screen>on screen: ").append(f.screen.joinToString(" · ") { "<code>${esc(it)}</code>" }).append("</p>")
+                    f.reason?.let { sb.append("<p class=reason>").append(escapeHtml(it)).append("</p>") }
+                    if (f.screen.isNotEmpty()) sb.append("<p class=screen>on screen: ").append(f.screen.joinToString(" · ") { "<code>${escapeHtml(it)}</code>" }).append("</p>")
                 }
                 sb.append("</div>")
             }
-            "CRASH" -> sb.append("<div class=fail><p class=where>💥 <b>").append(esc(phase.label)).append("</b> · harness crash</p><p class=reason>").append(esc(o.reason ?: "")).append("</p></div>")
+            "CRASH" -> sb.append("<div class=fail><p class=where>💥 <b>").append(escapeHtml(phase.label)).append("</b> · harness crash</p><p class=reason>").append(escapeHtml(o.reason ?: "")).append("</p></div>")
         }
     }
 
@@ -305,18 +256,18 @@ object HtmlReport {
         if (n == 0) return
         val ran = row.outcomes.indices.filter { stepsByPhase[it].isNotEmpty() }
         sb.append("<details class=steps><summary>").append(n).append(" steps</summary><table><thead><tr><th></th><th>step</th>")
-        ran.forEach { sb.append("<th>").append(esc(r.phases[it].label)).append("</th>") }
+        ran.forEach { sb.append("<th>").append(escapeHtml(r.phases[it].label)).append("</th>") }
         sb.append("</tr></thead><tbody>")
         for (k in 0 until n) {
             val text = stepsByPhase.firstNotNullOfOrNull { it.getOrNull(k)?.text } ?: ""
-            val statuses = ran.map { stepsByPhase[it].getOrNull(k)?.status }
+            val statuses = ran.map { stepsByPhase[it].getOrNull(k)?.status?.name }
             val worst = when {
                 "FAILED" in statuses -> "failed"
                 statuses.all { it == "SKIPPED" || it == null } -> "skipped"
                 else -> "passed"
             }
-            sb.append("<tr class=\"st-").append(worst).append("\"><td class=n>").append(k + 1).append("</td><td class=t>").append(esc(text)).append("</td>")
-            ran.forEach { sb.append("<td class=m>").append(mark(stepsByPhase[it].getOrNull(k)?.status)).append("</td>") }
+            sb.append("<tr class=\"st-").append(worst).append("\"><td class=n>").append(k + 1).append("</td><td class=t>").append(escapeHtml(text)).append("</td>")
+            ran.forEach { sb.append("<td class=m>").append(mark(stepsByPhase[it].getOrNull(k)?.status?.name)).append("</td>") }
             sb.append("</tr>")
         }
         sb.append("</tbody></table></details>")
@@ -334,41 +285,41 @@ object HtmlReport {
     /** A broken scenario, in full: gifs beside the description, every failing phase's block, the advice, the steps. */
     private fun brokenItem(sb: StringBuilder, r: PipelineReport, row: ScenarioRow, ctx: Ctx, debugHref: String?) {
         val i = r.rows.indexOf(row)
-        val st = stateOf(row.verdict.kind)
+        val st = stateOf(row.verdict)
         sb.append("<article id=\"b").append(i).append("\" class=\"item ").append(st.cls).append("\">")
         gifs(sb, r, row, ctx)
-        sb.append("<div class=main><div class=desc>").append(st.icon).append(' ').append(esc(titleOf(row))).append("</div>")
-        sb.append("<div class=path><code>").append(esc(row.path)).append("</code> · ").append(esc(row.verdict.kind.title)).append("</div>")
+        sb.append("<div class=main><div class=desc>").append(st.icon).append(' ').append(escapeHtml(titleOf(row))).append("</div>")
+        sb.append("<div class=path><code>").append(escapeHtml(row.path)).append("</code> · ").append(escapeHtml(row.verdict.title)).append("</div>")
         for ((pi, o) in row.outcomes.withIndex()) if (o != null) failureBlock(sb, r.phases[pi], o, ctx)
-        if (row.verdict.kind.advice.isNotEmpty()) sb.append("<p class=advice>").append(esc(row.verdict.kind.advice)).append("</p>")
+        if (row.verdict.advice.isNotEmpty()) sb.append("<p class=advice>").append(escapeHtml(row.verdict.advice)).append("</p>")
         stepsGrid(sb, r, row, ctx)
         sb.append("<p class=foot><a href=\"#s").append(i).append("\">목록에서 보기</a>")
-        if (debugHref != null) sb.append(" · <a href=\"").append(esc(debugHref)).append("#s").append(i).append("\">debug</a>")
+        if (debugHref != null) sb.append(" · <a href=\"").append(escapeHtml(debugHref)).append("#s").append(i).append("\">debug</a>")
         sb.append("</p></div></article>")
     }
 
     /** One line of an area's checklist: state, description, where it broke; the recording and steps fold under ▶. */
     private fun listItem(sb: StringBuilder, r: PipelineReport, row: ScenarioRow, ctx: Ctx, debugHref: String?) {
         val i = r.rows.indexOf(row)
-        val st = stateOf(row.verdict.kind)
-        sb.append("<li id=\"s").append(i).append("\" class=\"").append(st.cls).append("\"><details><summary><span class=icon>").append(st.icon).append("</span><span class=desc>").append(esc(titleOf(row))).append("</span>")
+        val st = stateOf(row.verdict)
+        sb.append("<li id=\"s").append(i).append("\" class=\"").append(st.cls).append("\"><details><summary><span class=icon>").append(st.icon).append("</span><span class=desc>").append(escapeHtml(titleOf(row))).append("</span>")
         val where = row.outcomes.filterNotNull().firstOrNull { it.status == "FAILED" || it.status == "CRASH" }
-            ?.let { o -> o.failedStep?.let { f -> if (f.reason?.startsWith("setup failed") == true) "setup" else "step ${f.index}" } ?: o.status.lowercase() }
+            ?.let { o -> o.failedStep?.let { f -> if (f.isSetup) "setup" else "step ${f.index}" } ?: o.status.lowercase() }
         // the tag: where it broke for a broken one; the state (and where the old trace broke) otherwise
         val tag = when {
             st == State.BROKEN || st == State.FLAKY -> where ?: st.label
             st != State.OK -> st.label + (where?.let { " · $it" } ?: "")
             else -> null
         }
-        tag?.let { sb.append("<span class=\"tag ").append(st.cls).append("\">").append(esc(it)).append("</span>") }
-        sb.append("<span class=path>").append(esc(row.path)).append("</span></summary><div class=body>")
+        tag?.let { sb.append("<span class=\"tag ").append(st.cls).append("\">").append(escapeHtml(it)).append("</span>") }
+        sb.append("<span class=path>").append(escapeHtml(row.path)).append("</span></summary><div class=body>")
         val hadGifs = gifs(sb, r, row, ctx)
         sb.append("<div class=main>")
         if (st == State.BROKEN || st == State.FLAKY) sb.append("<p><a href=\"#b").append(i).append("\">↑ 안 되는 것에서 보기</a></p>")
         for ((pi, o) in row.outcomes.withIndex()) if (o != null && st != State.BROKEN && st != State.FLAKY) failureBlock(sb, r.phases[pi], o, ctx)
         stepsGrid(sb, r, row, ctx)
         if (!hadGifs && row.outcomes.all { it == null || it.gif == null }) sb.append("<p class=dim>녹화 없음</p>")
-        if (debugHref != null) sb.append("<p class=foot><a href=\"").append(esc(debugHref)).append("#s").append(i).append("\">debug</a></p>")
+        if (debugHref != null) sb.append("<p class=foot><a href=\"").append(escapeHtml(debugHref)).append("#s").append(i).append("\">debug</a></p>")
         sb.append("</div></div></details></li>")
     }
 
@@ -382,60 +333,60 @@ object HtmlReport {
         val ctx = Ctx(root, mediaDir)
         val sb = StringBuilder()
         head(sb, "${r.title} — debug")
-        sb.append("<header><h1>").append(r.overallEmoji).append(' ').append(esc(r.title)).append(" <span class=dim>debug</span></h1>")
-        sb.append("<p class=counts>").append(esc(r.countsLine())).append("</p>")
-        envLine(r).takeIf { it.isNotEmpty() }?.let { sb.append("<p class=env>").append(esc(it)).append("</p>") }
-        r.llmUsageLines().forEach { sb.append("<p class=env>").append(esc(it)).append("</p>") }
-        val links = listOfNotNull(reportHref?.let { "<a href=\"${esc(it)}\">report</a>" }) + r.links.map { (n, u) -> "<a href=\"${esc(u)}\">${esc(n)}</a>" }
+        sb.append("<header><h1>").append(r.overallEmoji).append(' ').append(escapeHtml(r.title)).append(" <span class=dim>debug</span></h1>")
+        sb.append("<p class=counts>").append(escapeHtml(r.countsLine())).append("</p>")
+        envLine(r).takeIf { it.isNotEmpty() }?.let { sb.append("<p class=env>").append(escapeHtml(it)).append("</p>") }
+        r.llmUsageLines().forEach { sb.append("<p class=env>").append(escapeHtml(it)).append("</p>") }
+        val links = listOfNotNull(reportHref?.let { "<a href=\"${escapeHtml(it)}\">report</a>" }) + r.links.map { (n, u) -> "<a href=\"${escapeHtml(u)}\">${escapeHtml(n)}</a>" }
         if (links.isNotEmpty()) sb.append("<p class=links>").append(links.joinToString(" · ")).append("</p>")
         sb.append("</header><main>")
         for (row in r.attention + r.rows.filter { it.verdict.severity == Severity.OK }) {
             val i = r.rows.indexOf(row)
             sb.append("<article id=\"s").append(i).append("\" class=\"card sev-").append(row.verdict.severity.name.lowercase()).append("\">")
-            cardHead(sb, r, row, phases = false)
-            if (reportHref != null) sb.append("<p class=foot><a href=\"").append(esc(reportHref)).append("#s").append(i).append("\">report</a></p>")
+            cardHead(sb, row)
+            if (reportHref != null) sb.append("<p class=foot><a href=\"").append(escapeHtml(reportHref)).append("#s").append(i).append("\">report</a></p>")
             for ((pi, o) in row.outcomes.withIndex()) {
                 if (o == null) continue
                 val phase = r.phases[pi]
-                sb.append("<section class=phase><h3>").append(esc(phase.heading)).append(" · ").append(esc(cell(o)))
-                o.reportDir?.let { sb.append(" <span class=dim>").append(esc(it)).append("</span>") }
-                o.llm?.let { sb.append(" <span class=dim>").append(esc(it.summary(totalMs = o.durationMs))).append("</span>") }
+                sb.append("<section class=phase><h3>").append(escapeHtml(phase.heading)).append(" · ").append(escapeHtml(cell(o)))
+                o.reportDir?.let { sb.append(" <span class=dim>").append(escapeHtml(it)).append("</span>") }
+                o.llm?.let { sb.append(" <span class=dim>").append(escapeHtml(it.summary(totalMs = o.durationMs))).append("</span>") }
                 sb.append("</h3>")
                 if (o.status == "SKIPPED" || o.status == "CRASH") {
-                    sb.append("<p class=reason>").append(esc(o.reason ?: o.status)).append("</p></section>")
+                    sb.append("<p class=reason>").append(escapeHtml(o.reason ?: o.status)).append("</p></section>")
                     continue
                 }
                 val reportDir = ctx.reportDir(o)
                 val steps = ctx.stepsOf(o)
                 if (steps.isEmpty()) {
                     o.failedStep?.let { f ->
-                        sb.append("<p class=reason>step ").append(f.index).append(" <code>").append(esc(f.text)).append("</code> — ").append(esc(f.reason ?: "failed")).append("</p>")
+                        sb.append("<p class=reason>step ").append(f.index).append(" <code>").append(escapeHtml(f.text)).append("</code> — ").append(escapeHtml(f.reason ?: "failed")).append("</p>")
                     }
                     sb.append("</section>")
                     continue
                 }
                 sb.append("<div class=body><ol class=steps>")
                 for (st in steps) {
-                    sb.append("<li class=\"st-").append(st.status.lowercase()).append("\"><span class=st>").append(esc(st.status)).append("</span> ")
-                    sb.append("<code>").append(esc(st.text)).append("</code>")
-                    st.mode?.let { sb.append(" <span class=dim>(").append(esc(it)).append(", ").append(humanDuration(st.durationMs)).append(")</span>") }
-                    st.llm?.let { sb.append(" <span class=dim>").append(esc(it.summary(totalMs = st.durationMs))).append("</span>") }
-                    st.reason?.let { sb.append("<div class=reason>").append(esc(it)).append("</div>") }
-                    if (st.status == "FAILED") {
-                        if (st.screen.isNotEmpty()) sb.append("<div class=screen>on screen: ").append(st.screen.joinToString(" · ") { "<code>${esc(it)}</code>" }).append("</div>")
+                    sb.append("<li class=\"st-").append(st.status.name.lowercase()).append("\"><span class=st>").append(st.status.name).append("</span> ")
+                    sb.append("<code>").append(escapeHtml(st.text)).append("</code>")
+                    st.mode?.let { sb.append(" <span class=dim>(").append(escapeHtml(it)).append(", ").append(humanDuration(st.durationMs)).append(")</span>") }
+                    st.llm?.let { sb.append(" <span class=dim>").append(escapeHtml(it.summary(totalMs = st.durationMs))).append("</span>") }
+                    st.reason?.let { sb.append("<div class=reason>").append(escapeHtml(it)).append("</div>") }
+                    if (st.status == StepStatus.FAILED) {
+                        if (st.screen.isNotEmpty()) sb.append("<div class=screen>on screen: ").append(st.screen.joinToString(" · ") { "<code>${escapeHtml(it)}</code>" }).append("</div>")
                         // the failing moment: the step's last two screenshots (before/after, or the -failed shot)
                         val shots = st.screenshots.takeLast(2)
                         if (shots.isNotEmpty() && reportDir != null) {
                             sb.append("<div class=shots>")
                             for (shot in shots) {
                                 val uri = ctx.thumb(File(reportDir, shot))
-                                if (uri != null) sb.append("<figure class=shot><img src=\"").append(uri).append("\" alt=\"").append(esc(shot)).append("\"><figcaption>").append(esc(shot.substringAfterLast('/'))).append("</figcaption></figure>")
-                                else sb.append("<span class=dim>").append(esc(shot)).append("</span> ")
+                                if (uri != null) sb.append("<figure class=shot><img src=\"").append(uri).append("\" alt=\"").append(escapeHtml(shot)).append("\"><figcaption>").append(escapeHtml(shot.substringAfterLast('/'))).append("</figcaption></figure>")
+                                else sb.append("<span class=dim>").append(escapeHtml(shot)).append("</span> ")
                             }
                             sb.append("</div>")
                         }
                     } else if (st.evidence.isNotEmpty()) {
-                        sb.append("<div class=dim>evidence: ").append(esc(st.evidence.joinToString(", "))).append("</div>")
+                        sb.append("<div class=dim>evidence: ").append(escapeHtml(st.evidence.joinToString(", "))).append("</div>")
                     }
                     sb.append("</li>")
                 }
@@ -449,7 +400,7 @@ object HtmlReport {
             }
             sb.append("</article>")
         }
-        sb.append("</main><footer class=dim>generated by simul ").append(esc(r.agentVersion ?: "")).append("</footer></body></html>\n")
+        sb.append("</main><footer class=dim>generated by simul ").append(escapeHtml(r.agentVersion ?: "")).append("</footer></body></html>\n")
         return sb.toString()
     }
 

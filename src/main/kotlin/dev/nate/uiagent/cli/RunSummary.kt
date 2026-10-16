@@ -1,20 +1,23 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.agent.llmJson
+import dev.nate.uiagent.agent.llmFromJson
 import dev.nate.uiagent.agent.LlmStats
-import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
+import dev.nate.uiagent.arr
+import dev.nate.uiagent.bool
+import dev.nate.uiagent.int
+import dev.nate.uiagent.json
+import dev.nate.uiagent.long
+import dev.nate.uiagent.obj
+import dev.nate.uiagent.prettyJson
+import dev.nate.uiagent.str
+import dev.nate.uiagent.strList
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import java.io.File
 import java.text.SimpleDateFormat
@@ -80,7 +83,10 @@ data class FailedStep(
     val screenshot: String?,
     /** Labels/ids visible when the step failed (see StepReport.screen). */
     val screen: List<String> = emptyList(),
-)
+) {
+    /** The scenario never reached its steps — setup (deeplink, state restore, launch) broke. */
+    val isSetup: Boolean get() = reason?.startsWith("setup failed") == true
+}
 
 /**
  * A scenario's identity across phases: its file relative to `.simul/scenarios/`, plus `@<state>`
@@ -148,16 +154,13 @@ fun outcomeWithout(project: SimulProject, md: File, scenario: Scenario, status: 
         description = scenario.description,
     )
 
-@OptIn(ExperimentalSerializationApi::class)
 object RunSummaryJson {
-    private val json = Json { prettyPrint = true; prettyPrintIndent = "  " }
-    private val parser = Json { ignoreUnknownKeys = true; isLenient = true }
-
+    /** ISO-8601 with offset — the `startedAt` of summaries and reports. */
     fun stamp(): String = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX").format(Date())
 
     fun write(s: RunSummary, file: File) {
         file.absoluteFile.parentFile?.mkdirs()
-        file.writeText(json.encodeToString(JsonObject.serializer(), toJson(s)) + "\n")
+        file.writeText(prettyJson.encodeToString(JsonObject.serializer(), toJson(s)) + "\n")
     }
 
     fun toJson(s: RunSummary): JsonObject = buildJsonObject {
@@ -208,47 +211,45 @@ object RunSummaryJson {
     fun read(file: File): RunSummary = parse(file.readText())
 
     fun parse(text: String): RunSummary {
-        val o = parser.parseToJsonElement(text).jsonObject
-        val env = o["env"] as? JsonObject
-        fun str(obj: JsonObject?, key: String) = (obj?.get(key) as? JsonPrimitive)?.contentOrNull
+        val o = json.parseToJsonElement(text).jsonObject
+        val env = o.obj("env")
         return RunSummary(
-            label = str(o, "label") ?: "run",
-            mode = str(o, "mode") ?: "replay",
-            startedAt = str(o, "startedAt") ?: "",
-            durationMs = (o["durationMs"] as? JsonPrimitive)?.longOrNull ?: 0,
-            agentVersion = str(env, "agentVersion") ?: "",
-            appVersionName = str(env, "appVersionName"),
-            device = str(env, "device"),
-            androidCli = str(env, "androidCli"),
-            scenarios = (o["scenarios"] as? JsonArray)?.map { el ->
+            label = o.str("label") ?: "run",
+            mode = o.str("mode") ?: "replay",
+            startedAt = o.str("startedAt") ?: "",
+            durationMs = o.long("durationMs") ?: 0,
+            agentVersion = env?.str("agentVersion") ?: "",
+            appVersionName = env?.str("appVersionName"),
+            device = env?.str("device"),
+            androidCli = env?.str("androidCli"),
+            scenarios = o.arr("scenarios")?.map { el ->
                 val s = el.jsonObject
-                val steps = s["steps"] as? JsonObject
-                val f = s["failedStep"] as? JsonObject
+                val steps = s.obj("steps")
                 ScenarioOutcome(
-                    name = str(s, "name") ?: "",
-                    path = str(s, "path") ?: (str(s, "name") ?: ""),
-                    tags = (s["tags"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
-                    status = str(s, "status") ?: "FAILED",
-                    mode = str(s, "mode"),
-                    durationMs = (s["durationMs"] as? JsonPrimitive)?.longOrNull ?: 0,
-                    reportDir = str(s, "reportDir"),
-                    traceUpdated = (s["traceUpdated"] as? JsonPrimitive)?.booleanOrNull ?: false,
-                    passedSteps = (steps?.get("passed") as? JsonPrimitive)?.intOrNull ?: 0,
-                    failedSteps = (steps?.get("failed") as? JsonPrimitive)?.intOrNull ?: 0,
-                    skippedSteps = (steps?.get("skipped") as? JsonPrimitive)?.intOrNull ?: 0,
-                    failedStep = f?.let {
+                    name = s.str("name") ?: "",
+                    path = s.str("path") ?: (s.str("name") ?: ""),
+                    tags = s.strList("tags"),
+                    status = s.str("status") ?: "FAILED",
+                    mode = s.str("mode"),
+                    durationMs = s.long("durationMs") ?: 0,
+                    reportDir = s.str("reportDir"),
+                    traceUpdated = s.bool("traceUpdated") ?: false,
+                    passedSteps = steps?.int("passed") ?: 0,
+                    failedSteps = steps?.int("failed") ?: 0,
+                    skippedSteps = steps?.int("skipped") ?: 0,
+                    failedStep = s.obj("failedStep")?.let {
                         FailedStep(
-                            index = (it["index"] as? JsonPrimitive)?.intOrNull ?: 0,
-                            text = str(it, "text") ?: "",
-                            reason = str(it, "reason"),
-                            screenshot = str(it, "screenshot"),
-                            screen = (it["screen"] as? JsonArray)?.mapNotNull { e -> e.jsonPrimitive.contentOrNull } ?: emptyList(),
+                            index = it.int("index") ?: 0,
+                            text = it.str("text") ?: "",
+                            reason = it.str("reason"),
+                            screenshot = it.str("screenshot"),
+                            screen = it.strList("screen"),
                         )
                     },
-                    reason = str(s, "reason"),
-                    llm = llmFromJson(s["llm"] as? JsonObject),
-                    gif = str(s, "gif"),
-                    description = str(s, "description") ?: "",
+                    reason = s.str("reason"),
+                    llm = llmFromJson(s.obj("llm")),
+                    gif = s.str("gif"),
+                    description = s.str("description") ?: "",
                 )
             } ?: emptyList(),
         )

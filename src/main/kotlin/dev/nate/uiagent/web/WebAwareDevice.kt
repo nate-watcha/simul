@@ -12,7 +12,7 @@ import kotlin.math.abs
 /**
  * Device decorator that merges WebView content (via CDP) into native observations. Gestures
  * pass through untouched — web elements already carry screen-space coordinates, so tap/type
- * run through the same `adb shell input` path (plan invariant: the model never distinguishes
+ * run through the same `adb shell input` path (invariant: the model never distinguishes
  * web from native).
  *
  * Discovery runs on every observation: the native WebView container node cannot be relied on
@@ -20,7 +20,7 @@ import kotlin.math.abs
  * seen on-device in M4). A visible CDP page target is the merge signal; on native-only screens
  * discovery just finds nothing. Every web failure degrades to the native-only layout, with a
  * [LogicalLayout.webNote] when a WebView is clearly present but uninspectable, so the model
- * can report a grounded FAILED instead of crashing (release-build guard, plan M3).
+ * can report a grounded FAILED instead of crashing (release-build guard).
  */
 class WebAwareDevice(
     private val delegate: Device,
@@ -69,14 +69,14 @@ class WebAwareDevice(
         // inside the WebView rect can duplicate the CDP elements — partial (no checked state,
         // detached labels), recognizable by a shared DOM id or label. Only those duplicates
         // and anonymous scaffolding are dropped: a native overlay ON TOP of the WebView (e.g.
-        // an exit-confirmation dialog, seen in M4) also sits inside the rect but shares
+        // an exit-confirmation dialog, seen on-device) also sits inside the rect but shares
         // nothing with the page, and the model must see it. Scrollables stay: the container
         // is the gesture target for scrolling web pages.
         val webIds = webElements.mapNotNull { it.resourceId }.toHashSet()
         val webLabels = webElements.mapNotNull { it.label }.toHashSet()
         val composedOfWeb = webComposition(webLabels)
         val keptNative = pruneReparent(native.elements) { e ->
-            !(rect.containsCenter(e) && "scrollable" !in e.interactions && when {
+            !(e.center in rect && "scrollable" !in e.interactions && when {
                 e.resourceId != null -> e.resourceId in webIds
                 e.label != null -> e.label in webLabels || e.label.take(80) in webLabels || composedOfWeb(e.label)
                 else -> true // anonymous non-scrollable node inside the webview: a11y scaffolding
@@ -102,7 +102,7 @@ class WebAwareDevice(
             if (e.origin == Origin.NATIVE) newId[e.id] = i
             e.copy(id = i, parentId = e.parentId?.let { newId[it] })
         }
-        return LogicalLayout(merged, webNote = WebLayout.scrollHint(page), webOverflow = WebLayout.overflow(page))
+        return LogicalLayout(merged, webNote = WebLayout.scrollHint(page))
     }
 
     /**
@@ -128,9 +128,6 @@ class WebAwareDevice(
     /** Same on-screen rect, every edge within 8 px (the WebView node itself, not an enclosing scroller). */
     private fun sameRect(a: Bounds, b: Bounds): Boolean =
         abs(a.x0 - b.x0) <= 8 && abs(a.y0 - b.y0) <= 8 && abs(a.x1 - b.x1) <= 8 && abs(a.y1 - b.y1) <= 8
-
-    private fun Bounds.containsCenter(e: LogicalElement): Boolean =
-        e.center.x in x0..x1 && e.center.y in y0..y1
 
     /** Fold page loading into wait-for-stable: poll readyState up to [loadWaitMs]. */
     private fun awaitLoaded(target: CdpClient.Target) {

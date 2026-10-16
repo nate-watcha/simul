@@ -1,6 +1,7 @@
 package dev.nate.uiagent.device
 
 import dev.nate.uiagent.LogicalElement
+import dev.nate.uiagent.Point
 import dev.nate.uiagent.depthsOf
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -20,7 +21,15 @@ import kotlinx.serialization.json.putJsonArray
 fun handleOf(e: LogicalElement): String =
     e.label ?: e.resourceId ?: syntheticHandle(e)
 
-fun syntheticHandle(e: LogicalElement): String = "@x${e.center.x}y${e.center.y}"
+fun syntheticHandle(e: LogicalElement): String = syntheticHandle(e.center)
+
+fun syntheticHandle(p: Point): String = "@x${p.x}y${p.y}"
+
+private val syntheticRegex = Regex("@x(-?\\d+)y(-?\\d+)")
+
+/** The center a synthetic handle names, or null when [s] is not one. */
+fun parseSyntheticHandle(s: String): Point? =
+    syntheticRegex.matchEntire(s.trim())?.let { m -> Point(m.groupValues[1].toInt(), m.groupValues[2].toInt()) }
 
 /**
  * Identity key for diffing. Label/resourceId identify an element across observations;

@@ -35,7 +35,7 @@ object SwipeGeometry {
 
         val region: Bounds =
             if (vertical) {
-                all.filter { "scrollable" in it.interactions && it.bounds?.contains(target.center) == true }
+                all.filter { "scrollable" in it.interactions && it.bounds?.let { b -> target.center in b } == true }
                     .maxWithOrNull(
                         compareBy(
                             { if ("focusable" in it.interactions) 1 else 0 },
@@ -66,6 +66,4 @@ object SwipeGeometry {
     }
 
     private fun synthetic(c: Point) = Bounds(maxOf(0, c.x - 300), maxOf(0, c.y - 500), c.x + 300, c.y + 500)
-
-    private fun Bounds.contains(p: Point) = p.x in x0..x1 && p.y in y0..y1
 }

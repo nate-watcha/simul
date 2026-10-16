@@ -1,5 +1,6 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.humanDuration
 import dev.nate.uiagent.agent.LlmStats
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
@@ -36,29 +37,29 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
     while (i < args.size) {
         when (val a = args[i]) {
             "--format" -> format = args.getOrNull(++i)?.takeIf { it in setOf("md", "slack", "junit", "html") }
-                ?: return reportErr("invalid --format (use md|slack|junit|html)")
-            "--title" -> title = args.getOrNull(++i) ?: return reportErr("--title needs a value")
-            "--out" -> out = args.getOrNull(++i) ?: return reportErr("--out needs a file path")
+                ?: return err("invalid --format (use md|slack|junit|html)")
+            "--title" -> title = args.getOrNull(++i) ?: return err("--title needs a value")
+            "--out" -> out = args.getOrNull(++i) ?: return err("--out needs a file path")
             "--check" -> check = true
             "--link" -> {
-                val v = args.getOrNull(++i) ?: return reportErr("--link needs Name=URL")
+                val v = args.getOrNull(++i) ?: return err("--link needs Name=URL")
                 val eq = v.indexOf('=')
-                if (eq <= 0) return reportErr("--link needs Name=URL, got '$v'")
+                if (eq <= 0) return err("--link needs Name=URL, got '$v'")
                 links += v.substring(0, eq) to v.substring(eq + 1)
             }
-            else -> if (a.startsWith("--")) return reportErr("unknown option $a") else files += a
+            else -> if (a.startsWith("--")) return err("unknown option $a") else files += a
         }
         i++
     }
-    if (files.isEmpty()) return reportErr("nothing to report: give one or more summary.json files (from `simul run --summary`)")
+    if (files.isEmpty()) return err("nothing to report: give one or more summary.json files (from `simul run --summary`)")
 
     val summaries = files.map { p ->
-        val f = File(p).takeIf { it.isAbsolute } ?: File(cwd, p)
-        if (!f.isFile) return reportErr("summary not found: $p")
-        runCatching { RunSummaryJson.read(f) }.getOrElse { return reportErr("cannot parse $p: ${it.message}") }
+        val f = resolvePath(cwd, p)
+        if (!f.isFile) return err("summary not found: $p")
+        runCatching { RunSummaryJson.read(f) }.getOrElse { return err("cannot parse $p: ${it.message}") }
     }
     val report = PipelineReport.build(title, summaries, links)
-    val outFile = out?.let { resolve(it, cwd).absoluteFile }
+    val outFile = out?.let { resolvePath(cwd, it).absoluteFile }
     // html with --out is a folder: report.html + report.debug.html + media/ (gifs are copied there — too big to inline)
     val debugFile = outFile?.takeIf { format == "html" }?.let(HtmlReport::debugFileFor)
     val mediaDir = outFile?.let { File(it.parentFile, "media") }
@@ -77,13 +78,6 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
         print(text)
     }
     return if (check && report.overall == Severity.FAIL) 1 else 0
-}
-
-private fun resolve(path: String, cwd: File): File = File(path).takeIf { it.isAbsolute } ?: File(cwd, path)
-
-private fun reportErr(msg: String): Int {
-    System.err.println("error: $msg")
-    return 2
 }
 
 // ------------------------------------------------------------------------ model
@@ -108,10 +102,6 @@ enum class VerdictKind(val emoji: String, val severity: Severity, val title: Str
     PASS("✅", Severity.OK, "passed", ""),
 }
 
-data class Verdict(val kind: VerdictKind) {
-    val severity get() = kind.severity
-}
-
 enum class Role { BASELINE, RECORD, VERIFY, OTHER }
 
 data class Phase(val label: String, val mode: String, val role: Role, val summary: RunSummary) {
@@ -124,7 +114,7 @@ data class ScenarioRow(
     val name: String,
     /** Outcome per phase, aligned with [PipelineReport.phases]; null when absent from that phase. */
     val outcomes: List<ScenarioOutcome?>,
-    val verdict: Verdict,
+    val verdict: VerdictKind,
 )
 
 class PipelineReport(
@@ -134,9 +124,9 @@ class PipelineReport(
     val links: List<Pair<String, String>>,
 ) {
     val overall: Severity = rows.maxOfOrNull { it.verdict.severity } ?: Severity.OK
-    val counts: Map<VerdictKind, Int> = rows.groupingBy { it.verdict.kind }.eachCount()
+    val counts: Map<VerdictKind, Int> = rows.groupingBy { it.verdict }.eachCount()
     val attention: List<ScenarioRow> = rows.filter { it.verdict.severity != Severity.OK }
-        .sortedBy { it.verdict.kind.ordinal }
+        .sortedBy { it.verdict.ordinal }
 
     val appVersionName get() = phases.firstNotNullOfOrNull { it.summary.appVersionName }
     val device get() = phases.firstNotNullOfOrNull { it.summary.device }
@@ -144,7 +134,12 @@ class PipelineReport(
     val androidCli get() = phases.firstNotNullOfOrNull { it.summary.androidCli }
     val startedAt get() = phases.firstNotNullOfOrNull { it.summary.startedAt.ifEmpty { null } }
 
-    /** `12 scenarios · ✅ 9 stable · 🔁 1 changed · ❌ 2 regression suspected` */
+    /** `app 5.4.0 · device sdk_gphone64 · simul 0.2.0 · android CLI 1.0.1 · started …` — the environment line of every renderer. */
+    fun envParts(withStart: Boolean = true): List<String> = listOfNotNull(
+        appVersionName?.let { "app $it" }, device?.let { "device $it" }, agentVersion?.let { "simul $it" },
+        androidCli?.let { "android CLI $it" }, startedAt?.takeIf { withStart }?.let { "started $it" },
+    )
+
     /**
      * One line per phase that consulted the model: `record (llm): model 5m12s of 9m40s wall ·
      * 212 calls · prompt 1.2M tok (peak 9.1k) · completion 34k tok` — what the recording cost.
@@ -156,6 +151,7 @@ class PipelineReport(
             (if (l.tokensReported) " · prompt ${LlmStats.tokens(l.promptTokens)} tok (peak ${LlmStats.tokens(l.peakPromptTokens)}) · completion ${LlmStats.tokens(l.completionTokens)} tok" else "")
     }
 
+    /** `12 scenarios · ✅ 9 stable · 🔁 1 changed · ❌ 2 regression suspected` */
     fun countsLine(): String = buildString {
         append("${rows.size} scenario${if (rows.size == 1) "" else "s"}")
         VerdictKind.entries.sortedBy { it.severity.ordinal * -1 }.forEach { k ->
@@ -204,48 +200,36 @@ class PipelineReport(
             }
         }
 
-        fun judge(phases: List<Phase>, outcomes: List<ScenarioOutcome?>): Verdict {
+        fun judge(phases: List<Phase>, outcomes: List<ScenarioOutcome?>): VerdictKind {
             fun of(role: Role) = phases.indices.firstOrNull { phases[it].role == role }?.let { outcomes[it] }
             val present = outcomes.filterNotNull()
-            if (present.any { it.status == "CRASH" }) return Verdict(VerdictKind.CRASH)
-            if (present.all { it.status == "SKIPPED" }) return Verdict(VerdictKind.SKIPPED)
+            if (present.any { it.status == "CRASH" }) return VerdictKind.CRASH
+            if (present.all { it.status == "SKIPPED" }) return VerdictKind.SKIPPED
 
             val record = of(Role.RECORD)
             if (record == null || phases.none { it.role == Role.RECORD }) {
                 // no recording phase: plain replay semantics over whatever ran
-                return Verdict(if (present.any { it.status == "FAILED" }) VerdictKind.FAIL else VerdictKind.PASS)
+                return if (present.any { it.status == "FAILED" }) VerdictKind.FAIL else VerdictKind.PASS
             }
             val baseline = of(Role.BASELINE)
             val verify = of(Role.VERIFY)
             val baselinePhase = phases.any { it.role == Role.BASELINE }
-            return Verdict(
-                when {
-                    record.status == "FAILED" ->
-                        if (baseline?.status == "PASSED") VerdictKind.RECORD_FLAKE else VerdictKind.REGRESSION
-                    record.status == "SKIPPED" ->
-                        if (present.any { it.status == "FAILED" }) VerdictKind.FAIL else VerdictKind.PASS
-                    verify?.status == "FAILED" -> VerdictKind.TRACE_FLAKE
-                    !baselinePhase -> VerdictKind.STABLE
-                    baseline == null || baseline.status == "SKIPPED" -> VerdictKind.NEW
-                    baseline.status == "FAILED" -> VerdictKind.CHANGED
-                    else -> VerdictKind.STABLE
-                }
-            )
+            return when {
+                record.status == "FAILED" ->
+                    if (baseline?.status == "PASSED") VerdictKind.RECORD_FLAKE else VerdictKind.REGRESSION
+                record.status == "SKIPPED" ->
+                    if (present.any { it.status == "FAILED" }) VerdictKind.FAIL else VerdictKind.PASS
+                verify?.status == "FAILED" -> VerdictKind.TRACE_FLAKE
+                !baselinePhase -> VerdictKind.STABLE
+                baseline == null || baseline.status == "SKIPPED" -> VerdictKind.NEW
+                baseline.status == "FAILED" -> VerdictKind.CHANGED
+                else -> VerdictKind.STABLE
+            }
         }
     }
 }
 
 // --------------------------------------------------------------------- shared bits
-
-/** `12s`, `1m24s`, `2h05m`. */
-fun humanDuration(ms: Long): String {
-    val s = ms / 1000
-    return when {
-        s < 60 -> "${s}s"
-        s < 3600 -> "${s / 60}m${"%02d".format(s % 60)}s"
-        else -> "${s / 3600}h${"%02d".format((s % 3600) / 60)}m"
-    }
-}
 
 /** One table cell for a phase outcome: `✅ 12s`, `❌ step 3`, `❌ setup`, `⏭ no trace`, `💥 crash`, `–`. */
 fun cell(o: ScenarioOutcome?): String = when {
@@ -253,13 +237,13 @@ fun cell(o: ScenarioOutcome?): String = when {
     o.status == "PASSED" -> "✅ ${humanDuration(o.durationMs)}"
     o.status == "CRASH" -> "💥 crash"
     o.status == "SKIPPED" -> "⏭ ${o.reason ?: "skipped"}"
-    else -> "❌ " + (o.failedStep?.let { f -> if (f.reason?.startsWith("setup failed") == true) "setup" else "step ${f.index}" } ?: "failed")
+    else -> "❌ " + (o.failedStep?.let { f -> if (f.isSetup) "setup" else "step ${f.index}" } ?: "failed")
 }
 
 /** The failure narrative of one outcome, or null when it passed / did not run. */
 private fun failureLine(o: ScenarioOutcome): String? = when (o.status) {
     "FAILED" -> o.failedStep?.let { f ->
-        val where = if (f.reason?.startsWith("setup failed") == true) "setup" else "step ${f.index} `${f.text}`"
+        val where = if (f.isSetup) "setup" else "step ${f.index} `${f.text}`"
         "$where — ${f.reason ?: "failed"}"
     } ?: "failed"
     "CRASH" -> "crash — ${o.reason ?: ""}".trim()
@@ -273,10 +257,7 @@ fun renderMarkdown(r: PipelineReport): String = buildString {
     appendLine("## ${r.overallEmoji} ${r.title}")
     appendLine()
     appendLine("**${r.countsLine()}**")
-    val env = listOfNotNull(
-        r.appVersionName?.let { "app $it" }, r.device?.let { "device $it" },
-        r.agentVersion?.let { "simul $it" }, r.androidCli?.let { "android CLI $it" }, r.startedAt?.let { "started $it" },
-    )
+    val env = r.envParts()
     if (env.isNotEmpty()) appendLine("<sub>${env.joinToString(" · ")}</sub>")
     if (r.links.isNotEmpty()) {
         appendLine()
@@ -287,7 +268,7 @@ fun renderMarkdown(r: PipelineReport): String = buildString {
     appendLine("|---|" + r.phases.joinToString("") { "---|" } + "---|")
     for (row in r.rows) {
         appendLine("| `${row.path}` | " + row.outcomes.joinToString(" | ") { cell(it) } +
-            " | ${row.verdict.kind.emoji} ${row.verdict.kind.title} |")
+            " | ${row.verdict.emoji} ${row.verdict.title} |")
     }
     r.llmUsageLines().forEach { appendLine(); appendLine("<sub>$it</sub>") }
     if (r.attention.isNotEmpty()) {
@@ -295,8 +276,8 @@ fun renderMarkdown(r: PipelineReport): String = buildString {
         appendLine("### Needs attention")
         for (row in r.attention) {
             appendLine()
-            appendLine("#### ${row.verdict.kind.emoji} `${row.path}` — ${row.verdict.kind.title}")
-            if (row.verdict.kind.advice.isNotEmpty()) appendLine(row.verdict.kind.advice)
+            appendLine("#### ${row.verdict.emoji} `${row.path}` — ${row.verdict.title}")
+            if (row.verdict.advice.isNotEmpty()) appendLine(row.verdict.advice)
             for ((i, o) in row.outcomes.withIndex()) {
                 if (o == null) continue
                 val line = failureLine(o) ?: continue
@@ -334,11 +315,11 @@ fun renderSlack(r: PipelineReport): String {
         put("type", "header")
         put("text", buildJsonObject { put("type", "plain_text"); put("text", "${r.overallEmoji} ${r.title} — ${r.headline()}".take(150)) })
     }
-    val env = listOfNotNull(r.appVersionName?.let { "app $it" }, r.device?.let { "device $it" }, r.agentVersion?.let { "simul $it" }, r.androidCli?.let { "android CLI $it" })
+    val env = r.envParts(withStart = false)
     blocks += section("*${slackEscape(r.countsLine())}*" + (if (env.isEmpty()) "" else "\n_${slackEscape(env.joinToString(" · "))}_") +
         r.llmUsageLines().joinToString("") { "\n_${slackEscape(it)}_" })
     // what to look at, names only — one line per verdict kind, capped
-    val byKind = r.attention.groupBy { it.verdict.kind }
+    val byKind = r.attention.groupBy { it.verdict }
     if (byKind.isNotEmpty()) {
         blocks += section(byKind.entries.joinToString("\n") { (kind, rows) ->
             val names = rows.take(SLACK_NAMES_PER_KIND).joinToString(", ") { "`${slackEscape(it.path)}`" }
@@ -365,26 +346,27 @@ fun renderSlack(r: PipelineReport): String {
 
 // ------------------------------------------------------------------------ junit
 
-private fun xml(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+/** Escape for an HTML/XML text node or attribute — the html report and the junit renderer share it. */
+internal fun escapeHtml(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 
 /** JUnit XML: one testsuite per phase, one testcase per scenario — for CI test reporters. */
 fun renderJunit(r: PipelineReport): String = buildString {
     appendLine("""<?xml version="1.0" encoding="UTF-8"?>""")
-    appendLine("""<testsuites name="${xml(r.title)}">""")
+    appendLine("""<testsuites name="${escapeHtml(r.title)}">""")
     for ((i, p) in r.phases.withIndex()) {
         val outs = r.rows.mapNotNull { it.outcomes[i] }
         val failures = outs.count { it.status == "FAILED" || it.status == "CRASH" }
         val skipped = outs.count { it.status == "SKIPPED" }
-        appendLine("""  <testsuite name="${xml(p.heading)}" tests="${outs.size}" failures="$failures" errors="0" skipped="$skipped" time="${p.summary.durationMs / 1000.0}">""")
+        appendLine("""  <testsuite name="${escapeHtml(p.heading)}" tests="${outs.size}" failures="$failures" errors="0" skipped="$skipped" time="${p.summary.durationMs / 1000.0}">""")
         for (o in outs) {
-            append("""    <testcase classname="${xml(p.label)}" name="${xml(o.path)}" time="${o.durationMs / 1000.0}"""")
+            append("""    <testcase classname="${escapeHtml(p.label)}" name="${escapeHtml(o.path)}" time="${o.durationMs / 1000.0}"""")
             when (o.status) {
                 "PASSED" -> appendLine("/>")
-                "SKIPPED" -> appendLine("><skipped message=\"${xml(o.reason ?: "")}\"/></testcase>")
+                "SKIPPED" -> appendLine("><skipped message=\"${escapeHtml(o.reason ?: "")}\"/></testcase>")
                 else -> {
                     val msg = failureLine(o) ?: o.status
                     appendLine(">")
-                    appendLine("      <failure message=\"${xml(msg.take(200))}\">${xml(msg)}${o.reportDir?.let { "\nreport: $it" } ?: ""}</failure>")
+                    appendLine("      <failure message=\"${escapeHtml(msg.take(200))}\">${escapeHtml(msg)}${o.reportDir?.let { "\nreport: $it" } ?: ""}</failure>")
                     appendLine("    </testcase>")
                 }
             }
