@@ -11,35 +11,35 @@ import java.io.File
 /**
  * `simul report` has two inputs:
  *
- * `simul report --runs <runs/app/date> --out <site/app/date> [--format html|slack] [--acknowledged F]
- *               [--repo-url U [--repo-branch B]] [--site-url U]`
- *   The nightly site (README "나이틀리 운영") from one `simul run --runs` directory: the home page,
- *   one page per scenario and state, yesterday's run and the 7-day strips from the sibling date
- *   directories (see [Site], [SitePages]). `--format slack` prints the Block Kit summary instead.
- *   `--check` exits 1 when any scenario failed. Without `--out` it is only the gate (no site is written).
+ * `simul report [selector]`
+ *   The one people type: replay every committed trace with the screen recorded
+ *   (`simul run --all --mode replay --video --runs .simul/reports/<stamp>`) and write that run's HTML
+ *   report into the same directory: `index.html` (failures first) + a page per scenario with its
+ *   replay.mp4 step timeline (see [SitePages]), plus `run.json` — the batch summary the nightly joins
+ *   with its record phase. A run selector (`--tag smoke`, `--state guest`, a path) narrows it.
+ *
+ * `simul report --runs <dir> [--out <dir>] [--title <app name>] [--check]`
+ *   The same pages from an existing `simul run --runs` directory (in place by default; with `--out`
+ *   the mp4s and thumbnails are copied there). `--check` exits 1 when any scenario failed.
  *
  * `simul report <summary.json>... [--format md|slack|junit] [--title T] [--link Name=URL]... [--out FILE] [--check]`
  *   Joins the batch summaries of a pipeline into one report. The phases are recognised by
- *   mode and order, which is what the record/verify pipeline produces:
+ *   mode and order, which is what the nightly record → verify pipeline produces:
  *
- *     baseline  replay of the committed traces          — did the app change vs. the baseline?
- *     record    `--mode llm` re-recording                — can the agent still perform it?
- *     verify    replay of what `record` just wrote        — is the fresh trace deterministic?
+ *     record    `--mode llm` re-recording of every scenario — can the agent perform it on today's app?
+ *     verify    replay of what `record` just wrote          — is the fresh trace deterministic?
  *
- *   Per scenario the three answers collapse into one verdict (see [VerdictKind]) so a reader
- *   sees "regression" / "screen changed, trace re-recorded" / "flaky trace" instead of three
- *   columns of PASSED/FAILED. A single-phase report (plain CI replay) degrades to pass/fail.
+ *   Per scenario the two answers collapse into one verdict (see [VerdictKind]) so a reader sees
+ *   "regression" / "flaky trace" instead of two columns of PASSED/FAILED. A report without an llm
+ *   phase (plain CI replay) degrades to pass/fail over whatever ran.
  *   Exit code: 0, or 1 with `--check` when any verdict is a failure — the CI gate.
  */
 internal fun reportCommand(args: List<String>, cwd: File): Int {
+    if (args.none { it.endsWith(".json") || it in setOf("--runs", "--format", "--out", "--title", "--link", "--check") }) return replayAndReport(cwd, args)
     var format: String? = null
     var title = "simul report"
     var out: String? = null
     var runs: String? = null
-    var acks: String? = null
-    var repoUrl: String? = null
-    var repoBranch = "main"
-    var siteUrl: String? = null
     var check = false
     val links = mutableListOf<Pair<String, String>>()
     val files = mutableListOf<String>()
@@ -52,10 +52,6 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
             "--title" -> title = args.getOrNull(++i) ?: return err("--title needs a value")
             "--out" -> out = args.getOrNull(++i) ?: return err("--out needs a path")
             "--runs" -> runs = args.getOrNull(++i) ?: return err("--runs needs a directory")
-            "--acknowledged" -> acks = args.getOrNull(++i) ?: return err("--acknowledged needs a file")
-            "--repo-url" -> repoUrl = args.getOrNull(++i)?.trimEnd('/') ?: return err("--repo-url needs a URL")
-            "--repo-branch" -> repoBranch = args.getOrNull(++i) ?: return err("--repo-branch needs a branch name")
-            "--site-url" -> siteUrl = args.getOrNull(++i)?.trimEnd('/') ?: return err("--site-url needs a URL")
             "--check" -> check = true
             "--link" -> {
                 val v = args.getOrNull(++i) ?: return err("--link needs Name=URL")
@@ -67,9 +63,9 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
         }
         i++
     }
-    if (runs != null) return runsReport(cwd, resolvePath(cwd, runs).absoluteFile, format ?: "html", out, acks, repoUrl, repoBranch, siteUrl, title.takeIf { it != "simul report" }, check)
-    if (format == "html") return err("--format html builds the site from a runs directory: simul report --runs runs/<app>/<date> --out site/<app>/<date>")
-    if (files.isEmpty()) return err("nothing to report: give summary.json files (from `simul run --summary`) or --runs <dir>")
+    if (runs != null) return runsReport(cwd, resolvePath(cwd, runs).absoluteFile, format ?: "html", out, title.takeIf { it != "simul report" }, check)
+    if (format == "html") return err("--format html is the report of a runs directory: simul report --runs runs/<date> --out report.html")
+    if (files.isEmpty()) return err("nothing to report: `simul report` alone replays the traces and writes the HTML; or give summary.json files / --runs <dir>")
 
     val summaries = files.map { p ->
         val f = resolvePath(cwd, p)
@@ -93,38 +89,26 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
     return if (check && report.overall == Severity.FAIL) 1 else 0
 }
 
-/** `--runs`: the static site (html) or the Slack summary of one nightly run directory. */
-private fun runsReport(cwd: File, runsDir: File, format: String, out: String?, acks: String?, repoUrl: String?, repoBranch: String, siteUrl: String?, appName: String?, check: Boolean): Int {
+/** `simul report [selector]`: replay the committed traces into a stamped reports directory and write its HTML. */
+private fun replayAndReport(cwd: File, selector: List<String>): Int {
+    val project = SimulProject.find(cwd) ?: return err("no .simul/ directory found from $cwd upwards")
+    val dir = File(project.reportsDir, java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmm")))
+    val rc = runCommand(selector.ifEmpty { listOf("--all") } + listOf("--mode", "replay", "--video", "--runs", dir.path), cwd)
+    val html = File(dir, "index.html")
+    if (!html.isFile) return if (rc == 0) err("no report written under ${dir.relativeToOrSelf(cwd)}") else rc
+    println()
+    println("open ${html.relativeToOrSelf(cwd).path}")
+    return rc
+}
+
+/** `--runs`: the HTML report of one run directory (in place unless `--out` says otherwise). */
+private fun runsReport(cwd: File, runsDir: File, format: String, out: String?, appName: String?, check: Boolean): Int {
     if (!runsDir.isDirectory) return err("runs directory not found: $runsDir")
-    val ackFile = acks?.let { resolvePath(cwd, it) }
-        // the convention of the spec: report-state/<app>/acknowledged.json in the app repo
-        ?: Site.load(runsDir).app?.let { File(cwd, "report-state/$it/acknowledged.json") }?.takeIf { it.isFile }
-    val opts = SitePages.Options(repoUrl = repoUrl, repoBranch = repoBranch, siteUrl = siteUrl, appName = appName)
-    return when (format) {
-        "html" -> {
-            if (out == null && check) {   // the gate alone: `simul report --runs <dir> --check`
-                val run = Site.load(runsDir)
-                val rows = Site.classify(run, Site.earlierRuns(runsDir).firstOrNull()?.let(Site::load), Site.readAcks(ackFile))
-                return if (rows.any { it.kind == Site.Kind.FAILED }) 1 else 0
-            }
-            val outDir = out?.let { resolvePath(cwd, it).absoluteFile } ?: return err("--out <site dir> is required with --runs")
-            val built = SitePages.build(runsDir, outDir, ackFile, opts)
-            val counts = built.rows.groupingBy { it.kind }.eachCount()
-            System.err.println("site: ${built.index.relativeToOrSelf(cwd.absoluteFile).path} (${built.pages.size} pages) — " +
-                Site.Kind.entries.mapNotNull { k -> counts[k]?.let { "${k.label} $it" } }.joinToString(" · "))
-            if (check && (counts[Site.Kind.FAILED] ?: 0) > 0) 1 else 0
-        }
-        "slack" -> {
-            val run = Site.load(runsDir)
-            val yesterday = Site.earlierRuns(runsDir).firstOrNull()?.let(Site::load)
-            val rows = Site.classify(run, yesterday, Site.readAcks(ackFile))
-            val text = SitePages.slack(run, rows, siteUrl?.let { "$it/index.html" }, yesterday?.let { y -> siteUrl?.let { "$it/../${y.date}/index.html" } }, appName)
-            val outFile = out?.let { resolvePath(cwd, it).absoluteFile }
-            if (outFile != null) { outFile.parentFile?.mkdirs(); outFile.writeText(text) } else print(text)
-            if (check && rows.any { it.kind == Site.Kind.FAILED }) 1 else 0
-        }
-        else -> err("--runs supports --format html|slack")
-    }
+    if (format != "html") return err("--runs produces the HTML report only (drop --format)")
+    val outDir = out?.let { resolvePath(cwd, it).absoluteFile } ?: runsDir
+    val built = SitePages.build(runsDir, outDir, SitePages.Options(appName = appName))
+    System.err.println("report: ${built.index.relativeToOrSelf(cwd.absoluteFile).path} (${built.pages.size} pages) — ${built.counts()}")
+    return if (check && built.failed > 0) 1 else 0
 }
 
 // ------------------------------------------------------------------------ model
@@ -135,21 +119,16 @@ enum class Severity { OK, WARN, FAIL }
 enum class VerdictKind(val emoji: String, val severity: Severity, val title: String, val advice: String) {
     CRASH("💥", Severity.FAIL, "harness crash", "the runner died — see the crash log; not an app verdict"),
     REGRESSION("❌", Severity.FAIL, "regression suspected",
-        "neither the committed trace nor a fresh recording completes the scenario — inspect the screenshots before touching the scenario"),
+        "the agent could not complete the scenario on today's app — inspect the record screenshots/agent.jsonl before touching the scenario; the committed trace was left untouched"),
     TRACE_FLAKE("⚠️", Severity.FAIL, "fresh trace does not replay",
         "recorded fine but the replay of that recording failed — evidence is non-deterministic (dynamic label?) or the app is unstable"),
     FAIL("❌", Severity.FAIL, "failed", "replay broke — screen diverged from the committed trace: app regression or a legitimate change needing re-record"),
-    RECORD_FLAKE("⚠️", Severity.WARN, "recording failed, baseline still replays",
-        "the app behaves as committed but the agent could not redo the scenario — check the record log (wording, AMBIGUOUS, timeouts)"),
-    CHANGED("🔁", Severity.WARN, "screen changed — trace re-recorded",
-        "the committed trace broke but a fresh recording replays — review the trace diff and merge it if the change is legitimate"),
-    NEW("🆕", Severity.WARN, "first trace recorded", "no committed trace yet — review and commit the recording"),
     SKIPPED("⏭", Severity.OK, "skipped", "nothing ran"),
     STABLE("✅", Severity.OK, "stable", ""),
     PASS("✅", Severity.OK, "passed", ""),
 }
 
-enum class Role { BASELINE, RECORD, VERIFY, OTHER }
+enum class Role { RECORD, VERIFY, OTHER }
 
 data class Phase(val label: String, val mode: String, val role: Role, val summary: RunSummary) {
     /** Column heading: `record (llm)`. */
@@ -227,17 +206,15 @@ class PipelineReport(
             return PipelineReport(title, phases, rows, links)
         }
 
-        /** baseline = last replay before the (first) llm phase; verify = first replay after it. */
+        /** record = the (first) llm phase; verify = the first replay after it. Anything else is just a column. */
         fun assignRoles(summaries: List<RunSummary>): List<Phase> {
             val recordIdx = summaries.indexOfFirst { it.mode == "llm" }
-            val baselineIdx = if (recordIdx < 0) -1 else (0 until recordIdx).lastOrNull { summaries[it].mode != "llm" } ?: -1
             val verifyIdx = if (recordIdx < 0) -1
                 else (recordIdx + 1 until summaries.size).firstOrNull { summaries[it].mode != "llm" } ?: -1
             val seen = mutableMapOf<String, Int>()
             return summaries.mapIndexed { i, s ->
                 val role = when (i) {
                     recordIdx -> Role.RECORD
-                    baselineIdx -> Role.BASELINE
                     verifyIdx -> Role.VERIFY
                     else -> Role.OTHER
                 }
@@ -258,18 +235,14 @@ class PipelineReport(
                 // no recording phase: plain replay semantics over whatever ran
                 return if (present.any { it.status == "FAILED" }) VerdictKind.FAIL else VerdictKind.PASS
             }
-            val baseline = of(Role.BASELINE)
             val verify = of(Role.VERIFY)
-            val baselinePhase = phases.any { it.role == Role.BASELINE }
             return when {
-                record.status == "FAILED" ->
-                    if (baseline?.status == "PASSED") VerdictKind.RECORD_FLAKE else VerdictKind.REGRESSION
+                // a failed recording leaves the committed trace alone, so verify replays the OLD trace —
+                // whatever that says, the scenario could not be performed on today's app
+                record.status == "FAILED" -> VerdictKind.REGRESSION
                 record.status == "SKIPPED" ->
                     if (present.any { it.status == "FAILED" }) VerdictKind.FAIL else VerdictKind.PASS
                 verify?.status == "FAILED" -> VerdictKind.TRACE_FLAKE
-                !baselinePhase -> VerdictKind.STABLE
-                baseline == null || baseline.status == "SKIPPED" -> VerdictKind.NEW
-                baseline.status == "FAILED" -> VerdictKind.CHANGED
                 else -> VerdictKind.STABLE
             }
         }
@@ -350,7 +323,7 @@ private const val SLACK_NAMES_PER_KIND = 8
 /**
  * Block Kit payload for `chat.postMessage` / an incoming webhook — deliberately short: the
  * channel gets the headline, the counts, and the names of what needs attention; reasons,
- * screenshots and recordings live in the HTML site, which the `--link`s point at.
+ * screenshots and recordings live in the HTML report artifact.
  */
 fun renderSlack(r: PipelineReport): String {
     val blocks = mutableListOf<JsonObject>()

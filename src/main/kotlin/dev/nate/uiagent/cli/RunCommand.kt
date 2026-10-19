@@ -18,7 +18,8 @@ import java.util.Date
  *
  * `--runs <dir>` lays the run out the way the report reads it (README "나이틀리 운영"): one
  * directory per scenario and state, `<dir>/<feature>/<name>.<state>/`, each with its
- * result.json, steps/, layout/, logcat.txt and replay.mp4, plus `<dir>/run.json` for the batch.
+ * result.json, steps/, layout/, logcat.txt and replay.mp4, plus `<dir>/run.json` for the batch and
+ * the HTML report of the run: `<dir>/index.html` + a page per scenario ([SitePages]).
  * Without it every run gets a stamped directory under `.simul/reports/` as before.
  */
 
@@ -143,6 +144,9 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
         runsDir?.let { dir ->
             RunSummaryJson.write(summary, File(dir, "run.json"))
             println("runs: ${shown(dir)} $passedLine")
+            runCatching { SitePages.build(dir, dir) }
+                .onSuccess { println("report: ${shown(it.index)} — ${it.counts()}") }
+                .onFailure { println("warning: report not written: ${it.message}") }
         }
     }
     return if (anyFailed) 1 else 0

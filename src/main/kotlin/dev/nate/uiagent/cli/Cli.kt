@@ -55,10 +55,10 @@ private fun printUsage() {
           simul run <scenario.md>... [--mode replay|llm|auto] [--dry-run] [--url U]
                     [--video]                             record the screen → replay.mp4 with a step timeline
           simul run --tag <tag> | --state <name> | --all [same options]
-                    [--runs <dir>]                        lay the run out for the report: <dir>/<feature>/<name>.<state>/ + run.json
+                    [--runs <dir>]                        <dir>/<feature>/<name>.<state>/ + run.json + index.html (the HTML report)
                     [--summary <file.json> [--label <phase>]]   batch summary for the phase report
-          simul report --runs <runs dir> --out <site dir> [--format html|slack] [--title <app name>]
-                    [--acknowledged F] [--repo-url U [--repo-branch B]] [--site-url U] [--check]   nightly site: home + a page per scenario
+          simul report [--tag T | --state S | <scenario.md>...]   replay the committed traces (recorded) → .simul/reports/<stamp>/index.html (+ run.json)
+          simul report --runs <runs dir> [--out <dir>] [--title <app name>] [--check]   the report pages of an existing run
           simul report <summary.json>... [--format md|slack|junit] [--title T]
                     [--link Name=URL]... [--out FILE] [--check]  join record/verify phases → CI/Slack report
           simul status                        scenarios × trace × last run × states, at a glance
@@ -72,11 +72,9 @@ private fun printUsage() {
           llm             interpret every step from scratch and (re)record the trace
 
         nightly pipeline (wire these into your CI — see the README):
-          simul run --all --mode replay --video --runs runs/<app>/<date> --summary r/baseline.json   # committed traces
-          simul report --runs runs/<app>/<date> --out site/<app>/<date>        # the static site (+ --format slack)
-          simul run --all --mode llm    --summary r/record.json                 # re-record every scenario
-          simul run --all --mode replay --summary r/verify.json                 # replay the fresh traces
-          simul report r/baseline.json r/record.json r/verify.json --format md --check   # trace PR body + gate
+          simul run --all --mode llm    --summary r/record.json                 # re-record every scenario on today's app
+          simul report                                                        # replay the fresh traces → .simul/reports/<stamp>/{index.html,run.json}
+          simul report r/record.json .simul/reports/<stamp>/run.json --format md --check   # trace PR body + gate
         """.trimIndent()
     )
 }

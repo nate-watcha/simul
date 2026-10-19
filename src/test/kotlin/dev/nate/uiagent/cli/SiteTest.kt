@@ -10,11 +10,10 @@ import javax.imageio.ImageIO
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The nightly site from a runs directory: result.json in, classification + pages out. The fixtures
+ * The HTML report pages from a runs directory: result.json in, index + scenario pages out. The fixtures
  * are what `simul run --runs` leaves (ResultJson.write over a ScenarioRunResult), so the writer
  * and the reader are exercised together.
  */
@@ -54,7 +53,6 @@ class SiteTest {
 
     private val screenA = listOf(el("설정", resourceId = "tab_settings", bounds = Bounds(0, 0, 100, 50), center = Point(50, 25)), el(resourceId = "btn_apply", bounds = Bounds(0, 100, 100, 150), center = Point(50, 125), id = 1))
     private val screenB = listOf(el("목록", resourceId = "coupon_list_item", bounds = Bounds(0, 0, 100, 50), center = Point(50, 25)))
-    private val screenBMoved = listOf(el("목록", resourceId = "coupon_list_item", bounds = Bounds(0, 20, 100, 70), center = Point(50, 45)))
     private val screenBNew = screenB + el(resourceId = "price_badge", bounds = Bounds(0, 60, 100, 80), center = Point(50, 70), id = 1)
 
     @Test
@@ -87,69 +85,33 @@ class SiteTest {
         assertEquals("SKIPPED_SETUP", r.status)
         assertEquals("setup failed: deeplink not handled", r.reason)
         assertEquals("auth/login", r.id)
-        val rows = Site.classify(Site.load(File(runs, "2026-10-19")), null)
+        val rows = Site.classify(Site.load(File(runs, "2026-10-19")))
         assertEquals(Site.Kind.SETUP, rows.single().kind)
     }
 
     @Test
-    fun `classification - failed, screen changed vs yesterday, acknowledged but not re-recorded, passed`() {
-        // yesterday
-        scenario("2026-10-18", "billing", "coupon", "member", StepStatus.PASSED, listOf(screenA, screenB))
-        scenario("2026-10-18", "billing", "subscribe", "nosub", StepStatus.PASSED, listOf(screenA, screenB))
-        scenario("2026-10-18", "settings", "notify", null, StepStatus.PASSED, listOf(screenA, screenB))
-        scenario("2026-10-18", "player", "resume", null, StepStatus.PASSED, listOf(screenA, screenB))
-        // today
-        scenario("2026-10-19", "billing", "coupon", "member", StepStatus.FAILED, listOf(screenA, screenB), video = true)
-        scenario("2026-10-19", "billing", "subscribe", "nosub", StepStatus.PASSED, listOf(screenA, screenBNew))   // new resourceId → changed
-        scenario("2026-10-19", "settings", "notify", null, StepStatus.PASSED, listOf(screenA, screenB), traceAt = "2026-10-12") // acked 10/17, trace still 10/12
-        scenario("2026-10-19", "player", "resume", null, StepStatus.PASSED, listOf(screenA, screenBMoved.map { it.copy(bounds = Bounds(0, 4, 100, 54)) })) // moved 4px < threshold → passed
-        val acks = File(root, "acks.json").apply { writeText("""{"settings/notify": {"at": "2026-10-17", "by": "joseph", "layout_hash": "x"}}""") }
-
-        val today = Site.load(File(runs, "2026-10-19"))
-        val rows = Site.classify(today, Site.load(File(runs, "2026-10-18")), Site.readAcks(acks))
-        assertEquals(
-            mapOf("billing/coupon.member" to Site.Kind.FAILED, "billing/subscribe.nosub" to Site.Kind.CHANGED, "settings/notify" to Site.Kind.RERECORD, "player/resume" to Site.Kind.PASSED),
-            rows.associate { it.id to it.kind },
-        )
-        val change = assertNotNull(rows.first { it.id == "billing/subscribe.nosub" }.change)
-        assertEquals(2, change.step)
-        assertEquals(listOf("price_badge"), change.added)
-        // a moved element counts from 8px
-        assertNotNull(LayoutJson.compare(2, LayoutJson.nodes(screenB), LayoutJson.nodes(screenBMoved)))
-        assertNull(LayoutJson.compare(2, LayoutJson.nodes(screenB), LayoutJson.nodes(screenB.map { it.copy(label = "다른 텍스트") })), "text changes are not screen changes")
-
-        // without a yesterday nothing is "changed"; the acknowledgement still holds
-        val fresh = Site.classify(today, null, Site.readAcks(acks))
-        assertEquals(listOf(Site.Kind.FAILED, Site.Kind.PASSED, Site.Kind.PASSED, Site.Kind.RERECORD), fresh.map { it.kind })
-    }
-
-    @Test
-    fun `site - home cards, scenario page with the step timeline, yesterday thumbnails, latest redirect, slack`() {
-        scenario("2026-10-17", "billing", "coupon", "member", StepStatus.PASSED, listOf(screenA, screenB))
-        scenario("2026-10-18", "billing", "coupon", "member", StepStatus.PASSED, listOf(screenA, screenB))
-        scenario("2026-10-18", "billing", "subscribe", "nosub", StepStatus.PASSED, listOf(screenA, screenB))
+    fun `pages - home with failure cards, scenario page with the step timeline, in place or copied`() {
         scenario("2026-10-19", "billing", "coupon", "member", StepStatus.FAILED, listOf(screenA, screenB), video = true)
         scenario("2026-10-19", "billing", "subscribe", "nosub", StepStatus.PASSED, listOf(screenA, screenBNew))
-        File(runs, "2026-10-19/run.json").writeText(RunSummaryJson.toJson(RunSummary("replay", "replay", "2026-10-19T02:10:00+09:00", 38 * 60_000L, "0.2.0", "4.21.0", "sdk", emptyList(), app = "WatchaPlay")).toString())
-        val site = File(root, "site/app/2026-10-19")
+        scenario("2026-10-19", "auth", "login", null, StepStatus.FAILED, emptyList(), setupFailed = true)
+        File(runs, "2026-10-19/run.json").writeText(RunSummaryJson.toJson(RunSummary("verify", "replay", "2026-10-19T02:10:00+09:00", 38 * 60_000L, "0.2.0", "4.21.0", "sdk", emptyList(), app = "WatchaPlay")).toString())
+        val site = File(root, "site/2026-10-19")
 
-        val built = SitePages.build(File(runs, "2026-10-19"), site, opts = SitePages.Options(repoUrl = "https://github.com/org/app"))
+        val built = SitePages.build(File(runs, "2026-10-19"), site)
+        assertEquals("실패 1 · 안 돌림 1 · 통과 1", built.counts())
 
         val home = File(site, "index.html").readText()
-        assertTrue("실패 1" in home && "화면 바뀜 1" in home && "통과 0" in home, home.substringAfter("<header"))
-        assertTrue("10/18 nightly 기준 · 2건" in home)
+        assertTrue("실패 1" in home && "안 돌림 1" in home && "통과 1" in home, home.substringAfter("<header"))
         assertTrue("<article class=\"card fail\">" in home && "2. Tap the &quot;btn2&quot; button" in home && "evidence not on screen: toast" in home)
-        assertTrue("2일 연속 통과 후 첫 실패" in home, "streak from the 7-day history")
-        assertTrue("스텝 2: 새 resourceId 1개: price_badge · 테스트는 통과" in home)
-        assertTrue("billing/subscribe.nosub/yesterday/02.jpg" in home && File(site, "billing/subscribe.nosub/yesterday/02.jpg").isFile, "yesterday's frame of the changed step")
-        assertTrue("https://github.com/org/app/edit/main/report-state/WatchaPlay/acknowledged.json" in home && "issues/new?title=" in home)
-        assertTrue("<span class=name>billing</span>" in home && "마지막 전부 통과 10/18" in home, home.substringAfter("기능별 상태").take(1500))
-        assertTrue("WatchaPlay 4.21.0" in home && "총 소요 38m00s" in home)
+        assertTrue("billing/coupon.member/steps/02.jpg" in home, "the failure card shows the failed step's frame")
+        assertTrue("setup failed: deeplink not handled" in home)
+        assertTrue("<span class=name>billing</span>" in home && "WatchaPlay 4.21.0" in home && "총 소요 38m00s" in home)
+        assertTrue("어제" !in home && "7일" !in home && "acknowledged" !in home, "no history, no site machinery")
 
         val page = File(site, "billing/coupon.member.html")
         assertTrue(page in built.pages)
         val detail = page.readText()
-        assertTrue("<h1>쿠폰을 등록한다</h1>" in detail && "FAILED · 2/2" in detail && "trace 10/14 녹화" in detail)
+        assertTrue("<h1>쿠폰을 등록한다</h1>" in detail && "FAILED · 2/2" in detail)
         assertTrue("<video id=v src=\"coupon.member/replay.mp4\"" in detail && File(site, "billing/coupon.member/replay.mp4").isFile)
         assertTrue("data-step=1 data-video-ms=2500" in detail && "data-step=2 data-video-ms=3500" in detail, "each step knows where it is in the mp4")
         assertTrue("\"videoMs\":3500" in detail, "the player script gets the same timeline")
@@ -157,26 +119,25 @@ class SiteTest {
         assertTrue(":: the &quot;list&quot; item should be shown" in detail, "criterion on its own line")
         assertTrue("+ list<br>+ toast" in detail && "· toast 없음" in detail, "expected vs found")
         assertTrue("CouponRepo: HTTP 422" in detail && "Later: unrelated" !in detail, "logcat ±2s around the failing tap")
-        assertTrue("simul run billing/coupon.md --state member --mode llm" in detail)
-        assertTrue("href=\"../../2026-10-18/billing/coupon.member.html\"" in detail, "yesterday's page")
         assertTrue("href=\"../index.html\"" in detail)
         assertTrue(File(site, "billing/coupon.member/steps/02.jpg").isFile)
         // a page without a recording shows the step frame instead
         assertTrue("<img id=still src=\"subscribe.nosub/steps/01.jpg\"" in File(site, "billing/subscribe.nosub.html").readText())
-        assertTrue("url=2026-10-19/index.html" in File(root, "site/app/index.html").readText())
 
-        val slack = SitePages.slack(Site.load(File(runs, "2026-10-19")), built.rows, "https://x/site")
-        assertTrue("WatchaPlay nightly · 10/19 · 4.21.0" in slack && "*실패 1*  billing/쿠폰을 등록한다  @nate" in slack && "*화면 바뀜 1*" in slack && "통과 0 · 38m00s" in slack, slack)
+        // built inside the run directory (what `simul run --runs` does): the scenario directory is the asset directory, the mp4 is not copied onto itself
+        val inPlace = SitePages.build(File(runs, "2026-10-19"), File(runs, "2026-10-19"))
+        assertTrue(File(runs, "2026-10-19/index.html").isFile && File(runs, "2026-10-19/billing/coupon.member.html").isFile && File(runs, "2026-10-19/billing/coupon.member/steps/02.jpg").isFile)
+        assertEquals(3, inPlace.pages.size)
     }
 
     @Test
-    fun `report command builds the site from --runs and the slack summary, and --check fails on a failure`() {
+    fun `report command writes the pages from --runs, in place by default, and --check fails on a failure`() {
         scenario("2026-10-19", "billing", "coupon", null, StepStatus.FAILED, listOf(screenA, screenB))
-        assertEquals(1, reportCommand(listOf("--runs", "runs/app/2026-10-19", "--out", "site/app/2026-10-19", "--check"), root))
-        assertEquals(1, reportCommand(listOf("--runs", "runs/app/2026-10-19", "--check"), root), "the gate alone, no --out")
-        assertTrue(File(root, "site/app/2026-10-19/billing/coupon.html").isFile)
-        assertEquals(0, reportCommand(listOf("--runs", "runs/app/2026-10-19", "--format", "slack", "--out", "slack.json"), root))
-        assertTrue("실패 1" in File(root, "slack.json").readText())
+        assertEquals(1, reportCommand(listOf("--runs", "runs/app/2026-10-19", "--check"), root))
+        assertTrue(File(root, "runs/app/2026-10-19/index.html").isFile && File(root, "runs/app/2026-10-19/billing/coupon.html").isFile)
+        assertEquals(0, reportCommand(listOf("--runs", "runs/app/2026-10-19", "--out", "site/x"), root))
+        assertTrue(File(root, "site/x/billing/coupon.html").isFile)
+        assertEquals(2, reportCommand(listOf("--runs", "runs/app/2026-10-19", "--format", "slack", "--out", "x.json"), root), "no slack from a runs directory")
         assertEquals(2, reportCommand(listOf("--format", "html", "x.json"), root), "html needs --runs")
     }
 

@@ -26,12 +26,12 @@ import java.util.Date
 /**
  * The batch-level record of one `simul run` invocation (`--summary <file>`): every scenario
  * the batch touched with its outcome, so a CI pipeline can join several runs — the nightly
- * baseline replay, the LLM re-recording, the replay of what was just recorded — into one
+ * LLM re-recording and the replay of what was just recorded — into one
  * report (`simul report`). Per-scenario detail (screenshots, agent.jsonl) stays in the
  * scenario's report dir, which the summary points at.
  */
 data class RunSummary(
-    /** Phase name a report shows as a column, e.g. baseline / record / verify. */
+    /** Phase name a report shows as a column, e.g. record / verify. */
     val label: String,
     /** Requested mode: replay | llm | auto. */
     val mode: String,

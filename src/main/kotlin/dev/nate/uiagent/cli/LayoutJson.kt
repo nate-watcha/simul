@@ -99,36 +99,4 @@ object LayoutJson {
         }
         return md.digest().joinToString("") { "%02x".format(it) }.take(12)
     }
-
-    /** The structural difference of one step's screen between two runs; null when nothing structural moved. */
-    data class ScreenChange(val step: Int, val added: List<String>, val removed: List<String>, val moved: List<String>) {
-        /** `새 resourceId 2개: price_badge, cta_secondary · 사라짐 1개: empty_cta · 이동 4개` */
-        fun summary(): String = listOfNotNull(
-            added.takeIf { it.isNotEmpty() }?.let { "새 resourceId ${it.size}개: ${it.take(4).joinToString(", ")}" },
-            removed.takeIf { it.isNotEmpty() }?.let { "사라짐 ${it.size}개: ${it.take(4).joinToString(", ")}" },
-            moved.takeIf { it.isNotEmpty() }?.let { "이동 ${it.size}개" + if (it.size <= 3) ": ${it.joinToString(", ")}" else "" },
-        ).joinToString(" · ")
-    }
-
-    /**
-     * Compare one step's layout across two runs the way the report classifies "screen changed":
-     * the set of resourceIds differs, or an element with the same (unique) resourceId moved by
-     * [threshold] px or more on any edge. Labels, text and states are ignored.
-     */
-    fun compare(step: Int, before: List<Node>, after: List<Node>, threshold: Int = 8): ScreenChange? {
-        val idsBefore = before.mapNotNull { it.resourceId }.toSet()
-        val idsAfter = after.mapNotNull { it.resourceId }.toSet()
-        val added = (idsAfter - idsBefore).sorted()
-        val removed = (idsBefore - idsAfter).sorted()
-        fun unique(nodes: List<Node>) = nodes.filter { it.resourceId != null }.groupBy { it.resourceId!! }.filterValues { it.size == 1 }.mapValues { it.value.single() }
-        val ub = unique(before)
-        val ua = unique(after)
-        val moved = (ub.keys intersect ua.keys).filter { id ->
-            val a = ub.getValue(id).bounds
-            val b = ua.getValue(id).bounds
-            if (a == null || b == null) ub.getValue(id).center.let { c -> val d = ua.getValue(id).center; kotlin.math.abs(c.x - d.x) >= threshold || kotlin.math.abs(c.y - d.y) >= threshold }
-            else listOf(a.x0 - b.x0, a.y0 - b.y0, a.x1 - b.x1, a.y1 - b.y1).any { kotlin.math.abs(it) >= threshold }
-        }.sorted()
-        return if (added.isEmpty() && removed.isEmpty() && moved.isEmpty()) null else ScreenChange(step, added, removed, moved)
-    }
 }

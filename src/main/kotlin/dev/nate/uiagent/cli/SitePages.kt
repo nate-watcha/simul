@@ -1,64 +1,47 @@
 package dev.nate.uiagent.cli
 
 import dev.nate.uiagent.humanDuration
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.awt.image.BufferedImage
 import java.io.File
-import java.net.URLEncoder
 import javax.imageio.ImageIO
 
 /**
- * Renders a loaded nightly run (see [Site]) as the static site of README "나이틀리 운영" — the three
- * layers the mockups lay out:
+ * Renders a loaded run (see [Site]) as pages — the HTML report of README "나이틀리 운영":
  *
- *  1. Slack: [slack] — one short Block Kit message, failures first, owners mentioned.
- *  2. Home: `index.html` — header with status chips, "what differs from yesterday" (failure,
- *     screen-change and re-record cards), a card per feature with its 7-day strip, the pass line.
- *  3. Scenario detail: `<feature>/<name>.<state>.html` — the md prose, the states, the steps (the
- *     failed one expanded with expected/found evidence, logcat and the re-record command) beside
- *     the replay: a `<video>` of replay.mp4 with a step-coloured progress bar; clicking a step or a
- *     segment seeks the video to that step's `video_ms`. Without a recording the frame shows the
- *     step's screenshot instead.
+ *  1. Home: `index.html` — header with status chips, the failure cards (failed step, reason, screenshot),
+ *     setup failures, a card per feature, the pass line and the full list.
+ *  2. Scenario detail: `<feature>/<name>.<state>.html` — the md prose, the states, the steps (the failed
+ *     one expanded with expected/found evidence and logcat) beside the replay: a `<video>` of replay.mp4
+ *     with a step-coloured progress bar; clicking a step or a segment seeks the video to that step's
+ *     `video_ms`. Without a recording the frame shows the step's screenshot instead.
  *
- * Pages are self-contained apart from their assets, which are copied beside them: `<name>.<state>/
- * replay.mp4` and `steps/NN.jpg` (downscaled screenshots), `yesterday/NN.jpg` for a changed step.
+ * Pages are self-contained apart from their assets beside them: `<name>.<state>/replay.mp4` and
+ * `steps/NN.jpg` (downscaled screenshots). Built inside the run directory itself (`simul run --runs`
+ * does this; the page's asset directory *is* the scenario's directory) nothing is copied but the JPEGs.
  */
 object SitePages {
 
     class Options(
-        /** `https://github.com/org/app` — turns "의도한 변경"/"이슈로 보내기" into links (edit the ack file / new issue). */
-        val repoUrl: String? = null,
         /** What the pages call the app (`--title`); default the package name from run.json. */
         val appName: String? = null,
-        /** The site's own URL (for the Slack buttons). */
-        val siteUrl: String? = null,
-        /** The branch the repo links point at (`--repo-branch`); GitHub's default branch is not always `main`. */
-        val repoBranch: String = "main",
         val thumbWidth: Int = 360,
     )
 
-    class Built(val index: File, val pages: List<File>, val rows: List<Site.Row>)
+    class Built(val index: File, val pages: List<File>, val rows: List<Site.Row>) {
+        val failed get() = rows.count { it.kind == Site.Kind.FAILED }
+        /** `실패 1 · 안 돌림 1 · 통과 7` */
+        fun counts(): String = Site.Kind.entries.mapNotNull { k -> rows.count { it.kind == k }.let { n -> if (n > 0 || k == Site.Kind.PASSED) "${k.label} $n" else null } }.joinToString(" · ")
+    }
 
-    fun build(runDir: File, out: File, acksFile: File? = null, opts: Options = Options()): Built {
-        val today = Site.load(runDir)
-        val earlier = Site.earlierRuns(runDir)
-        val yesterday = earlier.firstOrNull()?.let(Site::load)
-        val rows = Site.classify(today, yesterday, Site.readAcks(acksFile))
-        val history = Site.history(today, rows, earlier)
+    fun build(runDir: File, out: File, opts: Options = Options()): Built {
+        val run = Site.load(runDir)
+        val rows = Site.classify(run)
         out.mkdirs()
-        val pages = rows.map { row -> renderDetail(today, row, rows, history, yesterday, out, opts) }
-        val index = File(out, "index.html").apply { writeText(renderHome(today, rows, history, yesterday, opts)) }
-        // site/<app>/index.html → the latest date
-        if (Site.isDateDir(out)) {
-            out.absoluteFile.parentFile?.let { parent ->
-                val latest = parent.listFiles { f -> Site.isDateDir(f) }?.maxByOrNull { it.name }?.name ?: out.name
-                File(parent, "index.html").writeText(
-                    "<!doctype html><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"0; url=$latest/index.html\"><title>simul</title><a href=\"$latest/index.html\">$latest</a>\n")
-            }
-        }
+        val pages = rows.map { row -> renderDetail(run, row, rows, out, opts) }
+        val index = File(out, "index.html").apply { writeText(renderHome(run, rows, opts)) }
         return Built(index, pages, rows)
     }
 
@@ -76,16 +59,6 @@ object SitePages {
     private fun pageOf(r: ResultJson.Result) = r.id + ".html"
     private fun chip(kind: Site.Kind, text: String = kind.label) = "<span class=\"chip ${kind.cls}\">${esc(text)}</span>"
     private fun avatar(owner: String?) = owner?.let { "<span class=owner><span class=avatar>${esc(it.take(1).uppercase())}</span>${esc(it)}</span>" } ?: ""
-    private fun strip(days: List<Site.Day>, wide: Boolean = false) = buildString {
-        append("<span class=\"strip${if (wide) " wide" else ""}\" title=\"최근 ${days.size}일\">")
-        days.forEach { append("<i class=\"${it.cls}\" title=\"${it.label}\"></i>") }
-        append("</span>")
-    }
-    private fun mdLink(r: ResultJson.Result, opts: Options): String {
-        val path = ".simul/scenarios/${r.file}"
-        return opts.repoUrl?.let { "<a href=\"${attr("$it/blob/${opts.repoBranch}/$path")}\">${esc(r.file)} 보기</a>" } ?: "<span class=dim>${esc(path)}</span>"
-    }
-
     /** Downscale a PNG screenshot to a JPEG of [width] px; false when unreadable. */
     fun writeJpeg(png: File, dest: File, width: Int): Boolean = runCatching {
         val src = ImageIO.read(png) ?: return false
@@ -115,48 +88,30 @@ object SitePages {
     private fun copyVideo(r: ResultJson.Result, out: File): String? {
         val src = r.video?.let { File(r.dir, it.file) }?.takeIf { it.isFile } ?: return null
         val dest = File(out, "${r.id}/replay.mp4")
-        dest.parentFile?.mkdirs()
-        src.copyTo(dest, overwrite = true)
+        if (dest.absoluteFile != src.absoluteFile) {   // built inside the run directory: already there
+            dest.parentFile?.mkdirs()
+            src.copyTo(dest, overwrite = true)
+        }
         return "${r.key}/replay.mp4"
     }
 
-    private fun issueUrl(opts: Options, title: String, body: String): String? = opts.repoUrl?.let {
-        "$it/issues/new?title=${URLEncoder.encode(title, "UTF-8")}&body=${URLEncoder.encode(body, "UTF-8")}"
-    }
-
-    private fun ackSnippet(r: ResultJson.Result, by: String?): String =
-        "\"${r.id}\": {\"at\": \"${r.startedAt.take(10)}\", \"by\": \"${by ?: "me"}\", \"layout_hash\": \"${r.layoutHash}\"}"
-
-    private fun ackBlock(r: ResultJson.Result, run: Site.Run, opts: Options): String {
-        val file = "report-state/${run.app ?: "app"}/acknowledged.json"
-        val edit = opts.repoUrl?.let { "<a class=\"btn primary\" href=\"${attr("$it/edit/${opts.repoBranch}/$file")}\">의도한 변경</a>" }
-            ?: "<span class=\"btn primary\">의도한 변경</span>"
-        return "<details class=ack><summary>$edit</summary><div class=code>$file 에 추가:<br>${esc(ackSnippet(r, r.owner))}</div></details>"
-    }
-
-    private fun rerecordCmd(r: ResultJson.Result) = "simul run ${r.file}${r.state?.let { " --state $it" } ?: ""} --mode llm"
-
     // ------------------------------------------------------------------ home
 
-    fun renderHome(run: Site.Run, rows: List<Site.Row>, history: Site.History, yesterday: Site.Run?, opts: Options): String {
+    fun renderHome(run: Site.Run, rows: List<Site.Row>, opts: Options): String {
         val counts = rows.groupingBy { it.kind }.eachCount()
         val app = opts.appName ?: run.app ?: "app"
         val build = run.results.firstNotNullOfOrNull { it.appVersion } ?: run.summary?.appVersionName
         val failed = rows.filter { it.kind == Site.Kind.FAILED }
-        val changed = rows.filter { it.kind == Site.Kind.CHANGED }
-        val rerecord = rows.filter { it.kind == Site.Kind.RERECORD }
         val setup = rows.filter { it.kind == Site.Kind.SETUP }
         val passed = rows.filter { it.kind == Site.Kind.PASSED }
         val byFeature = rows.groupBy { it.result.feature }
         val features = byFeature.keys.sortedWith(compareBy({ byFeature.getValue(it).minOf { r -> r.kind.ordinal } }, { it }))
         val sb = StringBuilder()
         head(sb, "$app nightly ${run.date}", "")
-        sb.append("<div class=topbar><div class=inner><span class=brand>simul</span><nav class=apps><a class=on href=\"index.html\">${esc(app)}</a></nav><span class=right>")
-        yesterday?.let { sb.append("<a href=\"../${it.date}/index.html\">지난 리포트 ${md(it.date)}</a>") }
-        sb.append("</span></div></div><main>")
+        sb.append("<div class=topbar><div class=inner><span class=brand>simul</span><nav class=apps><a class=on href=\"index.html\">${esc(app)}</a></nav></div></div><main>")
 
         // ---- header
-        sb.append("<header class=home><div><div class=kicker>nightly · ${esc(run.date)} ${esc(hm(run.summary?.startedAt ?: run.results.firstOrNull()?.startedAt))}</div><h1>${esc(app)}${build?.let { " ${esc(it)}" } ?: ""}</h1></div><div class=chips>")
+        sb.append("<header class=home><div><div class=kicker>${esc(run.date)} ${esc(hm(run.summary?.startedAt ?: run.results.firstOrNull()?.startedAt))}</div><h1>${esc(app)}${build?.let { " ${esc(it)}" } ?: ""}</h1></div><div class=chips>")
         for (k in Site.Kind.entries) {
             val n = counts[k] ?: 0
             if (n == 0 && k != Site.Kind.PASSED) continue
@@ -164,33 +119,27 @@ object SitePages {
         }
         sb.append("</div></header>")
 
-        // ---- what differs from yesterday
-        val diffs = failed + changed + rerecord + setup
-        sb.append("<section><div class=sh><h2>어제와 다른 것</h2><span class=dim>")
-        sb.append(if (yesterday != null) "${md(yesterday.date)} nightly 기준 · ${diffs.size}건" else "첫 실행 — 비교할 어제가 없음 · ${diffs.size}건")
-        sb.append("</span></div>")
-        if (diffs.isEmpty()) sb.append("<p class=dim>전부 통과 ${passed.size} — 어제와 같은 구조로 끝까지 재생됨.</p>")
+        // ---- failures
+        val diffs = failed + setup
+        sb.append("<section><div class=sh><h2>실패</h2><span class=dim>${diffs.size}건</span></div>")
+        if (diffs.isEmpty()) sb.append("<p class=dim>전부 통과 ${passed.size} — 끝까지 재생됨.</p>")
         if (failed.isNotEmpty()) {
             sb.append("<div class=\"cards two\">")
-            for (row in failed) failureCard(sb, row, history, opts)
+            for (row in failed) failureCard(sb, row)
             sb.append("</div>")
         }
-        if (changed.isNotEmpty() || rerecord.isNotEmpty() || setup.isNotEmpty()) {
+        if (setup.isNotEmpty()) {
             sb.append("<div class=\"cards three\">")
-            for (row in changed) changeCard(sb, row, run, opts)
-            for (row in rerecord) rerecordCard(sb, row)
             for (row in setup) setupCard(sb, row)
             sb.append("</div>")
         }
         sb.append("</section>")
 
         // ---- per feature
-        sb.append("<section><div class=sh><h2>기능별 상태</h2><span class=dim>${features.size}개 기능 · ${rows.size}개 시나리오 · 최근 7일</span><span class=legend>")
-        for (d in listOf(Site.Day.PASSED, Site.Day.CHANGED, Site.Day.FAILED, Site.Day.NONE)) sb.append("<span><i class=\"${d.cls}\"></i>${d.label}</span>")
-        sb.append("</span></div><div class=\"cards four\">")
+        sb.append("<section><div class=sh><h2>기능별 상태</h2><span class=dim>${features.size}개 기능 · ${rows.size}개 시나리오</span></div><div class=\"cards four\">")
         features.forEachIndexed { i, f ->
             if (i == 8) sb.append("</div><details class=more><summary>나머지 ${features.size - 8}개 기능 펼치기</summary><div class=\"cards four\">")
-            featureCard(sb, f, byFeature.getValue(f), history)
+            featureCard(sb, f, byFeature.getValue(f))
         }
         sb.append("</div>")
         if (features.size > 8) sb.append("</details>")
@@ -198,7 +147,7 @@ object SitePages {
 
         // ---- the pass line + the full list
         val wall = run.summary?.durationMs ?: rows.sumOf { it.result.durationMs }
-        sb.append("<section class=passline><span class=\"chip passed\">통과 ${passed.size}</span><span class=dim>어제와 같은 구조로 끝까지 재생됨</span><span class=right>총 소요 ${esc(humanDuration(wall))} · 에뮬레이터 1대 · <a href=\"#all\">전체 목록</a></span></section>")
+        sb.append("<section class=passline><span class=\"chip passed\">통과 ${passed.size}</span><span class=dim>끝까지 재생됨</span><span class=right>총 소요 ${esc(humanDuration(wall))} · 에뮬레이터 1대 · <a href=\"#all\">전체 목록</a></span></section>")
         sb.append("<details id=all class=all><summary>전체 목록</summary>")
         for (f in features) {
             sb.append("<h3>${esc(f.ifEmpty { "(root)" })}</h3><ul>")
@@ -212,7 +161,7 @@ object SitePages {
         return sb.toString()
     }
 
-    private fun failureCard(sb: StringBuilder, row: Site.Row, history: Site.History, opts: Options) {
+    private fun failureCard(sb: StringBuilder, row: Site.Row) {
         val r = row.result
         val step = r.failedStepOf
         val thumb = step?.n?.let { "${r.id}/steps/${it.toString().padStart(2, '0')}.jpg" }
@@ -222,38 +171,7 @@ object SitePages {
         sb.append("<div class=body><div class=row>${chip(Site.Kind.FAILED, "FAILED")}<span class=dim>${esc(r.feature.ifEmpty { "(root)" })}${r.state?.let { " · ${esc(it)}" } ?: ""}</span></div>")
         sb.append("<div class=title><a href=\"${attr(pageOf(r))}\">${esc(r.title)}</a></div>")
         if (step != null) sb.append("<div class=mono>${step.n}. ${esc(step.text)}<br><span class=reason>${esc(step.reason ?: "failed")}</span></div>")
-        val before = history.of(r.id).dropLast(1).reversed().takeWhile { it == Site.Day.PASSED }.size
-        val note = when {
-            before > 0 -> "${before}일 연속 통과 후 첫 실패"
-            row.yesterday?.failed == true -> "어제도 실패"
-            else -> ""
-        }
-        sb.append("<div class=foot><span>${esc(note)}</span>${avatar(r.owner)}<a class=more href=\"${attr(pageOf(r))}\">상세</a></div></div></article>")
-    }
-
-    private fun changeCard(sb: StringBuilder, row: Site.Row, run: Site.Run, opts: Options) {
-        val r = row.result
-        val c = row.change
-        val n = c?.step?.toString()?.padStart(2, '0')
-        sb.append("<article class=\"card warn\"><div class=row>${chip(Site.Kind.CHANGED)}<span class=dim>${esc(r.feature.ifEmpty { "(root)" })}${r.state?.let { " · ${esc(it)}" } ?: ""}</span></div>")
-        sb.append("<div class=title><a href=\"${attr(pageOf(r))}\">${esc(r.title)}</a></div><div class=pair>")
-        sb.append("<figure><figcaption>어제 <span class=dim>${esc(md(row.yesterday?.startedAt))}</span></figcaption>")
-        if (n != null) sb.append("<img src=\"${attr("${r.id}/yesterday/$n.jpg")}\" alt=\"어제 스텝 ${c.step}\" loading=lazy>")
-        sb.append("</figure><figure><figcaption>오늘 <span class=dim>${esc(md(r.startedAt))}</span></figcaption>")
-        if (n != null) sb.append("<img class=today src=\"${attr("${r.id}/steps/$n.jpg")}\" alt=\"오늘 스텝 ${c.step}\" loading=lazy>")
-        sb.append("</figure></div>")
-        sb.append("<div class=note>스텝 ${c?.step ?: "?"}: ${esc(c?.summary() ?: "")} · 테스트는 통과</div>")
-        sb.append("<div class=btns>${ackBlock(r, run, opts)}")
-        issueUrl(opts, "[simul] ${r.title} 화면 바뀜 (${r.id})", "스텝 ${c?.step}: ${c?.summary()}\n\n${opts.siteUrl ?: ""}/${pageOf(r)}")?.let { sb.append("<a class=btn href=\"${attr(it)}\">이슈로 보내기</a>") }
-        sb.append("</div></article>")
-    }
-
-    private fun rerecordCard(sb: StringBuilder, row: Site.Row) {
-        val r = row.result
-        sb.append("<article class=\"card info\"><div class=row>${chip(Site.Kind.RERECORD)}<span class=dim>${esc(r.feature.ifEmpty { "(root)" })}${r.state?.let { " · ${esc(it)}" } ?: ""}</span></div>")
-        sb.append("<div class=title><a href=\"${attr(pageOf(r))}\">${esc(r.title)}</a></div>")
-        sb.append("<div class=note>${esc(md(row.ack?.at))}에 \"의도한 변경\"으로 표시됐지만 trace가 아직 ${esc(r.traceRecordedAt?.let(::md) ?: "?")} 녹화본입니다. 새 화면 기준으로 다시 녹화해야 다음 회귀를 잡습니다.</div>")
-        sb.append("<div class=code>${esc(rerecordCmd(r))}</div><div class=foot>${avatar(r.owner ?: row.ack?.by)}</div></article>")
+        sb.append("<div class=foot><span class=dim>${esc(hm(r.startedAt))} · ${esc(humanDuration(r.durationMs))}</span>${avatar(r.owner)}<a class=more href=\"${attr(pageOf(r))}\">상세</a></div></div></article>")
     }
 
     private fun setupCard(sb: StringBuilder, row: Site.Row) {
@@ -262,45 +180,33 @@ object SitePages {
         sb.append("<div class=title><a href=\"${attr(pageOf(r))}\">${esc(r.title)}</a></div><div class=note>${esc(r.reason ?: "setup failed")} — 앱 판정이 아니라 환경 문제입니다.</div></article>")
     }
 
-    private fun featureCard(sb: StringBuilder, f: String, rows: List<Site.Row>, history: Site.History) {
+    private fun featureCard(sb: StringBuilder, f: String, rows: List<Site.Row>) {
         val worst = rows.minBy { it.kind.ordinal }.kind
         val n = rows.count { it.kind == worst }
-        val label = when (worst) {
-            Site.Kind.FAILED -> "$n 실패"; Site.Kind.CHANGED -> "화면 바뀜"; Site.Kind.RERECORD -> "재녹화 $n"
-            Site.Kind.SETUP -> "안 돌림 $n"; Site.Kind.PASSED -> "통과"
-        }
-        val ids = rows.map { it.id }
+        val label = when (worst) { Site.Kind.FAILED -> "$n 실패"; Site.Kind.SETUP -> "안 돌림 $n"; Site.Kind.PASSED -> "통과" }
         val states = rows.mapNotNull { it.result.state }.distinct()
-        val lastAllPass = history.dates.reversed().firstOrNull { d -> ids.all { history.days[d]?.get(it) == Site.Day.PASSED } }
         sb.append("<a class=\"card feature ${worst.cls}\" href=\"#all\"><div class=row><span class=name>${esc(f.ifEmpty { "(root)" })}</span>${chip(worst, label)}</div>")
-        sb.append("<div class=dim>${rows.size} 시나리오${if (states.isNotEmpty()) " · ${esc(states.joinToString(" "))}" else ""}</div>")
-        sb.append(strip(history.worst(ids), wide = true))
-        sb.append("<div class=dim>${lastAllPass?.let { "마지막 전부 통과 ${md(it)}" } ?: "최근 7일 전부 통과한 날 없음"}</div></a>")
+        sb.append("<div class=dim>${rows.size} 시나리오${if (states.isNotEmpty()) " · ${esc(states.joinToString(" "))}" else ""}</div></a>")
     }
 
     // ------------------------------------------------------------------ detail
 
-    private fun renderDetail(run: Site.Run, row: Site.Row, all: List<Site.Row>, history: Site.History, yesterday: Site.Run?, out: File, opts: Options): File {
+    private fun renderDetail(run: Site.Run, row: Site.Row, all: List<Site.Row>, out: File, opts: Options): File {
         val r = row.result
         val app = opts.appName ?: run.app ?: "app"
         val thumbs = copyAssets(r, out, opts)
         val video = copyVideo(r, out)
-        row.change?.let { c -> row.yesterday?.let { y ->
-            val prev = y.steps.firstOrNull { it.n == c.step }?.screenshot?.let { File(y.dir, it) }
-            if (prev?.isFile == true) writeJpeg(prev, File(out, "${r.id}/yesterday/${c.step.toString().padStart(2, '0')}.jpg"), opts.thumbWidth)
-        } }
         val u = up(r.feature)
         val executed = r.steps.filter { it.status != "SKIPPED" }
         val passedN = r.steps.count { it.status == "PASSED" }
         val sb = StringBuilder()
         head(sb, r.title, u)
-        sb.append("<div class=topbar><div class=inner><span class=brand>simul</span><nav class=crumbs><a href=\"${u}index.html\">${esc(app)}</a><span>/</span><span>${esc(r.feature.ifEmpty { "(root)" })}</span><span>/</span><b>${esc(r.name)}</b></nav><span class=right>${esc(md(run.date))} nightly</span></div></div><main class=detail>")
+        sb.append("<div class=topbar><div class=inner><span class=brand>simul</span><nav class=crumbs><a href=\"${u}index.html\">${esc(app)}</a><span>/</span><span>${esc(r.feature.ifEmpty { "(root)" })}</span><span>/</span><b>${esc(r.name)}</b></nav><span class=right>${esc(run.date)}</span></div></div><main class=detail>")
 
         // ---- header
         val statusText = when (r.status) { "PASSED" -> "PASSED · $passedN/${r.steps.size}"; "FAILED" -> "FAILED · ${r.failedStep}/${r.steps.size}"; else -> "SETUP · 안 돌림" }
         sb.append("<header><div class=row><h1>${esc(r.title)}</h1>${chip(row.kind, statusText)}")
-        if (row.kind != Site.Kind.FAILED && row.kind != Site.Kind.PASSED) sb.append(chip(row.kind))
-        sb.append("<span class=right>${avatar(r.owner)}${if (r.owner != null) " · " else ""}trace ${esc(r.traceRecordedAt?.let(::md) ?: "없음")} 녹화</span></div>")
+        sb.append("<span class=right>${avatar(r.owner)}${if (r.owner != null) " · " else ""}${esc(hm(r.startedAt))} · ${esc(humanDuration(r.durationMs))}</span></div>")
         if (r.description.isNotEmpty()) sb.append("<p class=desc>${esc(r.description)}</p>")
         sb.append("<div class=row>")
         val siblings = all.filter { it.result.feature == r.feature && it.result.name == r.name }
@@ -309,14 +215,14 @@ object SitePages {
             for (s in siblings) sb.append("<a role=tab aria-selected=\"${s.id == r.id}\" href=\"${attr(u + pageOf(s.result))}\"><i class=\"dot ${s.kind.cls}\"></i>${esc(s.result.state ?: "default")}</a>")
             sb.append("</span>")
         }
-        sb.append("<span class=dim>최근 7일 ${strip(history.of(r.id), wide = true)}</span><span class=right>${mdLink(r, opts)}</span></div></header>")
+        sb.append("<span class=right><span class=dim>${esc(".simul/scenarios/${r.file}")}</span></span></div></header>")
 
         sb.append("<div class=cols><section class=steps><h2>STEPS</h2>")
-        for (s in r.steps) stepRow(sb, r, s, thumbs, opts)
+        for (s in r.steps) stepRow(sb, r, s)
         sb.append("</section>")
 
         // ---- the replay
-        sb.append("<aside class=replay><h2>REPLAY · ${esc(md(r.startedAt))} ${esc(hm(r.startedAt))}</h2><div class=player>")
+        sb.append("<aside class=replay><h2>REPLAY</h2><div class=player>")
         sb.append("<div class=frame>")
         if (video != null) sb.append("<video id=v src=\"${attr(video)}\" preload=metadata playsinline></video>")
         else {
@@ -332,7 +238,6 @@ object SitePages {
         sb.append("</span>")
         if (video != null) sb.append("<span class=time id=time>0:00 / ${clock(r.video?.durationMs ?: 0)}</span>")
         sb.append("</div><div class=dim>${if (video != null) "스텝이나 막대를 클릭하면 영상이 그 스텝으로 이동" else "스텝을 클릭하면 그 스텝의 화면"}</div><div class=btns>")
-        yesterday?.byId?.get(r.id)?.let { sb.append("<a class=btn href=\"${attr("$u../${yesterday.date}/${pageOf(r)}")}\">어제 영상 보기</a>") }
         if (video != null) sb.append("<a class=btn href=\"${attr(video)}\" download>mp4 다운로드</a>")
         sb.append("</div></div></aside></div>")
 
@@ -345,7 +250,7 @@ object SitePages {
         return file
     }
 
-    private fun stepRow(sb: StringBuilder, r: ResultJson.Result, s: ResultJson.Step, thumbs: Map<Int, String>, opts: Options) {
+    private fun stepRow(sb: StringBuilder, r: ResultJson.Result, s: ResultJson.Step) {
         val cls = s.status.lowercase()
         val icon = when (s.status) { "PASSED" -> "✓"; "FAILED" -> "✕"; else -> "–" }
         sb.append("<div class=\"step $cls\" data-step=${s.n}${s.videoMs?.let { " data-video-ms=$it" } ?: ""}><div class=line><span class=icon>$icon</span><div class=text><div class=mono><span class=n>${s.n}.</span> ${esc(s.text)}")
@@ -359,9 +264,9 @@ object SitePages {
         sb.append("</div></div></div>")
         if (s.status == "FAILED") {
             val missing = s.expected - s.found.toSet()
-            sb.append("<div class=fail><div class=cols2><div><h4>기대 (trace ${esc(r.traceRecordedAt?.let(::md) ?: "")})</h4><div class=mono>")
+            sb.append("<div class=fail><div class=cols2><div><h4>기대 (trace)</h4><div class=mono>")
             sb.append(if (s.expected.isEmpty()) "<span class=dim>evidence 없음</span>" else s.expected.joinToString("<br>") { "+ ${esc(it)}" })
-            sb.append("</div></div><div><h4>실제 (오늘)</h4><div class=mono>")
+            sb.append("</div></div><div><h4>실제</h4><div class=mono>")
             val actual = s.found.map { "+ ${esc(it)}" } + missing.map { "<span class=miss>· ${esc(it)} 없음</span>" } +
                 s.screen.take(6).map { "<span class=dim>· ${esc(it)}</span>" }
             sb.append(if (actual.isEmpty()) "<span class=dim>-</span>" else actual.joinToString("<br>"))
@@ -370,9 +275,7 @@ object SitePages {
             val at = r.startedAtMs + (s.actions.lastOrNull()?.atMs ?: s.startedMs)
             val lines = Site.logcatWindow(File(r.dir, "logcat.txt"), at - 2000, at + 2000)
             if (lines.isNotEmpty()) sb.append("<h4>logcat (탭 전후 2초)</h4><pre class=log>${esc(lines.joinToString("\n") { it.replaceFirst(Regex("^\\d+\\.\\d+\\s+\\d+\\s+\\d+\\s+"), "") })}</pre>")
-            sb.append("<div class=actions><span class=dim>의도한 변경이면</span><code>${esc(rerecordCmd(r))}</code>")
-            issueUrl(opts, "[simul] ${r.title} 실패 — 스텝 ${s.n}", "${s.n}. ${s.text}\n${s.reason}\n\n${opts.siteUrl ?: ""}/${pageOf(r)}")?.let { sb.append("<a class=btn href=\"${attr(it)}\">이슈 만들기</a>") }
-            sb.append("</div></div>")
+            sb.append("</div>")
         }
         sb.append("</div>")
     }
@@ -390,39 +293,6 @@ object SitePages {
             })
         }
     }.toString()
-
-    // ------------------------------------------------------------------ slack
-
-    /** Layer 1: the Block Kit payload for an incoming webhook — failures first, owners mentioned, one line per kind. */
-    fun slack(run: Site.Run, rows: List<Site.Row>, siteUrl: String?, yesterdayUrl: String? = null, appName: String? = null): String {
-        val app = appName ?: run.app ?: "app"
-        val build = run.results.firstNotNullOfOrNull { it.appVersion } ?: run.summary?.appVersionName
-        val failed = rows.filter { it.kind == Site.Kind.FAILED }
-        val changed = rows.filter { it.kind == Site.Kind.CHANGED }
-        val rerecord = rows.filter { it.kind == Site.Kind.RERECORD }
-        val passed = rows.count { it.kind == Site.Kind.PASSED }
-        val wall = run.summary?.durationMs ?: rows.sumOf { it.result.durationMs }
-        fun names(rs: List<Site.Row>) = rs.joinToString(" · ") { "${it.result.feature}/${it.result.title}".trimStart('/') }
-        fun owners(rs: List<Site.Row>) = rs.mapNotNull { it.result.owner ?: it.ack?.by }.distinct().joinToString(" ") { "@$it" }
-        val lines = mutableListOf<String>()
-        if (failed.isNotEmpty()) lines += "*실패 ${failed.size}*  ${names(failed)}  ${owners(failed)}".trimEnd()
-        if (changed.isNotEmpty()) lines += "*화면 바뀜 ${changed.size}*  ${names(changed)}  ← 디자인 확인"
-        if (rerecord.isNotEmpty()) lines += "*재녹화 필요 ${rerecord.size}*  ${names(rerecord)}  ${owners(rerecord)}".trimEnd()
-        lines += if (lines.isEmpty()) "전부 통과 $passed · ${humanDuration(wall)} · 에뮬레이터 1대" else "통과 $passed · ${humanDuration(wall)} · 에뮬레이터 1대"
-        val title = "$app nightly · ${md(run.date)}${build?.let { " · $it" } ?: ""}"
-        val blocks = mutableListOf<JsonObject>()
-        blocks += buildJsonObject { put("type", "header"); put("text", buildJsonObject { put("type", "plain_text"); put("text", title.take(150)) }) }
-        blocks += buildJsonObject { put("type", "section"); put("text", buildJsonObject { put("type", "mrkdwn"); put("text", lines.joinToString("\n").take(2900)) }) }
-        val buttons = listOfNotNull(siteUrl?.let { "리포트 보기" to it }, yesterdayUrl?.let { "어제와 비교" to it })
-        if (buttons.isNotEmpty()) blocks += buildJsonObject {
-            put("type", "actions")
-            put("elements", buildJsonArray { buttons.forEach { (t, u) -> add(buildJsonObject { put("type", "button"); put("text", buildJsonObject { put("type", "plain_text"); put("text", t) }); put("url", u) }) } })
-        }
-        return buildJsonObject {
-            put("text", "$title — ${lines.first()}")
-            put("blocks", buildJsonArray { blocks.forEach { add(it) } })
-        }.toString() + "\n"
-    }
 
     // ------------------------------------------------------------------ page chrome
 
@@ -478,7 +348,6 @@ object SitePages {
         .pair{display:flex;gap:10px}.pair figure{flex:1;margin:0;display:flex;flex-direction:column;gap:4px;align-items:center;font-size:12px;color:var(--dim)}.pair img{width:100%;border-radius:8px;border:1px solid var(--line2)}.pair img.today{border:2px solid var(--warn)}
         .note{font-size:13px}.card .code,.code{background:var(--code);padding:8px 10px;border-radius:6px;line-height:1.5;word-break:break-all}
         .btns{display:flex;gap:8px;flex-wrap:wrap}.btn{flex:1;text-align:center;padding:7px 10px;border-radius:6px;border:1px solid #C9C9C3;background:var(--card);color:var(--fg);font-size:13px;text-decoration:none;cursor:pointer;white-space:nowrap}.btn.primary{border-color:var(--fg);background:var(--fg);color:#fff;font-weight:500}
-        details.ack{flex:1}details.ack summary{list-style:none;cursor:pointer;display:flex}details.ack summary::-webkit-details-marker{display:none}details.ack .code{margin-top:8px;font-size:11px}
         .card.feature{text-decoration:none;gap:8px;padding:14px}.card.feature .name{font-weight:600;font-size:15px}.card.feature .row{justify-content:space-between}
         details.more{margin-top:12px}details.more summary,details.all summary{cursor:pointer;color:var(--dim);font-size:13px}details.more>summary{margin-bottom:12px}
         .passline{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
