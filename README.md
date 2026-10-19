@@ -43,8 +43,7 @@ simul "Tap the \"웹툰\" tab"     # ad-hoc 단일 커맨드 (규약 없이 동�
 ### 나이틀리 운영 (baseline → record → verify → report)
 
 PR 게이트는 replay만 돌리고(LLM 0회, `simul run --all`) 끝이다. 나이틀리는 세 번 돌고 두 가지로 묶는다:
-baseline replay의 결과로 **정적 사이트와 Slack**(모두가 보는 리포트, 스펙 `docs/report/SPEC.md`, 레이아웃 기준
-`docs/report/mockups/`)을 만들고, record → verify의 결과로 **trace PR과 md 리포트**를 만든다.
+baseline replay의 결과로 **정적 사이트와 Slack**(모두가 보는 리포트 — 구조와 분류 규칙은 아래)을 만들고, record → verify의 결과로 **trace PR과 md 리포트**를 만든다.
 워크플로 파일은 **앱 레포가 가진다** — 이 레포는 커맨드만 제공하고, 조립 순서는 이것이다:
 
 ```bash
@@ -81,7 +80,7 @@ runs/<app>/<YYYY-MM-DD>/
     replay.mp4                  # 화면 녹화 (--video)
 ```
 
-`result.json`은 SPEC의 스키마에 몇 가지를 더한다: `title`/`owner`(md frontmatter), `trace_recorded_at`(trace 파일의
+`result.json`에는 `title`/`owner`(md frontmatter), `trace_recorded_at`(trace 파일의
 마지막 커밋 날짜, 수정 중이면 mtime), `layout_hash`(스텝별 resourceId·bounds 지문), `started_at_ms`,
 스텝마다 `started_ms`·`video_ms`·`actions[{tool,target,at_ms,video_ms}]`·`evidence_expected`/`evidence_found`·
 `screenshot`·`layout`. `video_ms`는 replay.mp4 안의 위치다 — screenrecord는 시작이 늦고 끝은 정확하므로 mp4의 t=0을
@@ -114,7 +113,7 @@ replay는 액션마다 전후 스크린샷을 찍지 않는다(스텝 끝 프레
 |---|---|---|---|---|
 | ✅ | ✅ | ✅ | ✅ stable | |
 | ❌ | ✅ | ✅ | 🔁 changed | 화면이 바뀌었고 새 녹화는 재생됨 → 재녹화 trace PR 리뷰·머지 |
-| ❌ | ❌ | – | ❌ regression | 커밋 trace도 새 녹화도 실패 → 앱 회귀 의심, baseline gif/스크린샷부터 |
+| ❌ | ❌ | – | ❌ regression | 커밋 trace도 새 녹화도 실패 → 앱 회귀 의심, baseline replay.mp4/스크린샷부터 |
 | ✅ | ❌ | – | ⚠️ record flake | 앱은 커밋대로인데 에이전트가 못 함 → record 로그(문구·AMBIGUOUS) |
 | – | ✅ | ❌ | ⚠️ trace flake | 녹화는 됐는데 재생 불가 → 비결정 evidence(동적 라벨) |
 | ⏭ | ✅ | ✅ | 🆕 new | 첫 녹화 → 커밋 |

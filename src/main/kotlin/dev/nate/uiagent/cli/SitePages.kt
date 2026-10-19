@@ -11,7 +11,7 @@ import java.net.URLEncoder
 import javax.imageio.ImageIO
 
 /**
- * Renders a loaded nightly run (see [Site]) as the static site of docs/report/SPEC.md — the three
+ * Renders a loaded nightly run (see [Site]) as the static site of README "나이틀리 운영" — the three
  * layers the mockups lay out:
  *
  *  1. Slack: [slack] — one short Block Kit message, failures first, owners mentioned.

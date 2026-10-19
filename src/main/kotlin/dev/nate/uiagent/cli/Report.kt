@@ -13,7 +13,7 @@ import java.io.File
  *
  * `simul report --runs <runs/app/date> --out <site/app/date> [--format html|slack] [--acknowledged F]
  *               [--repo-url U [--repo-branch B]] [--site-url U]`
- *   The nightly site of docs/report/SPEC.md from one `simul run --runs` directory: the home page,
+ *   The nightly site (README "나이틀리 운영") from one `simul run --runs` directory: the home page,
  *   one page per scenario and state, yesterday's run and the 7-day strips from the sibling date
  *   directories (see [Site], [SitePages]). `--format slack` prints the Block Kit summary instead.
  *   `--check` exits 1 when any scenario failed. Without `--out` it is only the gate (no site is written).

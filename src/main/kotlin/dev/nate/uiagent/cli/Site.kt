@@ -7,7 +7,7 @@ import kotlinx.serialization.json.jsonObject
 import java.io.File
 
 /**
- * The nightly report as a static site (docs/report/SPEC.md): what the report builder reads from a
+ * The nightly report as a static site (README "나이틀리 운영"): what the report builder reads from a
  * runs directory and how it classifies each scenario. Rendering lives in SitePages.kt.
  *
  * ```

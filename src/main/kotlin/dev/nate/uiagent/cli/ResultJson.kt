@@ -21,7 +21,7 @@ import kotlinx.serialization.json.put
 import java.io.File
 
 /**
- * `result.json` — one scenario run, in the report's own schema (docs/report/SPEC.md). It sits in
+ * `result.json` — one scenario run, in the report's own schema (README "나이틀리 운영"). It sits in
  * the run's report dir next to what it indexes:
  *
  * ```

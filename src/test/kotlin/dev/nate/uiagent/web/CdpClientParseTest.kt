@@ -9,7 +9,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** Fixtures below are captured from a real emulator during the M0 spike (docs/webview-spike.md). */
+/** Fixtures below are captured from a real emulator during the M0 spike. */
 class CdpClientParseTest {
 
     private val procNetUnix = """

@@ -16,7 +16,7 @@ import java.util.Date
  * CI invariant: CI only replays. The default mode is auto — replay when a trace exists, SKIP with
  * a warning when it doesn't; the LLM interprets full scenarios only under an explicit `--mode llm`.
  *
- * `--runs <dir>` lays the run out the way the report reads it (docs/report/SPEC.md): one
+ * `--runs <dir>` lays the run out the way the report reads it (README "나이틀리 운영"): one
  * directory per scenario and state, `<dir>/<feature>/<name>.<state>/`, each with its
  * result.json, steps/, layout/, logcat.txt and replay.mp4, plus `<dir>/run.json` for the batch.
  * Without it every run gets a stamped directory under `.simul/reports/` as before.
@@ -53,7 +53,6 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
             "--runs" -> runsPath = args.getOrNull(++i) ?: return err("--runs needs a directory")
             "--label" -> label = args.getOrNull(++i) ?: return err("--label needs a value")
             "--video" -> video = true
-            "--gif" -> return err("--gif is gone: the recording is replay.mp4 with a step timeline (use --video)")
             else -> if (a.startsWith("--")) return err("unknown option $a") else paths += a
         }
         i++
