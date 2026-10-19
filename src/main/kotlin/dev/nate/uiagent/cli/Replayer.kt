@@ -15,10 +15,11 @@ import dev.nate.uiagent.device.syntheticHandle
  * replay IS the test result; a human decides between re-recording and fixing the app).
  *
  * Replay runs with [DeviceController.fastObserve] on (single-dump observations), so a
- * grounding/evidence miss may just mean the fast observation caught a mid-transition frame.
- * Every failure is therefore retried once after an explicit stabilized re-observation; only a
- * failure against a settled screen is Broken. This keeps the verdict identical to the
- * fully-stabilized behavior while halving `android layout` calls on the happy path.
+ * grounding/evidence miss may just mean the fast observation caught a mid-transition frame
+ * or a screen still loading. Replay knows what it is waiting for — the action's target, the
+ * step's evidence — so a miss polls with [DeviceController.waitUntil] for exactly that and
+ * continues on the first frame that has it; only a miss that outlasts the poll budget is
+ * Broken. No "two identical frames" settle anywhere on the replay path.
  */
 class Replayer(
     private val controller: DeviceController,
@@ -52,9 +53,9 @@ class Replayer(
 
         var missing = missingNow()
         if (missing.isNotEmpty()) {
-            // fast observation may predate the evidence appearing — settle and recheck
-            log("  evidence not on the fast frame (${missing.joinToString(", ")}) — re-observing until stable…")
-            controller.restabilize()
+            // fast observation may predate the evidence appearing — poll until it does
+            log("  evidence not on the fast frame (${missing.joinToString(", ")}) — waiting for it…")
+            controller.waitUntil { missingNow().isEmpty() }
             missing = missingNow()
         }
         if (missing.isNotEmpty()) {
@@ -67,12 +68,24 @@ class Replayer(
         var broken = replayActionOnce(index, action, coordUpdates)
         if (broken != null) {
             // Guard failures never moved the device, so a retry is safe; the screen may just
-            // not have settled when the fast observation was taken.
-            log("  action ${index + 1} (${action.tool}) missed on the fast frame — re-observing until stable…")
-            controller.restabilize()
+            // not have shown the action's target yet when the fast observation was taken.
+            log("  action ${index + 1} (${action.tool}) missed on the fast frame — waiting for its target…")
+            controller.waitUntil { precondition(action) }
             broken = replayActionOnce(index, action, coordUpdates)
         }
         return broken
+    }
+
+    /**
+     * What the current screen must show for [action] to proceed past its guards — the
+     * condition the retry polls for. Tools without a target (back, waitForChange) have none,
+     * so their retry happens after a single re-observation.
+     */
+    private fun precondition(action: TraceAction): Boolean = when (action.tool) {
+        "tap", "type" -> action.target?.let { ground(it) } != null
+        "scroll", "scrollToFind" ->
+            controller.resolve(action.args["scrollable"] ?: "") is Resolution.Match
+        else -> true
     }
 
     private fun replayActionOnce(index: Int, action: TraceAction, coordUpdates: MutableMap<Int, Point>): Broken? {

@@ -127,8 +127,8 @@ record가 다시 쓴 `.simul/scenarios/**/*.trace.json`은 워크플로가 PR로
 - **모델은 웹/네이티브를 구분하지 않는다** — 관찰 병합·좌표 변환은 전부 harness가 흡수
 - **replay는 LLM 0회 (예외 없음)** — resourceId→label→좌표 재grounding + evidence(따옴표 라벨 +
   신규 노드 resourceId 시그니처 + selected/checked 상태) 판정. 깨진 스텝은 FAILED — 화면이 실제로
-  바뀐 것이므로 재녹화(--mode llm)냐 앱 수정이냐는 사람이 결정. fastObserve(단일 관찰 +
-  실패 시에만 재안정화)로 스텝당 ~3.5s
+  바뀐 것이므로 재녹화(--mode llm)냐 앱 수정이냐는 사람이 결정. fastObserve(단일 관찰 + 미스 시
+  target/evidence가 보일 때까지 폴링 — settle 확인 없음)로 액션당 관찰 1회
 - 트레이스는 결정론 직렬화(고정 키 순서, 휘발값 배제) — 같은 실행 2회면 diff 없음
 - **display 프로필 강제** — config의 `display:`(sizeClass `small|medium|large` — 대상 앱 디자인
   시스템(경계 600/800dp) 정렬 — 또는 size+density 명시)를

@@ -27,9 +27,9 @@ class DeviceController(
     /**
      * Single-dump observations: skip the "two identical consecutive observations" settle
      * confirmation, saving one ~1s `android layout` per action. Only the replay happy path
-     * turns this on — an observation may then catch a mid-transition frame, so replay retries
-     * failures once after an explicit [restabilize]. LLM mode keeps full stabilization (diff
-     * quality depends on it).
+     * turns this on — an observation may then catch a mid-transition frame, so replay polls
+     * with [waitUntil] for the screen it expects (target groundable, evidence present) before
+     * declaring a failure. LLM mode keeps full stabilization (diff quality depends on it).
      */
     var fastObserve: Boolean = false
 
@@ -302,19 +302,30 @@ class DeviceController(
     }
 
     /**
-     * Force a fully stabilized re-observation and advance the grounding, regardless of
-     * [fastObserve]. The replay retry path: when a fast observation grounded nothing, the
-     * screen may simply not have settled yet.
+     * Re-observe (single dumps, [settleIntervalMs] apart, at most [maxSettlePolls]) until
+     * [condition] holds on the current screen, advancing the grounding with every poll. The
+     * replay wait: replay knows what the next screen must contain (the target to ground, the
+     * step's evidence), so it continues on the first frame that has it instead of paying for
+     * a "two identical frames" settle — and a slow load that never settles within the dump's
+     * own idle window still passes as soon as the content lands. Returns whether the condition
+     * held before the budget ran out; the grounding is the last frame either way.
      */
-    fun restabilize() {
-        val was = fastObserve
-        fastObserve = false
-        try {
-            grounding = stabilize()
-        } finally {
-            fastObserve = was
+    fun waitUntil(condition: (List<LogicalElement>) -> Boolean): Boolean {
+        var polls = 0
+        var met = false
+        while (polls < maxSettlePolls && !met) {
+            device.sleep(settleIntervalMs)
+            polls++
+            val now = device.observe()
+            grounding = now
+            met = condition(now.elements)
         }
-        trace.event("restabilize") { it["elements"] = (grounding?.elements?.size ?: 0).toString() }
+        trace.event("waitUntil") {
+            it["polls"] = polls.toString()
+            it["met"] = met.toString()
+            it["elements"] = (grounding?.elements?.size ?: 0).toString()
+        }
+        return met
     }
 
     /** The layout() tool: same as [fullLayout] but recorded as a tool call in the trace. */

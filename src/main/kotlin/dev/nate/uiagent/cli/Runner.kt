@@ -251,10 +251,10 @@ class ScenarioRunner(
         }
         var judgment = judgeVerify(text, controller.currentElements) ?: return null
         if (!judgment.passed) {
-            // the previous action settled, but async content may have landed after it — settle
-            // once more before declaring the anchor missing (mirrors the Replayer's retry)
-            log("  verify missed (${judgment.reason}) — re-observing until stable…")
-            controller.restabilize()
+            // the previous action settled, but async content may land after it — poll for the
+            // anchor before declaring it missing (mirrors the Replayer's evidence wait)
+            log("  verify missed (${judgment.reason}) — waiting for it…")
+            controller.waitUntil { judgeVerify(text, it)?.passed == true }
             judgment = judgeVerify(text, controller.currentElements) ?: return null
         }
         val els = controller.currentElements

@@ -13,8 +13,8 @@ import kotlin.test.assertTrue
 
 /**
  * Replay with [DeviceController.fastObserve]: single-dump observations on the happy path,
- * with a stabilized re-observation + retry on every failure so the verdict stays identical
- * to fully-stabilized replay.
+ * and on a miss a poll for the screen replay expects (target groundable / evidence present)
+ * that continues on the first frame that has it — no "two identical frames" settle.
  */
 class FastReplayTest {
 
@@ -44,31 +44,44 @@ class FastReplayTest {
     }
 
     @Test
-    fun `evidence missing on the fast frame recovers via restabilize`() {
-        // post-tap fast observation catches a mid-transition frame without the evidence;
-        // the stabilized recheck (2 identical observations) sees the final screen
+    fun `evidence missing on the fast frame is polled for and taken on the first frame that has it`() {
+        // post-tap fast observation catches a loading screen; the next poll has the evidence
         val midTransition = layout(tab)
-        val dev = FakeDevice(home, midTransition, webtoonHome, webtoonHome)
+        val dev = FakeDevice(home, midTransition, webtoonHome)
         val c = fastController(dev)
         c.fullLayout()
         val r = Replayer(c).replayStep(tapStep)
 
-        assertNull(r.broken, "evidence must be rechecked on a settled screen: ${r.broken}")
-        assertEquals(4, dev.observeCount)
+        assertNull(r.broken, "evidence must be polled for: ${r.broken}")
+        assertEquals(3, dev.observeCount) // initial + post-tap fast + one poll
     }
 
     @Test
-    fun `grounding failure on the fast frame recovers via restabilize`() {
+    fun `a slow load that holds a stable loading screen is not given up on`() {
+        // a settle-based recheck would stop at the second identical loading frame and fail;
+        // polling for the evidence keeps going until it lands (within the poll budget)
+        val loading = layout(tab, el("로딩중", id = 1, center = Point(1, 1)))
+        val dev = FakeDevice(home, loading, loading, loading, webtoonHome)
+        val c = fastController(dev)
+        c.fullLayout()
+        val r = Replayer(c).replayStep(tapStep)
+
+        assertNull(r.broken, "must wait through a stable loading screen: ${r.broken}")
+        assertEquals(5, dev.observeCount)
+    }
+
+    @Test
+    fun `grounding failure on the fast frame waits for the target`() {
         // scenario start observes a mid-transition frame where the target is not yet present
         val midTransition = layout(el("로딩중", id = 5, center = Point(1, 1)))
-        val dev = FakeDevice(midTransition, home, home, webtoonHome)
+        val dev = FakeDevice(midTransition, home, webtoonHome)
         val c = fastController(dev)
         c.fullLayout() // fast: sees the frame without the target
         val r = Replayer(c).replayStep(tapStep)
 
-        assertNull(r.broken, "grounding must retry on a settled screen: ${r.broken}")
+        assertNull(r.broken, "grounding must poll for the target: ${r.broken}")
         assertEquals(listOf("tap 360 1176"), dev.gestures)
-        assertEquals(4, dev.observeCount) // fast(1) + restabilize(2) + post-tap fast(1)
+        assertEquals(3, dev.observeCount) // fast(1) + poll(1) + post-tap fast(1)
     }
 
     @Test
@@ -85,7 +98,7 @@ class FastReplayTest {
 
         val broken = assertNotNull(r.broken)
         assertEquals(0, broken.atAction)
-        assertTrue(dev.observeCount >= 3, "must have restabilized before giving up (n=${dev.observeCount})")
+        assertTrue(dev.observeCount >= 3, "must have polled before giving up (n=${dev.observeCount})")
         assertTrue(dev.gestures.isEmpty())
     }
 
