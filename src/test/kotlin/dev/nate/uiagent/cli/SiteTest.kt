@@ -124,6 +124,22 @@ class SiteTest {
         // a page without a recording shows the step frame instead
         assertTrue("<img id=still src=\"subscribe.nosub/steps/01.jpg\"" in File(site, "billing/subscribe.nosub.html").readText())
 
+        // the LLM re-recording that preceded the replay: a failed recording is a failure even though the committed trace replays
+        val rec = RunSummary("record", "llm", "2026-10-19T01:00:00+09:00", 20 * 60_000L, "0.2.0", "4.21.0", "sdk", listOf(
+            ScenarioOutcome("coupon@member", "billing/coupon.md", emptyList(), "PASSED", "llm", 60_000, "r1", true, 2, 0, 0, null, null),
+            ScenarioOutcome("subscribe@nosub", "billing/subscribe.md", emptyList(), "FAILED", "llm", 5_000, "r2", false, 1, 1, 0,
+                FailedStep(2, "Tap the \"구독\" button", "agent error: Error from client: OpenAILLMClient Status code: 500", null), null),
+        ), app = "WatchaPlay")
+        File(runs, "2026-10-19/record.json").writeText(RunSummaryJson.toJson(rec).toString())
+        val withRecord = SitePages.build(File(runs, "2026-10-19"), File(root, "site2"))
+        assertEquals("실패 2 (녹화 실패 1) · 안 돌림 1 · 통과 0", withRecord.counts())
+        val home2 = File(root, "site2/index.html").readText()
+        assertTrue("녹화 실패 1</span>" in home2 && "LLM 녹화: step 2 `Tap the &quot;구독&quot; button` — agent error: Error from client: OpenAILLMClient Status code: 500" in home2, home2.substringAfter("<header"))
+        assertTrue("1/2 녹화됨" in home2)
+        val sub2 = File(root, "site2/billing/subscribe.nosub.html").readText()
+        assertTrue("녹화 실패</span>" in sub2 && "trace는 커밋본 그대로, 아래는 그 재생" in sub2)
+        assertTrue("LLM 녹화: PASSED" in File(root, "site2/billing/coupon.member.html").readText())
+
         // built inside the run directory (what `simul run --runs` does): the scenario directory is the asset directory, the mp4 is not copied onto itself
         val inPlace = SitePages.build(File(runs, "2026-10-19"), File(runs, "2026-10-19"))
         assertTrue(File(runs, "2026-10-19/index.html").isFile && File(runs, "2026-10-19/billing/coupon.member.html").isFile && File(runs, "2026-10-19/billing/coupon.member/steps/02.jpg").isFile)

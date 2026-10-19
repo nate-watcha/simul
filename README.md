@@ -26,25 +26,22 @@ simul "Tap the \"웹툰\" tab"     # ad-hoc 단일 커맨드 (규약 없이 동�
 
 그 외 커맨드는 나이틀리(아래) 전용이다. 종료 코드: 전부 PASSED=0, 실패=1.
 
-### 나이틀리 운영 (record → report)
+### 나이틀리 운영
 
-나이틀리는 **그날의 앱을 기준으로 두 번** 돈다. 먼저 LLM이 전 시나리오를 다시 녹화하고(record — 산출물은 trace뿐),
-`simul report`가 방금 녹화한 trace를 LLM 없이 replay하면서(그래서 훨씬 빠르다) **HTML 리포트**(모두가 보는 결과물 — 구조는 아래)를 쓴다.
-**trace PR 본문(md)·junit·게이트**는 record의 요약 JSON과 그 리포트 디렉토리의 `run.json`에서 나온다. 어제 trace를 다시 재생하는 단계는 없다.
-PR 게이트가 필요하면 `simul report` 하나를 돌리고 종료 코드를 본다.
-워크플로 파일은 **앱 레포가 가진다** — 이 레포는 커맨드만 제공하고, 조립 순서는 이것이다:
+나이틀리는 `simul report` 한 줄이다. LLM이 전 시나리오를 다시 녹화하고(산출물은 trace), 그 trace를 LLM 없이 replay하면서(그래서 빠르다)
+**HTML 리포트**를 쓴다. 녹화가 실패한 시나리오(에이전트가 오늘 앱에서 못 했거나 LLM 게이트웨이 오류)는 커밋된 trace가 재생되더라도
+리포트에 **실패**로 올라온다. 워크플로 파일은 **앱 레포가 가진다** — 이 레포는 커맨드만 제공하고, 조립 순서는 이것이다:
 
 ```bash
-APP=com.example; D=$(date +%F); R=.simul/reports/nightly; rm -rf $R; mkdir -p $R
-simul run --all --mode llm --summary $R/record.json --label record   # 전 시나리오 재녹화 (LLM 키 필요)
-simul report                                                        # 방금 녹화한 trace 재생(+녹화) → .simul/reports/<stamp>/ (index.html + run.json) — 이 디렉토리가 아티팩트
+simul report                                   # 녹화 → 재생 → .simul/reports/<stamp>/ (index.html + record.json + run.json) — 이 디렉토리가 아티팩트
 V=$(ls -d .simul/reports/[0-9]*/ | sort | tail -1)
-
-J="$R/record.json $V/run.json"        # 없는 파일은 빼도 된다 — 있는 phase만으로 판정
-simul report $J --title "simul nightly $D" --link "Run=$RUN_URL" --format md --out $R/report.md   # $GITHUB_STEP_SUMMARY / trace PR 본문
-simul report $J --format junit --out $R/junit.xml                                        # 테스트 리포터용
-simul report $J --check >/dev/null                                                       # 게이트: regression/trace flake/crash → exit 1
+simul report $V/record.json $V/run.json --title "simul nightly $(date +%F)" --link "Run=$RUN_URL" --format md --out $V/report.md   # $GITHUB_STEP_SUMMARY / trace PR 본문
+simul report $V/record.json $V/run.json --format junit --out $V/junit.xml   # 테스트 리포터용
+simul report $V/record.json $V/run.json --check >/dev/null                  # 게이트: regression/trace flake/crash → exit 1
 ```
+
+`simul report`는 실패해도 종료 코드만 1이고 리포트는 쓴다(GitHub Actions면 `continue-on-error: true`). 녹화가 다시 쓴
+`.simul/scenarios/**/*.trace.json`은 워크플로가 PR로 올리고(본문에 `report.md`) 사람이 diff를 보고 머지한다.
 
 **러너 요구사항** (self-hosted — 호스티드 러너엔 에뮬레이터도 LLM도 없다)
 
@@ -55,7 +52,7 @@ simul report $J --check >/dev/null                                              
   강제하므로 AVD 해상도·설정은 무관. 단 "저장된 비밀번호" 시트처럼 Google 계정 데이터가 전제인 시나리오는
   그 데이터가 AVD 이미지에 있어야 한다
 - debug 빌드 설치(WebView 채널이 debuggable 전제), `.simul/config.yaml llm.url`에 닿는 OpenAI 호환 LLM —
-  키는 `llm.apiKey: ${VAR}` + 러너 시크릿. **`simul report`는 키 없이 돈다**
+  키는 `llm.apiKey: ${VAR}` + 러너 시크릿
 - 로그인 등 상태 스냅샷(`.simul/states/*.tar`, gitignored)은 러너 로컬 디렉터리에서 체크아웃 뒤 복사
 - 끝나면 `adb emu kill`; 아티팩트는 `.simul/reports/<stamp>/` 디렉토리 통째(받아서 `index.html`을 열면 끝)
 

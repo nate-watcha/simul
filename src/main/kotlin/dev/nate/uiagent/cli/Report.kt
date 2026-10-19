@@ -12,11 +12,12 @@ import java.io.File
  * `simul report` has two inputs:
  *
  * `simul report`
- *   The one people type, and it takes nothing: replay every committed trace with the screen recorded
- *   (`simul run --all --mode replay --video --runs .simul/reports/<stamp>`) and write that run's HTML
- *   report into the same directory: `index.html` (failures first) + a page per scenario with its
- *   replay.mp4 step timeline (see [SitePages]), plus `run.json` — the batch summary the nightly joins
- *   with its record phase.
+ *   The nightly in one command, and it takes nothing: re-record every scenario with the LLM
+ *   (`simul run --all --mode llm --summary <dir>/record.json`), replay what it recorded with the screen
+ *   captured (`simul run --all --mode replay --video --runs <dir>`, no LLM), and write the HTML report
+ *   into `<dir>` = `.simul/reports/<stamp>/`: `index.html` (failures first — a failed recording is a
+ *   failure too) + a page per scenario with its replay.mp4 step timeline (see [SitePages]), plus
+ *   `record.json` and `run.json`, the two batch summaries the md/junit report and the gate join.
  *
  * `simul report --runs <dir> [--out <dir>] [--title <app name>] [--check]`
  *   The same pages from an existing `simul run --runs` directory (in place by default; with `--out`
@@ -89,16 +90,21 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
     return if (check && report.overall == Severity.FAIL) 1 else 0
 }
 
-/** `simul report` alone: replay every committed trace into a stamped reports directory and write its HTML. */
+/** `simul report` alone: record every scenario with the LLM, replay the recordings into the same stamped directory, write its HTML. */
 private fun replayAndReport(cwd: File): Int {
     val project = SimulProject.find(cwd) ?: return err("no .simul/ directory found from $cwd upwards")
     val dir = File(project.reportsDir, java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmm")))
-    val rc = runCommand(listOf("--all", "--mode", "replay", "--video", "--runs", dir.path), cwd)
+    dir.mkdirs()
+    println("── record: every scenario with the LLM ──")
+    val recordRc = runCommand(listOf("--all", "--mode", "llm", "--summary", File(dir, "record.json").path, "--label", "record"), cwd)
+    println()
+    println("── replay: what was just recorded, no LLM ──")
+    val replayRc = runCommand(listOf("--all", "--mode", "replay", "--video", "--runs", dir.path), cwd)
     val html = File(dir, "index.html")
-    if (!html.isFile) return if (rc == 0) err("no report written under ${dir.relativeToOrSelf(cwd)}") else rc
+    if (!html.isFile) return if (replayRc == 0) err("no report written under ${dir.relativeToOrSelf(cwd)}") else replayRc
     println()
     println("open ${html.relativeToOrSelf(cwd).path}")
-    return rc
+    return if (recordRc != 0 || replayRc != 0) 1 else 0
 }
 
 /** `--runs`: the HTML report of one run directory (in place unless `--out` says otherwise). */

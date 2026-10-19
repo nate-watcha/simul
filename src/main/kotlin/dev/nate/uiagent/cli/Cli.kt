@@ -55,9 +55,9 @@ private fun printUsage() {
           simul "<natural-language command>"  ad-hoc single command, no .simul/ needed
 
         nightly (wired into the app repo's CI — see the README):
-          simul run --all --mode llm --summary r/record.json --label record   # re-record every scenario with the LLM; the traces are the output
-          simul report                                                        # replay what it recorded, no LLM → .simul/reports/<stamp>/index.html + run.json
-          simul report r/record.json .simul/reports/<stamp>/run.json --format md|junit [--check]   # job summary / trace PR body / gate
+          simul report                        re-record every scenario with the LLM, replay the recordings without it,
+                                              write .simul/reports/<stamp>/ (index.html + record.json + run.json)
+          simul report <stamp>/record.json <stamp>/run.json --format md|junit [--check]   # job summary / trace PR body / gate
         """.trimIndent()
     )
 }

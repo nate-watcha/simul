@@ -32,8 +32,14 @@ object SitePages {
 
     class Built(val index: File, val pages: List<File>, val rows: List<Site.Row>) {
         val failed get() = rows.count { it.kind == Site.Kind.FAILED }
-        /** `실패 1 · 안 돌림 1 · 통과 7` */
-        fun counts(): String = Site.Kind.entries.mapNotNull { k -> rows.count { it.kind == k }.let { n -> if (n > 0 || k == Site.Kind.PASSED) "${k.label} $n" else null } }.joinToString(" · ")
+        val recordFailed get() = rows.count { it.recordFailed }
+        /** `실패 2 (녹화 실패 1) · 안 돌림 1 · 통과 7` */
+        fun counts(): String = Site.Kind.entries.mapNotNull { k ->
+            rows.count { it.kind == k }.let { n ->
+                if (n == 0 && k != Site.Kind.PASSED) null
+                else "${k.label} $n" + (if (k == Site.Kind.FAILED && recordFailed > 0) " (녹화 실패 $recordFailed)" else "")
+            }
+        }.joinToString(" · ")
     }
 
     fun build(runDir: File, out: File, opts: Options = Options()): Built {
@@ -117,12 +123,19 @@ object SitePages {
             if (n == 0 && k != Site.Kind.PASSED) continue
             sb.append("<span class=\"chip big ${k.cls}\">${k.label} $n</span>")
         }
+        val recFailed = rows.count { it.recordFailed }
+        if (recFailed > 0) sb.append("<span class=\"chip big failed\">녹화 실패 $recFailed</span>")
         sb.append("</div></header>")
+        run.record?.let { rec ->
+            val l = dev.nate.uiagent.agent.LlmStats.sum(rec.scenarios.map { it.llm })
+            sb.append("<p class=dim>LLM 녹화 ${esc(hm(rec.startedAt))} · ${esc(humanDuration(rec.durationMs))} · ${rec.scenarios.count { it.status == "PASSED" }}/${rec.scenarios.size} 녹화됨" +
+                (l?.let { " · 모델 ${it.calls} calls ${esc(humanDuration(it.durationMs))}" } ?: "") + " → 그 trace를 LLM 없이 재생한 결과가 아래다.</p>")
+        }
 
         // ---- failures
         val diffs = failed + setup
         sb.append("<section><div class=sh><h2>실패</h2><span class=dim>${diffs.size}건</span></div>")
-        if (diffs.isEmpty()) sb.append("<p class=dim>전부 통과 ${passed.size} — 끝까지 재생됨.</p>")
+        if (diffs.isEmpty()) sb.append("<p class=dim>전부 통과 ${passed.size} — ${if (run.record != null) "오늘 녹화되고 " else ""}끝까지 재생됨.</p>")
         if (failed.isNotEmpty()) {
             sb.append("<div class=\"cards two\">")
             for (row in failed) failureCard(sb, row)
@@ -152,7 +165,7 @@ object SitePages {
         for (f in features) {
             sb.append("<h3>${esc(f.ifEmpty { "(root)" })}</h3><ul>")
             for (row in byFeature.getValue(f).sortedBy { it.kind.ordinal }) {
-                sb.append("<li><i class=\"dot ${row.kind.cls}\"></i><a href=\"${attr(pageOf(row.result))}\">${esc(row.result.title)}</a> <span class=dim>${esc(row.result.key)}${row.result.state?.let { "" } ?: ""} · ${row.kind.label}</span></li>")
+                sb.append("<li><i class=\"dot ${row.kind.cls}\"></i><a href=\"${attr(pageOf(row.result))}\">${esc(row.result.title)}</a> <span class=dim>${esc(row.result.key)} · ${if (row.recordFailed) "녹화 실패" else row.kind.label}</span></li>")
             }
             sb.append("</ul>")
         }
@@ -168,8 +181,9 @@ object SitePages {
         sb.append("<article class=\"card fail\">")
         if (thumb != null) sb.append("<a class=shot href=\"${attr(pageOf(r))}\"><img src=\"${attr(thumb)}\" alt=\"실패 시점 스크린샷\" loading=lazy></a>")
         else sb.append("<div class=\"shot empty\">실패 시점<br>스크린샷 없음</div>")
-        sb.append("<div class=body><div class=row>${chip(Site.Kind.FAILED, "FAILED")}<span class=dim>${esc(r.feature.ifEmpty { "(root)" })}${r.state?.let { " · ${esc(it)}" } ?: ""}</span></div>")
+        sb.append("<div class=body><div class=row>${chip(Site.Kind.FAILED, if (row.recordFailed) "녹화 실패" else "FAILED")}<span class=dim>${esc(r.feature.ifEmpty { "(root)" })}${r.state?.let { " · ${esc(it)}" } ?: ""}</span></div>")
         sb.append("<div class=title><a href=\"${attr(pageOf(r))}\">${esc(r.title)}</a></div>")
+        row.recordFailure?.let { sb.append("<div class=mono><span class=reason>LLM 녹화: ${esc(it)}</span><br><span class=dim>아래는 커밋된 trace의 재생 · ${esc(if (r.failed) "FAILED" else r.status)}</span></div>") }
         if (step != null) sb.append("<div class=mono>${step.n}. ${esc(step.text)}<br><span class=reason>${esc(step.reason ?: "failed")}</span></div>")
         sb.append("<div class=foot><span class=dim>${esc(hm(r.startedAt))} · ${esc(humanDuration(r.durationMs))}</span>${avatar(r.owner)}<a class=more href=\"${attr(pageOf(r))}\">상세</a></div></div></article>")
     }
@@ -206,8 +220,13 @@ object SitePages {
         // ---- header
         val statusText = when (r.status) { "PASSED" -> "PASSED · $passedN/${r.steps.size}"; "FAILED" -> "FAILED · ${r.failedStep}/${r.steps.size}"; else -> "SETUP · 안 돌림" }
         sb.append("<header><div class=row><h1>${esc(r.title)}</h1>${chip(row.kind, statusText)}")
+        if (row.recordFailed) sb.append(chip(Site.Kind.FAILED, "녹화 실패"))
         sb.append("<span class=right>${avatar(r.owner)}${if (r.owner != null) " · " else ""}${esc(hm(r.startedAt))} · ${esc(humanDuration(r.durationMs))}</span></div>")
         if (r.description.isNotEmpty()) sb.append("<p class=desc>${esc(r.description)}</p>")
+        row.record?.let { rec ->
+            sb.append("<div class=\"${if (row.recordFailed) "reason" else "dim"}\">LLM 녹화: ${esc(row.recordFailure ?: "${rec.status} · ${humanDuration(rec.durationMs)}")}" +
+                (if (row.recordFailed) " — trace는 커밋본 그대로, 아래는 그 재생" else " — 아래는 그 trace의 재생") + "</div>")
+        }
         sb.append("<div class=row>")
         val siblings = all.filter { it.result.feature == r.feature && it.result.name == r.name }
         if (siblings.size > 1 || r.state != null) {
