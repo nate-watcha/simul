@@ -75,9 +75,10 @@ class WebAwareDevice(
         // and anonymous scaffolding are dropped: a native overlay ON TOP of the WebView (e.g.
         // an exit-confirmation dialog, seen on-device) also sits inside the rect but shares
         // nothing with the page, and the model must see it. Scrollables stay: the container
-        // is the gesture target for scrolling web pages.
-        val webIds = webElements.mapNotNull { it.resourceId }.toHashSet()
-        val webLabels = webElements.mapNotNull { it.label }.toHashSet()
+        // is the gesture target for scrolling web pages. Covered page elements (hidden) are not
+        // shown, but Chrome projects them all the same, so they take part in the dedup.
+        val webIds = page.elements.mapNotNull { it.attrId }.toHashSet()
+        val webLabels = page.elements.mapNotNull { it.label }.toHashSet()
         val composedOfWeb = webComposition(webLabels)
         val keptNative = pruneReparent(native.elements) { e ->
             !(e.center in rect && "scrollable" !in e.interactions && when {
@@ -89,10 +90,13 @@ class WebAwareDevice(
         // The page's elements nest under the native WebView node. Its resource-id can vanish once
         // Chrome projects a11y nodes, so the fallback anchor is the native scrollable whose bounds
         // are the WebView rect (실측: the payment page's WebView had no id but kept its bounds).
+        // Either way the anchor's bounds must be the rect: a projected DOM node whose id merely
+        // contains "webview" (실측: "webview-legal-checkbox") is not the WebView.
         // Web siblings keep reading order; the rest is the native tree's order.
         val web = readingOrder(webElements)
-        val hostIdx = keptNative.indexOfFirst(::isWebViewNode).takeIf { it >= 0 }
-            ?: keptNative.indexOfFirst { "scrollable" in it.interactions && it.bounds?.let { b -> sameRect(b, rect) } == true }
+        val isRect = { e: LogicalElement -> e.bounds?.let { b -> sameRect(b, rect) } != false }
+        val hostIdx = keptNative.indexOfFirst { isWebViewNode(it) && isRect(it) }.takeIf { it >= 0 }
+            ?: keptNative.indexOfFirst { "scrollable" in it.interactions && it.bounds != null && isRect(it) }
         val combined = if (hostIdx < 0) keptNative + web else {
             val depths = depthsOf(keptNative)
             var end = hostIdx + 1

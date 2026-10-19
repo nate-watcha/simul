@@ -228,6 +228,32 @@ class WebAwareDeviceTest {
     }
 
     @Test
+    fun `the a11y projection of a covered web element is dropped and never anchors the page`() {
+        // 실측 (payment page, checkbox scrolled under the CTA bar): CDP reports the checkbox hidden,
+        // Chrome still projects it as a native CheckBox whose id contains "webview". Without the
+        // hidden element in the dedup sets it survived, and the "webview" id made it the anchor.
+        val extract = CdpClient.Eval.Ok(
+            """{"iw":360,"rs":"complete","els":[
+           {"label":"(필수) 언제든 해지 가능하며","attrId":"webview-legal-checkbox","tag":"input","type":"checkbox","role":null,
+            "rect":{"x":20,"y":474,"width":320,"height":62},"hidden":true,
+            "state":{"checked":false,"disabled":false,"focused":false}},
+           {"label":"구독 시작하기","attrId":null,"tag":"button","type":"submit","role":null,
+            "rect":{"x":20,"y":454,"width":320,"height":48},
+            "state":{"checked":false,"disabled":false,"focused":false}}]}"""
+        )
+        val host = LogicalElement(0, null, null, listOf("scrollable", "focusable"), emptyList(), null, Point(360, 697), Bounds(0, 162, 720, 1232))
+        val native = LogicalLayout(listOf(
+            host,
+            LogicalElement(1, "(필수) 언제든 해지 가능하며", "webview-legal-checkbox", listOf("clickable", "focusable"), emptyList(), null, Point(360, 1170), Bounds(40, 1108, 680, 1232), parentId = 0),
+            LogicalElement(2, "구독 시작하기", null, listOf("clickable"), emptyList(), null, Point(360, 1118), Bounds(40, 1070, 680, 1166), parentId = 0),
+        ))
+        val merged = WebAwareDevice(StaticDevice(native), FakeCdp(CdpClient.Discovery(listOf(target)), extract), "com.x").observe()
+        assertEquals(listOf(null, "구독 시작하기"), merged.elements.map { it.label })
+        assertEquals(listOf(null, 0), merged.elements.map { it.parentId }) // under the WebView host, not the checkbox
+        assertEquals(Origin.WEB, merged.elements[1].origin)
+    }
+
+    @Test
     fun `a native dialog over the webview is NOT mistaken for a11y projection`() {
         // exit-confirmation dialog: inside the webview rect but sharing nothing with the page
         val native = LogicalLayout(listOf(

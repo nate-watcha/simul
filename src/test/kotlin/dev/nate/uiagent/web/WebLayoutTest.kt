@@ -49,6 +49,23 @@ class WebLayoutTest {
     }
 
     @Test
+    fun `a covered element is parsed but not converted`() {
+        // 실측: the legal checkbox under the payment page's fixed CTA bar. The extraction keeps it
+        // (its a11y projection must still be deduped) while the model never sees it.
+        val page = WebLayout.parsePage(
+            """{"iw":360,"rs":"complete","els":[
+              {"label":"(필수) 언제든 해지 가능하며","attrId":"webview-legal-checkbox","tag":"input","type":"checkbox","role":null,
+               "rect":{"x":20,"y":464,"width":320,"height":84},"hidden":true,
+               "state":{"checked":false,"disabled":false,"focused":false}},
+              {"label":"구독 시작하기","attrId":null,"tag":"button","type":"submit","role":null,
+               "rect":{"x":20,"y":454,"width":320,"height":48},"hidden":false,
+               "state":{"checked":false,"disabled":false,"focused":false}}]}"""
+        )!!
+        assertEquals(listOf(true, false), page.elements.map { it.hidden })
+        assertEquals(listOf("구독 시작하기"), WebLayout.toLogicalElements(page, webviewRect).map { it.label })
+    }
+
+    @Test
     fun `attrId lands in resourceId`() {
         val els = WebLayout.toLogicalElements(WebLayout.parsePage(extractResult)!!, webviewRect)
         assertEquals("grade-basic", els.first { it.label == "베이직" }.resourceId)

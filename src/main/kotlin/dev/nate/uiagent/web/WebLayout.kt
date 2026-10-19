@@ -27,6 +27,12 @@ import kotlin.math.roundToInt
  *    input's state lifted onto it.
  * Non-interactive visible text is extracted too (as `text` nodes) so Verify-style steps and
  * replay evidence work on web screens exactly like on native ones.
+ *
+ * An element in the viewport but covered by another (a fixed footer, a modal backdrop) is
+ * reported with `hidden: true`: it is not shown to the model — a tap at its centre would hit the
+ * cover (실측: the payment page's legal checkbox under the CTA bar was "found" by scrollToFind and the
+ * tap landed on the bar) — but Chrome still projects it into the a11y tree, so the merge needs its
+ * id/label to drop that projection.
  */
 object WebLayout {
 
@@ -44,6 +50,14 @@ object WebLayout {
           const vis = e => { const r = e.getBoundingClientRect();
             return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < innerHeight &&
                    r.right > 0 && r.left < innerWidth; };
+          // Covered by something else (a fixed footer, an overlay): hit-test the centre of the
+          // on-screen part. The element's own subtree or an ancestor (pointer-events: none)
+          // counts as itself.
+          const covered = e => { const r = e.getBoundingClientRect();
+            const cx = (Math.max(r.left, 0) + Math.min(r.right, innerWidth)) / 2;
+            const cy = (Math.max(r.top, 0) + Math.min(r.bottom, innerHeight)) / 2;
+            const hit = document.elementFromPoint(cx, cy);
+            return !!hit && hit !== e && !e.contains(hit) && !hit.contains(e); };
           const firstLine = s => ((s || '') + '').split('\n').map(t => t.trim()).filter(Boolean)[0] || null;
           const rectOf = e => (({x, y, width, height}) => ({x, y, width, height}))(e.getBoundingClientRect());
           const els = [];
@@ -63,7 +77,7 @@ object WebLayout {
               tag: ctl.tagName.toLowerCase(),
               type: ctl.type || null,
               role: e.getAttribute('role'),
-              rect: rectOf(e),
+              rect: rectOf(e), hidden: covered(e),
               state: { checked: ctl.checked === true || e.getAttribute('aria-checked') === 'true',
                        selected: e.getAttribute('aria-selected') === 'true',
                        disabled: ctl.disabled === true,
@@ -86,6 +100,7 @@ object WebLayout {
             hosts.add(e);
             els.push({ label: firstLine(e.innerText) || e.getAttribute('aria-label') || null,
                        attrId: e.id || null, tag: 'div', type: null, role: 'pointer', rect: rectOf(e),
+                       hidden: covered(e),
                        state: { checked: false, selected: e.getAttribute('aria-selected') === 'true',
                                 disabled: false, focused: e === document.activeElement } });
           }
@@ -93,9 +108,10 @@ object WebLayout {
           const union = (a, b) => { const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
             return { x, y, width: Math.max(a.x + a.width, b.x + b.width) - x, height: Math.max(a.y + a.height, b.y + b.height) - y }; };
           const texts = [];
+          let shown = 0;
           const range = document.createRange();
           for (const e of document.querySelectorAll('body *')) {
-            if (texts.length >= 120) break;
+            if (shown >= 120) break;
             if (!vis(e)) continue;
             let own = '';
             // The element's box also wraps its child elements (a badge, a struck-out price), which
@@ -113,8 +129,10 @@ object WebLayout {
             // drop text that merely repeats its interactive host's label
             const host = e.closest(SEL) || hostOf(e);
             if (host && firstLine(host.innerText) === own) continue;
+            const hidden = covered(e);
+            if (!hidden) shown++;
             texts.push({ label: own.slice(0, 80), attrId: e.id || null, tag: 'text', type: null,
-                         role: null, rect: box || rectOf(e),
+                         role: null, rect: box || rectOf(e), hidden,
                          state: { checked: false, selected: false, disabled: false, focused: false } });
           }
           const se = document.scrollingElement || document.documentElement;
@@ -140,6 +158,8 @@ object WebLayout {
         val focused: Boolean,
         /** aria-selected — web tabs/options use this where native uses "selected". */
         val selected: Boolean = false,
+        /** In the viewport but covered by another element: kept for projection dedup, not shown. */
+        val hidden: Boolean = false,
     )
 
     data class WebPage(
@@ -204,6 +224,7 @@ object WebLayout {
                 disabled = st?.get("disabled")?.jsonPrimitive?.booleanOrNull == true,
                 focused = st?.get("focused")?.jsonPrimitive?.booleanOrNull == true,
                 selected = st?.get("selected")?.jsonPrimitive?.booleanOrNull == true,
+                hidden = e["hidden"]?.jsonPrimitive?.booleanOrNull == true,
             )
         } ?: emptyList()
         return WebPage(
@@ -220,12 +241,12 @@ object WebLayout {
      * Convert extracted web elements into screen-space [LogicalElement]s. CSS px map to
      * physical px via `scale = webviewRect.width / innerWidth` (validated: scale == dpr),
      * offset by the WebView's on-screen origin. Ids are placeholders — the merge step
-     * re-sorts and re-assigns them.
+     * re-sorts and re-assigns them. Hidden (covered) elements are left out.
      */
     fun toLogicalElements(page: WebPage, webviewRect: Bounds): List<LogicalElement> {
         if (page.innerWidth <= 0) return emptyList()
         val scale = webviewRect.width.toDouble() / page.innerWidth
-        return page.elements.map { e ->
+        return page.elements.filter { !it.hidden }.map { e ->
             val x0 = webviewRect.x0 + (e.rect.x * scale).roundToInt()
             val y0 = webviewRect.y0 + (e.rect.y * scale).roundToInt()
             val x1 = webviewRect.x0 + ((e.rect.x + e.rect.width) * scale).roundToInt()
