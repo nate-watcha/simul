@@ -71,10 +71,12 @@ private fun printUsage() {
           replay          play the committed trace deterministically; broken steps FAIL (no LLM)
           llm             interpret every step from scratch and (re)record the trace
 
-        nightly (wire these into your CI — see the README):
-          simul run --all --mode replay --video --runs runs/<app>/<date>       # replay every committed trace
-          simul report --runs runs/<app>/<date> --out site/<app>/<date>         # the static site
-          simul report --runs runs/<app>/<date> --format slack --site-url URL   # the Slack summary
+        nightly pipeline (wire these into your CI — see the README):
+          simul run --all --mode replay --video --runs runs/<app>/<date> --summary r/baseline.json   # committed traces
+          simul report --runs runs/<app>/<date> --out site/<app>/<date>        # the static site (+ --format slack)
+          simul run --all --mode llm    --summary r/record.json                 # re-record every scenario
+          simul run --all --mode replay --summary r/verify.json                 # replay the fresh traces
+          simul report r/baseline.json r/record.json r/verify.json --format md --check   # trace PR body + gate
         """.trimIndent()
     )
 }

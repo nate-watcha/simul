@@ -40,20 +40,33 @@ simul "Tap the \"웹툰\" tab"     # ad-hoc 단일 커맨드 (규약 없이 동�
 
 종료 코드: 전부 PASSED=0, 실패=1.
 
-### 나이틀리 운영 (replay → report)
+### 나이틀리 운영 (baseline → record → verify → report)
 
-PR 게이트는 replay만 돌리고(LLM 0회, `simul run --all`) 끝이다. 나이틀리는 커밋된 trace를 전부 재생하고
-결과를 정적 사이트와 Slack으로 낸다(스펙: `docs/report/SPEC.md`, 레이아웃 기준: `docs/report/mockups/`).
+PR 게이트는 replay만 돌리고(LLM 0회, `simul run --all`) 끝이다. 나이틀리는 세 번 돌고 두 가지로 묶는다:
+baseline replay의 결과로 **정적 사이트와 Slack**(모두가 보는 리포트, 스펙 `docs/report/SPEC.md`, 레이아웃 기준
+`docs/report/mockups/`)을 만들고, record → verify의 결과로 **trace PR과 md 리포트**를 만든다.
 워크플로 파일은 **앱 레포가 가진다** — 이 레포는 커맨드만 제공하고, 조립 순서는 이것이다:
 
 ```bash
-APP=com.example; D=$(date +%F)
-simul run --all --mode replay --video --runs runs/$APP/$D          # 커밋된 trace 재생 + 화면 녹화 → runs/$APP/$D/
+APP=com.example; D=$(date +%F); R=.simul/reports/nightly; rm -rf $R; mkdir -p $R
+simul run --all --mode replay --video --runs runs/$APP/$D --summary $R/baseline.json --label baseline   # 커밋된 trace 재생 (+녹화) → runs/$APP/$D/
 simul report --runs runs/$APP/$D --out site/$APP/$D --title WatchaPlay \
     --repo-url https://github.com/org/app --repo-branch develop --site-url $SITE_URL/$APP/$D   # 정적 사이트 (GitHub Pages / 사내 호스팅)
 simul report --runs runs/$APP/$D --format slack --site-url $SITE_URL/$APP/$D --out slack.json   # curl -d @slack.json $SLACK_WEBHOOK_URL
-simul report --runs runs/$APP/$D --check >/dev/null                                             # 게이트: 실패 → exit 1
+
+simul run --all --mode llm    --summary $R/record.json --label record     # 전 시나리오 재녹화 (LLM 키 필요)
+simul run --all --mode replay --summary $R/verify.json --label verify     # 방금 녹화한 trace 재생
+
+J="$R/baseline.json $R/record.json $R/verify.json"     # 없는 파일은 빼도 된다 — 있는 phase만으로 판정
+simul report $J --title "simul nightly $D" --link "Run=$RUN_URL" --link "Report=$SITE_URL/$APP/$D" --format md --out $R/report.md   # $GITHUB_STEP_SUMMARY / trace PR 본문
+simul report $J --format junit --out $R/junit.xml                                        # 테스트 리포터용
+simul report $J --check >/dev/null                                                       # 게이트: regression/trace flake/crash → exit 1
 ```
+
+각 `simul run`은 실패해도 다음 단계를 막지 않게 돌린다(GitHub Actions면 `continue-on-error: true`).
+phase 역할은 라벨이 아니라 **mode와 순서**로 정해진다: 첫 llm 런이 record, 그 직전 replay가 baseline,
+직후 replay가 verify. `--runs`와 `--summary`는 같은 런에 같이 줄 수 있다 — 사이트는 baseline의 `runs/` 디렉토리를,
+md 리포트는 세 `--summary` JSON을 읽는다.
 
 **replay가 남기는 것** (`--runs <dir>`; 없으면 종전대로 `.simul/reports/<시나리오>-<stamp>/`에 같은 내용)
 
@@ -93,26 +106,7 @@ replay는 액션마다 전후 스크린샷을 찍지 않는다(스텝 끝 프레
 - `--format slack`: 한 메시지 — `실패 N  이름들  @owner` / `화면 바뀜 N` / `재녹화 필요 N` / `통과 N · 소요 · 에뮬레이터`,
   실패·화면 바뀜이 없으면 "전부 통과 N" 한 줄, [리포트 보기] [어제와 비교] 버튼(`--site-url`).
 
-### record/verify 단계 리포트 (`--summary`)
-
-trace를 전부 다시 녹화해 검증하는 세 단계 파이프라인은 `--summary` JSON과 md/slack/junit 리포트로 묶는다:
-
-```bash
-R=.simul/reports/nightly; rm -rf $R; mkdir -p $R
-simul run --all --mode replay --summary $R/baseline.json --label baseline   # 커밋된 trace 재생
-simul run --all --mode llm    --summary $R/record.json   --label record     # 전 시나리오 재녹화 (LLM 키 필요)
-simul run --all --mode replay --summary $R/verify.json   --label verify     # 방금 녹화한 trace 재생
-
-J="$R/baseline.json $R/record.json $R/verify.json"     # 없는 파일은 빼도 된다 — 있는 phase만으로 판정
-simul report $J --title "simul record $(date +%F)" --link "Run=$RUN_URL" --format md    --out $R/report.md     # $GITHUB_STEP_SUMMARY / PR 본문
-simul report $J --title "..." --link "Run=$RUN_URL" --format slack --out $R/slack.json    # curl -d @slack.json $SLACK_WEBHOOK_URL
-simul report $J --format junit --out $R/junit.xml                                        # 테스트 리포터용
-simul report $J --check >/dev/null                                                       # 게이트: regression/trace flake/crash → exit 1
-```
-
-각 `simul run`은 실패해도 다음 단계를 막지 않게 돌린다(GitHub Actions면 `continue-on-error: true`).
-phase 역할은 라벨이 아니라 **mode와 순서**로 정해진다: 첫 llm 런이 record, 그 직전 replay가 baseline,
-직후 replay가 verify.
+**record/verify 리포트** (`simul report <summary.json>...`)
 
 세 결과가 시나리오당 하나의 verdict로 접힌다:
 
