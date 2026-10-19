@@ -35,6 +35,8 @@ object SitePages {
         val appName: String? = null,
         /** The site's own URL (for the Slack buttons). */
         val siteUrl: String? = null,
+        /** The branch the repo links point at (`--repo-branch`); GitHub's default branch is not always `main`. */
+        val repoBranch: String = "main",
         val thumbWidth: Int = 360,
     )
 
@@ -81,7 +83,7 @@ object SitePages {
     }
     private fun mdLink(r: ResultJson.Result, opts: Options): String {
         val path = ".simul/scenarios/${r.file}"
-        return opts.repoUrl?.let { "<a href=\"${attr("$it/blob/main/$path")}\">${esc(r.file)} 보기</a>" } ?: "<span class=dim>${esc(path)}</span>"
+        return opts.repoUrl?.let { "<a href=\"${attr("$it/blob/${opts.repoBranch}/$path")}\">${esc(r.file)} 보기</a>" } ?: "<span class=dim>${esc(path)}</span>"
     }
 
     /** Downscale a PNG screenshot to a JPEG of [width] px; false when unreadable. */
@@ -127,7 +129,7 @@ object SitePages {
 
     private fun ackBlock(r: ResultJson.Result, run: Site.Run, opts: Options): String {
         val file = "report-state/${run.app ?: "app"}/acknowledged.json"
-        val edit = opts.repoUrl?.let { "<a class=\"btn primary\" href=\"${attr("$it/edit/main/$file")}\">의도한 변경</a>" }
+        val edit = opts.repoUrl?.let { "<a class=\"btn primary\" href=\"${attr("$it/edit/${opts.repoBranch}/$file")}\">의도한 변경</a>" }
             ?: "<span class=\"btn primary\">의도한 변경</span>"
         return "<details class=ack><summary>$edit</summary><div class=code>$file 에 추가:<br>${esc(ackSnippet(r, r.owner))}</div></details>"
     }

@@ -50,7 +50,7 @@ PR 게이트는 replay만 돌리고(LLM 0회, `simul run --all`) 끝이다. 나�
 APP=com.example; D=$(date +%F)
 simul run --all --mode replay --video --runs runs/$APP/$D          # 커밋된 trace 재생 + 화면 녹화 → runs/$APP/$D/
 simul report --runs runs/$APP/$D --out site/$APP/$D --title WatchaPlay \
-    --repo-url https://github.com/org/app --site-url $SITE_URL/$APP/$D   # 정적 사이트 (GitHub Pages / 사내 호스팅)
+    --repo-url https://github.com/org/app --repo-branch develop --site-url $SITE_URL/$APP/$D   # 정적 사이트 (GitHub Pages / 사내 호스팅)
 simul report --runs runs/$APP/$D --format slack --site-url $SITE_URL/$APP/$D --out slack.json   # curl -d @slack.json $SLACK_WEBHOOK_URL
 simul report --runs runs/$APP/$D --check >/dev/null                                             # 게이트: 실패 → exit 1
 ```

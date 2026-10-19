@@ -12,11 +12,11 @@ import java.io.File
  * `simul report` has two inputs:
  *
  * `simul report --runs <runs/app/date> --out <site/app/date> [--format html|slack] [--acknowledged F]
- *               [--repo-url U] [--site-url U]`
+ *               [--repo-url U [--repo-branch B]] [--site-url U]`
  *   The nightly site of docs/report/SPEC.md from one `simul run --runs` directory: the home page,
  *   one page per scenario and state, yesterday's run and the 7-day strips from the sibling date
  *   directories (see [Site], [SitePages]). `--format slack` prints the Block Kit summary instead.
- *   `--check` exits 1 when any scenario failed.
+ *   `--check` exits 1 when any scenario failed. Without `--out` it is only the gate (no site is written).
  *
  * `simul report <summary.json>... [--format md|slack|junit] [--title T] [--link Name=URL]... [--out FILE] [--check]`
  *   Joins the batch summaries of a pipeline into one report. The phases are recognised by
@@ -38,6 +38,7 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
     var runs: String? = null
     var acks: String? = null
     var repoUrl: String? = null
+    var repoBranch = "main"
     var siteUrl: String? = null
     var check = false
     val links = mutableListOf<Pair<String, String>>()
@@ -53,6 +54,7 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
             "--runs" -> runs = args.getOrNull(++i) ?: return err("--runs needs a directory")
             "--acknowledged" -> acks = args.getOrNull(++i) ?: return err("--acknowledged needs a file")
             "--repo-url" -> repoUrl = args.getOrNull(++i)?.trimEnd('/') ?: return err("--repo-url needs a URL")
+            "--repo-branch" -> repoBranch = args.getOrNull(++i) ?: return err("--repo-branch needs a branch name")
             "--site-url" -> siteUrl = args.getOrNull(++i)?.trimEnd('/') ?: return err("--site-url needs a URL")
             "--check" -> check = true
             "--link" -> {
@@ -65,7 +67,7 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
         }
         i++
     }
-    if (runs != null) return runsReport(cwd, resolvePath(cwd, runs).absoluteFile, format ?: "html", out, acks, repoUrl, siteUrl, title.takeIf { it != "simul report" }, check)
+    if (runs != null) return runsReport(cwd, resolvePath(cwd, runs).absoluteFile, format ?: "html", out, acks, repoUrl, repoBranch, siteUrl, title.takeIf { it != "simul report" }, check)
     if (format == "html") return err("--format html builds the site from a runs directory: simul report --runs runs/<app>/<date> --out site/<app>/<date>")
     if (files.isEmpty()) return err("nothing to report: give summary.json files (from `simul run --summary`) or --runs <dir>")
 
@@ -92,14 +94,19 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
 }
 
 /** `--runs`: the static site (html) or the Slack summary of one nightly run directory. */
-private fun runsReport(cwd: File, runsDir: File, format: String, out: String?, acks: String?, repoUrl: String?, siteUrl: String?, appName: String?, check: Boolean): Int {
+private fun runsReport(cwd: File, runsDir: File, format: String, out: String?, acks: String?, repoUrl: String?, repoBranch: String, siteUrl: String?, appName: String?, check: Boolean): Int {
     if (!runsDir.isDirectory) return err("runs directory not found: $runsDir")
     val ackFile = acks?.let { resolvePath(cwd, it) }
         // the convention of the spec: report-state/<app>/acknowledged.json in the app repo
         ?: Site.load(runsDir).app?.let { File(cwd, "report-state/$it/acknowledged.json") }?.takeIf { it.isFile }
-    val opts = SitePages.Options(repoUrl = repoUrl, siteUrl = siteUrl, appName = appName)
+    val opts = SitePages.Options(repoUrl = repoUrl, repoBranch = repoBranch, siteUrl = siteUrl, appName = appName)
     return when (format) {
         "html" -> {
+            if (out == null && check) {   // the gate alone: `simul report --runs <dir> --check`
+                val run = Site.load(runsDir)
+                val rows = Site.classify(run, Site.earlierRuns(runsDir).firstOrNull()?.let(Site::load), Site.readAcks(ackFile))
+                return if (rows.any { it.kind == Site.Kind.FAILED }) 1 else 0
+            }
             val outDir = out?.let { resolvePath(cwd, it).absoluteFile } ?: return err("--out <site dir> is required with --runs")
             val built = SitePages.build(runsDir, outDir, ackFile, opts)
             val counts = built.rows.groupingBy { it.kind }.eachCount()

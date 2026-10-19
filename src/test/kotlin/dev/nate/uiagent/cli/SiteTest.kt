@@ -173,6 +173,7 @@ class SiteTest {
     fun `report command builds the site from --runs and the slack summary, and --check fails on a failure`() {
         scenario("2026-10-19", "billing", "coupon", null, StepStatus.FAILED, listOf(screenA, screenB))
         assertEquals(1, reportCommand(listOf("--runs", "runs/app/2026-10-19", "--out", "site/app/2026-10-19", "--check"), root))
+        assertEquals(1, reportCommand(listOf("--runs", "runs/app/2026-10-19", "--check"), root), "the gate alone, no --out")
         assertTrue(File(root, "site/app/2026-10-19/billing/coupon.html").isFile)
         assertEquals(0, reportCommand(listOf("--runs", "runs/app/2026-10-19", "--format", "slack", "--out", "slack.json"), root))
         assertTrue("실패 1" in File(root, "slack.json").readText())

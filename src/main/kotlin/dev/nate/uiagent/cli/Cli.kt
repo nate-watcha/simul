@@ -58,7 +58,7 @@ private fun printUsage() {
                     [--runs <dir>]                        lay the run out for the report: <dir>/<feature>/<name>.<state>/ + run.json
                     [--summary <file.json> [--label <phase>]]   batch summary for the phase report
           simul report --runs <runs dir> --out <site dir> [--format html|slack] [--title <app name>]
-                    [--acknowledged F] [--repo-url U] [--site-url U] [--check]   nightly site: home + a page per scenario
+                    [--acknowledged F] [--repo-url U [--repo-branch B]] [--site-url U] [--check]   nightly site: home + a page per scenario
           simul report <summary.json>... [--format md|slack|junit] [--title T]
                     [--link Name=URL]... [--out FILE] [--check]  join record/verify phases → CI/Slack report
           simul status                        scenarios × trace × last run × states, at a glance
