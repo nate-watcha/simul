@@ -36,6 +36,8 @@ class Replayer(
         val broken: Broken?,
         /** lastCoords rewrites from coordinate-fallback groundings (actionIndex -> new coords). */
         val coordUpdates: Map<Int, Point>,
+        /** The step's evidence that never showed up (the report's "expected vs found"); empty unless the gate broke. */
+        val missing: List<String> = emptyList(),
     )
 
     fun replayStep(step: TraceStep): StepReplay {
@@ -59,7 +61,7 @@ class Replayer(
             missing = missingNow()
         }
         if (missing.isNotEmpty()) {
-            return StepReplay(Broken(null, "evidence not on screen: ${missing.joinToString(", ")}"), coordUpdates)
+            return StepReplay(Broken(null, "evidence not on screen: ${missing.joinToString(", ")}"), coordUpdates, missing)
         }
         return StepReplay(null, coordUpdates)
     }

@@ -17,9 +17,10 @@ data class StepReport(
     val index: Int,
     val text: String,
     val status: StepStatus,
-    /** "llm" or "replay"; null for skipped steps. */
+    /** "llm", "replay" or "runner"; null for skipped steps. */
     val mode: String?,
     val actions: List<TraceAction>,
+    /** Evidence present when the step ended (replay: what the gate found; record: what it extracted). */
     val evidence: List<String>,
     val reason: String?,
     val durationMs: Long,
@@ -33,7 +34,18 @@ data class StepReport(
      * ground its target has taken no action and therefore has no screenshot of its own).
      */
     val screen: List<String> = emptyList(),
+    /** Wall-clock start of the step, millis since the scenario started. */
+    val startedMs: Long = 0,
+    /** The gestures of the step with the moment each went to the device (see [ActionMark]). */
+    val marks: List<ActionMark> = emptyList(),
+    /** What the step had to show to pass: the trace's evidence (replay) or the criterion's quoted anchors (record). */
+    val expectedEvidence: List<String> = emptyList(),
+    /** `layout/NN.json` of the screen when the step ended, relative to the report dir; null when not captured. */
+    val layout: String? = null,
 )
+
+/** The screen recording of a run: where its t=0 lies on the wall clock, so steps can be seeked to. */
+data class VideoInfo(val file: File, val startedAtMs: Long, val durationMs: Long?)
 
 data class ScenarioRunResult(
     val scenario: String,
@@ -42,10 +54,14 @@ data class ScenarioRunResult(
     /** Trace to persist — full re-record (llm) or coord-corrected replay. Null if nothing to write. */
     val updatedTrace: TraceFile?,
     val durationMs: Long,
-    /** Where this run's report.json / screenshots / agent.jsonl were written (set by the CLI). */
+    /** Wall-clock start of the scenario (epoch millis) — the zero of every step's `startedMs`. */
+    val startedAtMs: Long = 0,
+    /** The scenario never reached its steps: setup (state restore, launch, deeplink) broke. */
+    val setupFailed: Boolean = false,
+    /** Where this run's result.json / steps / layout / logcat were written (set by the CLI). */
     val reportDir: File? = null,
-    /** Screen recording of the run (`run.mp4`, and `run.gif` when asked for), set by the CLI. */
-    val media: List<File> = emptyList(),
+    /** Screen recording of the run (`replay.mp4`), set by the CLI when `--video` was given. */
+    val video: VideoInfo? = null,
 ) {
     val passed get() = status == StepStatus.PASSED
 
@@ -55,9 +71,13 @@ data class ScenarioRunResult(
 
 /**
  * The scenario execution contract, deterministically: run setup, execute steps in order
- * with per-step isolation, propagate the first FAILED as SKIPPED for the rest, and emit the
- * report. Mode decides how a step runs: llm (record) or replay (pure trace playback — the LLM
+ * with per-step isolation, propagate the first FAILED as SKIPPED for the rest, and return the
+ * result. Mode decides how a step runs: llm (record) or replay (pure trace playback — the LLM
  * is never consulted; a broken step is a FAILED result).
+ *
+ * Every executed step leaves what the report needs in [reportDir]: `steps/NN.png` (the screen
+ * when the step ended) and `layout/NN.json` (its layout tree); the scenario leaves `logcat.txt`
+ * for its whole span. The CLI adds the recording and writes `result.json` (see ResultJson).
  */
 class ScenarioRunner(
     private val controller: DeviceController,
@@ -78,16 +98,18 @@ class ScenarioRunner(
         // happens inside (setup failure, step FAILED, harness exception), the next scenario
         // starts from the baseline the run began with.
         val pinned = mutableListOf<SettingChange>()
+        // logcat for exactly this scenario's span: cleared before setup, dumped after the last step
+        runCatching { ops.logcatClear() }
         try {
             return runPinned(scenario, trace, mode, pinned)
         } finally {
+            runCatching { ops.logcatDump(File(reportDir, "logcat.txt")) }
             if (pinned.isNotEmpty()) DeviceSettings.restore(ops, pinned) { log("  device: $it") }
         }
     }
 
     private fun runPinned(scenario: Scenario, trace: TraceFile?, mode: RunMode, pinned: MutableList<SettingChange>): ScenarioRunResult {
         val t0 = System.currentTimeMillis()
-        val modeName = if (mode == RunMode.LLM) "llm" else "replay"
 
         // A broken setup (bad deeplink, adb hiccup) fails THIS scenario — it must never kill
         // the process and take the rest of a --all batch with it.
@@ -113,10 +135,8 @@ class ScenarioRunner(
                 StepReport(i + 1, text, StepStatus.SKIPPED, null, emptyList(), emptyList(),
                     if (i == 0) why else null, 0, emptyList())
             }
-            val result = ScenarioRunResult(scenario.name, StepStatus.FAILED, steps, null,
-                System.currentTimeMillis() - t0)
-            writeReport(result, modeName)
-            return result
+            return ScenarioRunResult(scenario.name, StepStatus.FAILED, steps, null,
+                System.currentTimeMillis() - t0, startedAtMs = t0, setupFailed = true)
         }
 
         // A trace replays coordinates and layouts of the display it was recorded on — if the
@@ -158,12 +178,18 @@ class ScenarioRunner(
             } finally {
                 listener.delegate = null
             }
-            var done = report.copy(durationMs = System.currentTimeMillis() - s0)
+            // what the screen looked like when the step ended — the report's frame for this step
+            val stepShot = shoot("steps/${nn(n)}")
+            val layoutRel = saveLayout(n)
+            var done = report.copy(
+                durationMs = System.currentTimeMillis() - s0,
+                startedMs = s0 - t0,
+                screenshots = report.screenshots + listOfNotNull(stepShot),
+                layout = layoutRel,
+            )
             if (done.status == StepStatus.FAILED) {
-                // keep the failing screen in the report: its labels, and a screenshot when
-                // the step produced none itself (grounding failed before any gesture)
-                val shots = if (done.screenshots.isEmpty()) listOfNotNull(shoot("step$n-failed")) else done.screenshots
-                done = done.copy(screen = screenLabels(controller.currentElements), screenshots = shots)
+                // keep the failing screen in the report: the labels the harness could see
+                done = done.copy(screen = screenLabels(controller.currentElements))
             }
             reports += done
             log("  step $n: ${renderResult(done)}")
@@ -183,12 +209,10 @@ class ScenarioRunner(
                     androidCli = ops.androidCliVersion() ?: trace?.androidCli)
             else -> null
         }
-        val result = ScenarioRunResult(
+        return ScenarioRunResult(
             scenario.name, status, reports, updatedTrace,
-            System.currentTimeMillis() - t0,
+            System.currentTimeMillis() - t0, startedAtMs = t0,
         )
-        writeReport(result, modeName)
-        return result
     }
 
     /** One step's result line, e.g. `PASSED (replay, 7.2s)` or `FAILED (llm, 41s) — reason`. */
@@ -210,6 +234,8 @@ class ScenarioRunner(
             runnerVerifyStep(n, text)?.let { return it }
             log("  verify has no quoted anchor — falling back to LLM judgment")
         }
+        // record mode keeps the per-action before/after shots: they are what a reviewer of a
+        // fresh trace looks at
         val recorder = StepRecorder(n, ::shoot)
         listener.delegate = recorder
         // The session carries the screen state across steps via each action's diff, so a fresh
@@ -222,12 +248,13 @@ class ScenarioRunner(
         val ev = extractEvidence(text, before, after, controller.volatileKeys)
         var status = if (verdict.passed) StepStatus.PASSED else StepStatus.FAILED
         var reason = verdict.reason
+        val anchors = spec.criterion?.takeUnless { isNegated(it) }?.let(::quotedLabels) ?: emptyList()
         // A criterion's quoted anchors must be machine-present, or the assertion the model just
         // passed would silently drop out of the evidence and CI would never re-check it —
         // record-time pass and replay gate must mean the same thing. (Absence criteria are
         // exempt: absence is not replay-gateable either way.)
-        if (status == StepStatus.PASSED && spec.criterion != null && !isNegated(spec.criterion)) {
-            val missing = quotedLabels(spec.criterion).filterNot { labelPresent(after, it) }
+        if (status == StepStatus.PASSED && anchors.isNotEmpty()) {
+            val missing = anchors.filterNot { labelPresent(after, it) }
             if (missing.isNotEmpty()) {
                 status = StepStatus.FAILED
                 reason = "criterion anchor not on screen: " +
@@ -235,7 +262,8 @@ class ScenarioRunner(
             }
         }
         return StepReport(n, text, status, "llm", recorder.actions.toList(), ev.appeared,
-            reason, 0, recorder.screenshots.toList(), stateEvidence = ev.states, llm = verdict.llm)
+            reason, 0, recorder.screenshots.toList(), stateEvidence = ev.states, llm = verdict.llm,
+            marks = recorder.marks.toList(), expectedEvidence = anchors)
     }
 
     /**
@@ -261,7 +289,7 @@ class ScenarioRunner(
         val ev = extractEvidence(text, els, els, controller.volatileKeys)
         val status = if (judgment.passed) StepStatus.PASSED else StepStatus.FAILED
         return StepReport(n, text, status, "runner", emptyList(), ev.appeared,
-            judgment.reason, 0, emptyList(), stateEvidence = ev.states)
+            judgment.reason, 0, emptyList(), stateEvidence = ev.states, expectedEvidence = quotedLabels(text))
     }
 
     /**
@@ -275,9 +303,10 @@ class ScenarioRunner(
             ?: return StepReport(n, text, StepStatus.FAILED, "replay", emptyList(), emptyList(),
                 "trace missing/stale for this step — record with --mode llm", 0, emptyList())
 
-        // screenshots during replay come from the same listener; its recorded actions are unused
-        val shotsOnly = StepRecorder(n, ::shoot)
-        listener.delegate = shotsOnly
+        // replay takes no per-action screenshots: the step-end frame (steps/NN.png) is the
+        // report's picture of the step, and the recording has the motion
+        val marker = StepRecorder(n)
+        listener.delegate = marker
         // Single-dump observations for the whole replay attempt: the Replayer retries every
         // failure after a stabilized re-observation, so the verdict stays deterministic while
         // the happy path halves its `android layout` calls.
@@ -295,14 +324,17 @@ class ScenarioRunner(
         }
         listener.delegate = null
 
+        val expected = ts.evidence + ts.stateEvidence.map { it.toString() }
         if (replay.broken == null) {
             if (replay.coordUpdates.isNotEmpty()) coordDirtySteps += n
             val updated = applyCoordUpdates(ts, replay.coordUpdates)
             return StepReport(n, text, StepStatus.PASSED, "replay", updated.actions, updated.evidence,
-                null, 0, shotsOnly.screenshots.toList(), stateEvidence = updated.stateEvidence)
+                null, 0, emptyList(), stateEvidence = updated.stateEvidence,
+                marks = marker.marks.toList(), expectedEvidence = expected)
         }
-        return StepReport(n, text, StepStatus.FAILED, "replay", emptyList(), emptyList(),
-            "replay broken: ${replay.broken.why}", 0, shotsOnly.screenshots.toList())
+        return StepReport(n, text, StepStatus.FAILED, "replay", emptyList(), expected - replay.missing.toSet(),
+            "replay broken: ${replay.broken.why}", 0, emptyList(),
+            marks = marker.marks.toList(), expectedEvidence = expected)
     }
 
     private fun applyCoordUpdates(ts: TraceStep, updates: Map<Int, Point>): TraceStep {
@@ -314,12 +346,19 @@ class ScenarioRunner(
         return ts.copy(actions = actions)
     }
 
+    /** `01`, `02`, … — step numbers as file names sort. */
+    private fun nn(n: Int) = n.toString().padStart(2, '0')
+
     private fun shoot(name: String): String? {
         if (!takeScreenshots) return null
-        val rel = "screenshots/$name.png"
+        val rel = if (name.startsWith("steps/")) "$name.png" else "screenshots/$name.png"
         return if (ops.screenshot(File(reportDir, rel))) rel else null
     }
 
-    private fun writeReport(r: ScenarioRunResult, mode: String) =
-        ReportJson.write(r, mode, ReportJson.Env(ops.appVersionName(app), ops.deviceName(), ops.androidCliVersion()), reportDir)
+    private fun saveLayout(n: Int): String? {
+        val els = controller.currentElements
+        if (els.isEmpty()) return null
+        val rel = "layout/${nn(n)}.json"
+        return runCatching { LayoutJson.write(els, File(reportDir, rel)); rel }.getOrNull()
+    }
 }

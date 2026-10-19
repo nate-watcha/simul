@@ -20,6 +20,8 @@ class BatchSession(
     private val project: SimulProject,
     private val ops: DeviceOps,
     private val log: (String) -> Unit,
+    /** `--runs <dir>`: lay report dirs out for the report builder (see ReportDirs.inRuns); null = stamped dirs under .simul/reports. */
+    private val runsDir: File? = null,
 ) : AutoCloseable {
     private var displayBefore: String? = null
     private val pinned = mutableListOf<SettingChange>()
@@ -52,7 +54,7 @@ class BatchSession(
         scenario: Scenario,
         mode: RunMode,
         llm: LlmConfig,
-        video: VideoOutput = VideoOutput.NONE,
+        video: Boolean = false,
         scenarioLog: (String) -> Unit = log,
     ): BatchResult {
         val traceFile = project.traceFileFor(md, scenario)
@@ -70,7 +72,7 @@ class BatchSession(
         // A harness/environment crash (OOM, classpath swapped under a live JVM, adb vanishing)
         // must not kill the rest of the batch — record it and move on.
         val result = try {
-            executeScenario(project, scenario, trace, effective, llm, traceFile, ops, scenarioLog, video)
+            executeScenario(project, md, scenario, trace, effective, llm, traceFile, ops, scenarioLog, video, runsDir)
         } catch (t: Throwable) {
             val crash = writeCrashLog(project.reportsDir, scenario.name, t)
             val what = "${t.javaClass.simpleName}: ${t.message ?: ""}".trim()

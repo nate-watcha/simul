@@ -16,6 +16,8 @@ internal class FakeOps(private val versionName: String? = "5.4.0") : DeviceOps {
         setups += "$app|$appState|$clearData|$launch|$deeplink"
     }
     override fun screenshot(dest: File): Boolean = false
+    override fun logcatClear() {}
+    override fun logcatDump(dest: File): Boolean = false
     override fun appVersionName(app: String?): String? = versionName
     override fun deviceName(): String? = "fake-device"
     override fun displayProfile(): String? = display
@@ -49,6 +51,16 @@ internal class ScriptedExecutor(private val behavior: (String) -> ScenarioSessio
         criteria += criterion
         return behavior(stepText)
     }
+}
+
+/** Write a run's result.json the way the CLI does, with placeholder scenario metadata. */
+internal fun writeResult(r: ScenarioRunResult, mode: String, ops: DeviceOps, dir: File): File {
+    ResultJson.write(r, mode, ResultJson.Meta(
+        feature = "", name = r.scenario, state = null, file = "${r.scenario}.md", title = r.scenario, owner = null,
+        description = "", traceRecordedAt = null,
+        env = ResultJson.Env(ops.appVersionName(null), ops.deviceName(), ops.androidCliVersion()),
+    ), dir)
+    return File(dir, ResultJson.FILE)
 }
 
 internal val neverCalledExecutor = ScriptedExecutor { throw AssertionError("LLM must not be called in pure replay") }

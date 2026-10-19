@@ -23,7 +23,7 @@ class StatusTest {
 
     private fun report(p: SimulProject, name: String, stamp: String, status: String, mode: String = "replay") {
         val d = File(p.reportsDir, "$name-$stamp"); d.mkdirs()
-        File(d, "report.json").writeText("""{"scenario":"$name","status":"$status","mode":"$mode","durationMs":1234,"steps":[]}""")
+        File(d, "result.json").writeText("""{"scenario":"$name","status":"$status","mode":"$mode","duration_ms":1234,"steps":[]}""")
     }
 
     @Test

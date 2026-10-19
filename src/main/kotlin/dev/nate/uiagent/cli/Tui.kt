@@ -77,7 +77,7 @@ class Tui(private val project: SimulProject) {
                             'j' -> selected = (selected + 1).coerceAtMost(items.lastIndex.coerceAtLeast(0))
                             'k' -> selected = (selected - 1).coerceAtLeast(0)
                             'r' -> runSelected("llm")
-                            'v' -> runSelected("gif")
+                            'v' -> runSelected("video")
                             'x' -> runGroup()
                             'a' -> adhocRepl()
                             's' -> saveState()
@@ -188,11 +188,11 @@ class Tui(private val project: SimulProject) {
         message?.let { f.line(" $it") }
         f.rule()
         val full = keys(
-            "↑↓" to "move", "⏎" to "replay", "v" to "replay+gif", "r" to "record", "x" to "run group", "a" to "ad-hoc",
+            "↑↓" to "move", "⏎" to "replay", "v" to "replay+video", "r" to "record", "x" to "run group", "a" to "ad-hoc",
             "s" to "save state", "o" to "report", "g" to "refresh", "q" to "quit",
         )
         f.line(if (TuiText.width(full) <= w) full else keys(
-            "⏎" to "replay", "v" to "gif", "r" to "rec", "x" to "group", "a" to "adhoc", "s" to "state", "o" to "report", "g" to "refresh", "q" to "quit",
+            "⏎" to "replay", "v" to "video", "r" to "rec", "x" to "group", "a" to "adhoc", "s" to "state", "o" to "report", "g" to "refresh", "q" to "quit",
         ))
         paint(f)
     }
@@ -304,11 +304,11 @@ class Tui(private val project: SimulProject) {
         message = null
     }
 
-    /** [mode]: `replay`, `llm` (record), or `gif` — a replay that also records the screen to run.gif. */
+    /** [mode]: `replay`, `llm` (record), or `video` — a replay that also records the screen to replay.mp4. */
     private fun runSelected(mode: String) {
         val s = items.getOrNull(selected) ?: return
         runScenariosWithPanel(listOf(s), if (mode == "llm") RunMode.LLM else RunMode.REPLAY, s.relPath,
-            video = if (mode == "gif") VideoOutput.GIF else VideoOutput.NONE)
+            video = mode == "video")
     }
 
     private fun saveState() {
@@ -340,7 +340,7 @@ class Tui(private val project: SimulProject) {
      * re-attaches). Runs on a worker thread so the panel stays responsive; q/enter return to
      * the list once the batch is done.
      */
-    private fun runScenariosWithPanel(targets: List<ScenarioStatus>, mode: RunMode, title: String, video: VideoOutput = VideoOutput.NONE) {
+    private fun runScenariosWithPanel(targets: List<ScenarioStatus>, mode: RunMode, title: String, video: Boolean = false) {
         if (targets.isEmpty()) return
         val ops = AdbOps(statesDir = project.statesDir)
         val log = java.util.Collections.synchronizedList(mutableListOf<String>())
@@ -348,7 +348,7 @@ class Tui(private val project: SimulProject) {
         val cur = java.util.concurrent.atomic.AtomicReference(Pair("", "")) // name, desc
         val done = java.util.concurrent.atomic.AtomicBoolean(false)
         val results = java.util.Collections.synchronizedList(mutableListOf<Pair<String, StepStatus>>())
-        val gifs = java.util.Collections.synchronizedList(mutableListOf<File>())
+        val videos = java.util.Collections.synchronizedList(mutableListOf<File>())
 
         val worker = Thread {
             // the same batch session as `simul run`: display + settings pinned once, restored at the end
@@ -366,7 +366,7 @@ class Tui(private val project: SimulProject) {
                             "SKIPPED" -> StepStatus.SKIPPED
                             else -> StepStatus.FAILED
                         })
-                        r.result?.media?.filter { it.extension == "gif" }?.let(gifs::addAll)
+                        r.result?.video?.let { videos.add(it.file) }
                     }
                 }
             } finally {
@@ -376,7 +376,7 @@ class Tui(private val project: SimulProject) {
         worker.isDaemon = true
         worker.start()
 
-        val panel = RunPanel(title, mode, targets.size, System.currentTimeMillis(), video != VideoOutput.NONE)
+        val panel = RunPanel(title, mode, targets.size, System.currentTimeMillis(), video)
         // render loop: repaint on every event or 120ms tick (log lines stream in, the clock ticks)
         while (true) {
             val (n, d) = cur.get()
@@ -401,9 +401,9 @@ class Tui(private val project: SimulProject) {
             }
         }
         refresh()
-        // the gif is what this run was for — keep its path on screen once the panel is gone
-        gifs.toList().takeIf { it.isNotEmpty() }?.let { g ->
-            message = green("gif: ") + g.joinToString("  ") { it.relativeToOrSelf(project.appRoot).path } + dim("  (o opens the report)")
+        // the recording is what this run was for — keep its path on screen once the panel is gone
+        videos.toList().takeIf { it.isNotEmpty() }?.let { g ->
+            message = green("video: ") + g.joinToString("  ") { it.relativeToOrSelf(project.appRoot).path } + dim("  (o opens the report)")
         }
     }
 
@@ -427,7 +427,7 @@ class Tui(private val project: SimulProject) {
             val w = width()
             val f = TuiText.Frame(w, height())
             val modeLabel = (if (mode == RunMode.LLM) yellow("● REC (llm)") else green("▶ replay")) +
-                if (recording) red(" ● gif") else ""
+                if (recording) red(" ● rec") else ""
             val passed = results.count { it.second == StepStatus.PASSED }
             val failed = results.count { it.second == StepStatus.FAILED }
             val skipped = results.count { it.second == StepStatus.SKIPPED }
@@ -473,7 +473,7 @@ class Tui(private val project: SimulProject) {
         val style: (String) -> String = when {
             line.startsWith("──") || t.startsWith("setup") || t.startsWith("observing") -> TuiText::dim
             t.startsWith("warning") -> TuiText::yellow
-            t.startsWith("llm ") || t.startsWith("gif:") || t.startsWith("video:") -> TuiText::cyan // cost summary, media paths
+            t.startsWith("llm ") || t.startsWith("video:") -> TuiText::cyan // cost summary, media paths
             t.startsWith("CRASH") || t.startsWith("FAILED") || Regex("^step \\d+: FAILED").containsMatchIn(t) -> TuiText::red
             t.startsWith("PASSED") || Regex("^step \\d+: PASSED").containsMatchIn(t) || t.startsWith("trace ") -> TuiText::green
             t.startsWith("SKIPPED") || Regex("^step \\d+: SKIPPED").containsMatchIn(t) -> TuiText::yellow

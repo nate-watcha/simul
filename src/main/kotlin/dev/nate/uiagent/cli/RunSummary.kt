@@ -43,6 +43,9 @@ data class RunSummary(
     val scenarios: List<ScenarioOutcome>,
     /** `android` CLI version on the machine that ran the batch (observation format). */
     val androidCli: String? = null,
+    /** The app under test (config `app:`), for `run.json`. */
+    val app: String? = null,
+    val endedAt: String? = null,
 )
 
 /** PASSED | FAILED | SKIPPED | CRASH — the scenario-level result inside a batch. */
@@ -67,8 +70,8 @@ data class ScenarioOutcome(
     val reason: String?,
     /** Model calls/time/tokens when the scenario consulted the LLM (record phase); null otherwise. */
     val llm: LlmStats? = null,
-    /** Screen recording of the run as a GIF (`--gif`), relative to the app root; null when not recorded. */
-    val gif: String? = null,
+    /** Screen recording of the run (`replay.mp4`, `--video`), relative to the app root; null when not recorded. */
+    val video: String? = null,
     /** The scenario's one-line prose (what the journey checks) — what a report shows as its title. */
     val description: String = "",
 ) {
@@ -132,7 +135,7 @@ fun outcomeOf(project: SimulProject, md: File, scenario: Scenario, r: ScenarioRu
         },
         reason = null,
         llm = r.llm,
-        gif = r.media.firstOrNull { it.extension == "gif" }?.relativeToOrSelf(project.appRoot)?.path,
+        video = r.video?.file?.relativeToOrSelf(project.appRoot)?.path,
         description = scenario.description,
     )
 }
@@ -156,7 +159,7 @@ fun outcomeWithout(project: SimulProject, md: File, scenario: Scenario, status: 
 
 object RunSummaryJson {
     /** ISO-8601 with offset — the `startedAt` of summaries and reports. */
-    fun stamp(): String = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX").format(Date())
+    fun stamp(atMs: Long = System.currentTimeMillis()): String = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX").format(Date(atMs))
 
     fun write(s: RunSummary, file: File) {
         file.absoluteFile.parentFile?.mkdirs()
@@ -167,7 +170,9 @@ object RunSummaryJson {
         put("label", s.label)
         put("mode", s.mode)
         put("startedAt", s.startedAt)
+        s.endedAt?.let { put("endedAt", it) }
         put("durationMs", s.durationMs)
+        s.app?.let { put("app", it) }
         put("env", buildJsonObject {
             put("agentVersion", s.agentVersion)
             put("appVersionName", s.appVersionName?.let(::JsonPrimitive) ?: JsonNull)
@@ -201,7 +206,7 @@ object RunSummaryJson {
                     }
                     o.reason?.let { put("reason", it) }
                     o.llm?.let { put("llm", llmJson(it)) }
-                    o.gif?.let { put("gif", it) }
+                    o.video?.let { put("video", it) }
                     if (o.description.isNotEmpty()) put("description", o.description)
                 })
             }
@@ -222,6 +227,8 @@ object RunSummaryJson {
             appVersionName = env?.str("appVersionName"),
             device = env?.str("device"),
             androidCli = env?.str("androidCli"),
+            app = o.str("app"),
+            endedAt = o.str("endedAt"),
             scenarios = o.arr("scenarios")?.map { el ->
                 val s = el.jsonObject
                 val steps = s.obj("steps")
@@ -248,7 +255,7 @@ object RunSummaryJson {
                     },
                     reason = s.str("reason"),
                     llm = llmFromJson(s.obj("llm")),
-                    gif = s.str("gif"),
+                    video = s.str("video"),
                     description = s.str("description") ?: "",
                 )
             } ?: emptyList(),

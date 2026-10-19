@@ -115,7 +115,7 @@ internal class TurnLog(private val sink: (String) -> Unit) {
     }
 }
 
-/** `llm` object of report.json / summary.json — fixed key order, omitted entirely when null. */
+/** `llm` object of result.json / summary.json — fixed key order, omitted entirely when null. */
 fun llmJson(l: LlmStats): JsonObject = buildJsonObject {
     put("calls", l.calls)
     put("durationMs", l.durationMs)

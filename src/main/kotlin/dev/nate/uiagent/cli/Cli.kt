@@ -53,11 +53,14 @@ private fun printUsage() {
           simul                               interactive mode (full-screen, TTY + .simul/ 필요)
           simul init [--app <package>]        set up .simul/ + the scenario-authoring Claude skill
           simul run <scenario.md>... [--mode replay|llm|auto] [--dry-run] [--url U]
-                    [--gif | --video]                     record the screen → run.gif (1.5×) / run.mp4 in the report dir
+                    [--video]                             record the screen → replay.mp4 with a step timeline
           simul run --tag <tag> | --state <name> | --all [same options]
-                    [--summary <file.json> [--label <phase>]]   batch summary for `simul report`
-          simul report <summary.json>... [--format md|slack|junit|html] [--title T]
-                    [--link Name=URL]... [--out FILE] [--check]  join phases → CI/Slack report
+                    [--runs <dir>]                        lay the run out for the report: <dir>/<feature>/<name>.<state>/ + run.json
+                    [--summary <file.json> [--label <phase>]]   batch summary for the phase report
+          simul report --runs <runs dir> --out <site dir> [--format html|slack] [--title <app name>]
+                    [--acknowledged F] [--repo-url U] [--site-url U] [--check]   nightly site: home + a page per scenario
+          simul report <summary.json>... [--format md|slack|junit] [--title T]
+                    [--link Name=URL]... [--out FILE] [--check]  join record/verify phases → CI/Slack report
           simul status                        scenarios × trace × last run × states, at a glance
           simul list
           simul state save <name>             snapshot current app data → .simul/states/<name>.tar
@@ -68,12 +71,10 @@ private fun printUsage() {
           replay          play the committed trace deterministically; broken steps FAIL (no LLM)
           llm             interpret every step from scratch and (re)record the trace
 
-        nightly pipeline (wire these into your CI — see the README):
-          simul run --all --mode replay --gif --summary r/baseline.json   # committed traces
-          simul run --all --mode llm          --summary r/record.json     # re-record every scenario
-          simul run --all --mode replay --gif --summary r/verify.json     # replay the fresh traces
-          simul report r/baseline.json r/record.json r/verify.json --format html --out r/report.html
-          simul report r/baseline.json r/record.json r/verify.json --format md --check
+        nightly (wire these into your CI — see the README):
+          simul run --all --mode replay --video --runs runs/<app>/<date>       # replay every committed trace
+          simul report --runs runs/<app>/<date> --out site/<app>/<date>         # the static site
+          simul report --runs runs/<app>/<date> --format slack --site-url URL   # the Slack summary
         """.trimIndent()
     )
 }

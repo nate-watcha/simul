@@ -71,7 +71,7 @@ fun collectStatus(project: SimulProject): StatusReport {
 }
 
 private fun latestRun(reportsDir: File, name: String): LastRun? =
-    ReportDirs.latest(reportsDir, name)?.let { File(it, "report.json") }?.takeIf { it.isFile }?.let(ReportJson::readLastRun)
+    ReportDirs.latest(reportsDir, name)?.let { File(it, ResultJson.FILE) }?.takeIf { it.isFile }?.let(ResultJson::readLastRun)
 
 // -------------------------------------------------------------------- rendering
 

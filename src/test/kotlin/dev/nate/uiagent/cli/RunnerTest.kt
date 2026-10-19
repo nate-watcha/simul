@@ -104,7 +104,7 @@ class RunnerTest {
         assertNull(result.steps[1].llm, "the runner-judged Verify step never consulted the model")
         assertEquals(cost, result.llm, "scenario stats = sum over llm steps")
 
-        val json = File(h.reportDir, "report.json").readText()
+        val json = writeResult(result, "llm", h.ops, h.reportDir).readText()
         assertTrue("\"llm\": {" in json && "\"peakPromptTokens\": 9000" in json, json)
         assertEquals(2, Regex("\"llm\": \\{").findAll(json).count(), "scenario-level + the one llm step; no object on the runner step\n$json")
     }
@@ -137,7 +137,7 @@ class RunnerTest {
         assertEquals("웹툰", tap.target?.label)
         assertEquals(Point(360, 1176), tap.target?.lastCoords)
         assertEquals(listOf("웹툰"), trace.steps[0].evidence, "quoted label is the whole evidence")
-        assertTrue(File(h.reportDir, "report.json").isFile)
+        assertTrue(File(h.reportDir, "logcat.txt").exists().not(), "the fake dumps no logcat; nothing else is written by the runner itself")
     }
 
     @Test
@@ -357,8 +357,8 @@ class FailedStepScreenTest {
         val step = result.steps.single()
         assertEquals(StepStatus.FAILED, step.status)
         assertEquals(listOf("로그인", "close"), step.screen, "labels then resourceIds of what was actually on screen")
-        assertEquals(listOf("screenshots/step1-failed.png"), step.screenshots)
-        assertTrue("\"screen\"" in File(reportDir, "report.json").readText())
+        assertEquals(listOf("steps/01.png"), step.screenshots, "replay keeps one frame per step: the screen when it ended")
+        assertTrue("\"screen\"" in writeResult(result, "replay", ops, reportDir).readText())
     }
 }
 
@@ -379,6 +379,6 @@ class AndroidCliMismatchTest {
 
         assertEquals(StepStatus.PASSED, result.status)
         assertTrue(lines.any { "android CLI 1.0.15498356" in it && "1.0.16261425" in it }, lines.joinToString("\n"))
-        assertTrue("\"androidCli\": \"1.0.16261425\"" in File(reportDir, "report.json").readText())
+        assertTrue("\"android_cli\": \"1.0.16261425\"" in writeResult(result, "replay", ops, reportDir).readText())
     }
 }
