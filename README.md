@@ -11,7 +11,7 @@
 
 앱 레포가 `.simul/` 규약(config.yaml + scenarios/*.md)을 갖추면 CLI로 실행한다.
 시나리오 작성법·워크플로·트러블슈팅은 init이 설치하는
-**`.claude/skills/simul-scenarios/references/scenarios.md`** 참조.
+**`.claude/skills/simul-scenarios/references/scenarios.md`** 참조. 내부 구조·리포트 형식·설계 불변은 `CLAUDE.md`.
 
 ```bash
 ./gradlew installDist            # → build/install/simul/bin/simul
@@ -46,55 +46,6 @@ simul report $J --format junit --out $R/junit.xml                               
 simul report $J --check >/dev/null                                                       # 게이트: regression/trace flake/crash → exit 1
 ```
 
-두 단계는 실패해도 다음 단계를 막지 않게 돌린다(GitHub Actions면 `continue-on-error: true`).
-phase 역할은 라벨이 아니라 **mode와 순서**로 정해진다: llm 런이 record, 그 뒤 replay가 verify.
-record가 FAILED인 시나리오는 trace를 건드리지 않으므로 verify는 커밋된 trace를 재생한다 — 그 결과가 어떻든 verdict는 regression이다.
-
-**`simul report`가 남기는 것**
-
-```
-.simul/reports/<stamp>/
-  index.html + <feature>/<name>.<state>.html   # 아래 "HTML 리포트"
-  run.json                      # 배치: 빌드(appVersionName), 시작/종료 시각, 시나리오 목록 (RunSummary)
-  <feature>/<name>.<state>/     # feature = 시나리오 디렉토리, name = md 파일명, state 없으면 <name>/
-    result.json                 # 아래 스키마
-    steps/01.png … NN.png       # 스텝이 끝난 순간의 화면
-    layout/01.json … NN.json    # 그 순간의 layout 트리 (resourceId, bounds, state)
-    logcat.txt                  # 시나리오 구간 logcat (threadtime + epoch 타임스탬프)
-    replay.mp4                  # 화면 녹화
-```
-
-`result.json`에는 `title`/`owner`(md frontmatter), `trace_recorded_at`(trace 파일의
-마지막 커밋 날짜, 수정 중이면 mtime), `layout_hash`(스텝별 resourceId·bounds 지문), `started_at_ms`,
-스텝마다 `started_ms`·`video_ms`·`actions[{tool,target,at_ms,video_ms}]`·`evidence_expected`/`evidence_found`·
-`screenshot`·`layout`. `video_ms`는 replay.mp4 안의 위치다 — screenrecord는 시작이 늦고 끝은 정확하므로 mp4의 t=0을
-"중단 시각 − 길이(ffprobe)"로 잡아 스텝 시각을 환산한다. setup이 깨진 시나리오는 `SKIPPED_SETUP`(앱 판정 아님).
-replay는 액션마다 전후 스크린샷을 찍지 않는다(스텝 끝 프레임 하나 + 녹화); `--mode llm`(녹화)은 종전처럼 찍는다.
-
-**HTML 리포트** — 페이지는 run 디렉토리 안에 들어간다(시나리오 디렉토리가 곧 그 페이지의 자산 디렉토리 — mp4는 그 자리, 360px JPEG 스텝
-썸네일만 `steps/`에 추가). PASS/FAIL은 result.json 그대로이고 리포트는 다시 판정하지 않는다.
-
-- `index.html`: 헤더(앱, 날짜·빌드, 상태 칩 실패/안 돌림/통과) → **실패 카드**(실패 시점 스크린샷·깨진 스텝·reason·owner) + setup 실패 카드
-  (`SKIPPED_SETUP`, 앱 판정 아님) → **기능별 상태** 카드(가장 나쁜 상태, 시나리오 수·states) → 통과 한 줄 → 전체 목록(접힘).
-- `<feature>/<name>.<state>.html`: 제목·상태 칩·owner, md 설명문, states 탭, **스텝 목록**(실패 스텝만 펼쳐서 기대/실제 evidence, 탭 전후
-  2초 logcat; 이후 스텝은 SKIPPED로 흐리게)과 **replay.mp4 플레이어**: 스텝별로 색이 다른 진행 막대, 하단 오버레이 `n/N · 스텝 문장`,
-  스텝이나 막대를 누르면 영상이 그 스텝의 `video_ms`로 간다(순수 JS). 녹화가 없으면 스텝 스크린샷이 그 자리에 뜬다.
-
-**record/verify 리포트** (`simul report <summary.json>...`)
-
-두 결과가 시나리오당 하나의 verdict로 접힌다:
-
-| record | verify | verdict | 뜻 |
-|---|---|---|---|
-| ✅ | ✅ | ✅ stable | 오늘 앱에서 녹화되고 그 trace가 재생됨 → trace PR 리뷰·머지 |
-| ❌ | – | ❌ regression | 에이전트가 오늘 앱에서 시나리오를 못 함 → 앱 회귀 의심(또는 시나리오 문구), record 스크린샷·agent.jsonl부터. 커밋 trace는 그대로 |
-| ✅ | ❌ | ⚠️ trace flake | 녹화는 됐는데 재생 불가 → 비결정 evidence(동적 라벨) |
-| ⏭ | ✅/❌ | ✅/❌ | 녹화 안 함(스텝 없음 등) → 재생 결과 그대로 |
-
-`--check`는 regression/trace flake/crash에서 exit 1.
-record가 다시 쓴 `.simul/scenarios/**/*.trace.json`은 워크플로가 PR로 올리고(예: peter-evans/create-pull-request,
-본문에 `report.md`) 사람이 diff를 보고 머지한다.
-
 **러너 요구사항** (self-hosted — 호스티드 러너엔 에뮬레이터도 LLM도 없다)
 
 - PATH에 `simul`(이 레포 `./gradlew installDist` + `scripts/simul`), `adb`·`emulator`·`android`(CLI), `ffprobe`/`ffmpeg`(녹화
@@ -104,40 +55,9 @@ record가 다시 쓴 `.simul/scenarios/**/*.trace.json`은 워크플로가 PR로
   강제하므로 AVD 해상도·설정은 무관. 단 "저장된 비밀번호" 시트처럼 Google 계정 데이터가 전제인 시나리오는
   그 데이터가 AVD 이미지에 있어야 한다
 - debug 빌드 설치(WebView 채널이 debuggable 전제), `.simul/config.yaml llm.url`에 닿는 OpenAI 호환 LLM —
-  키는 `llm.apiKey: ${VAR}` + 러너 시크릿. **replay 두 단계는 키 없이 돈다**
+  키는 `llm.apiKey: ${VAR}` + 러너 시크릿. **`simul report`는 키 없이 돈다**
 - 로그인 등 상태 스냅샷(`.simul/states/*.tar`, gitignored)은 러너 로컬 디렉터리에서 체크아웃 뒤 복사
-- 끝나면 `adb emu kill`; 아티팩트로 `report.html` + `report_files/`(받아서 열면 끝)와 원본 `runs/<app>/<date>/`
-
-## 구조 (`dev.nate.uiagent`)
-
-| 패키지 | 역할 |
-|---|---|
-| (root) | `Core.kt` 공용 타입(geometry, `LogicalElement/Layout`, JSON 헬퍼, `Defaults`), `LayoutAdapter.kt` dump(flat/트리)→논리 요소 트리 병합, `Trace.kt` JSONL 트레이스, `Process.kt`, `Format.kt` 시간 포맷 |
-| `device` | `Device`/`AdbDevice` 관찰·제스처, `DeviceController` grounding·가드·diff 검증·wait-for-stable(+replay용 fastObserve), `Layout.kt` 모델용 렌더링/diff, `SwipeGeometry`, `AdbOps` 러너용 adb 조작(setup/스크린샷/wm/settings), `DisplayProfile`, `DeviceSettings` |
-| `agent` | Koog 1.3 기반 LLM 스택: `Llm.kt` OpenAI-호환 executor/모델/고정 파라미터, `Tools.kt` 디바이스 툴 + 기준 게이트, `Session.kt` GraphAIAgent + ChatMemory(시나리오당 단일 대화), `Prompt.kt` 시스템 프롬프트, `LlmStats.kt` 모델 비용 집계 |
-| `cli` | `simul` CLI(`Cli`/`RunCommand`/`InitCommand`/`Adhoc`), `.simul/` 규약(`Project`/`Config`), `BatchSession`(CLI·TUI 공용 display/settings 핀), 시나리오 러너(스텝 격리·라이브 로그), Record & Replay(`TraceFormat`/`Recorder`/`Evidence`/`Replayer`), 리포트(`ResultJson`/`LayoutJson`/`RunSummary`/`Report`/`Site`/`SitePages`), `Tui` |
-| `web` | WebView 관찰 채널: `CdpClient`(devtools socket discover + Runtime.evaluate), `WebLayout`(요소 추출 JS·좌표 변환), `WebAwareDevice`(관찰 병합), `DeviceStack`(디바이스 스택 조립) |
-
-핵심 설계 불변:
-
-- **모델에 좌표 비노출** (라벨/synthetic handle grounding — 좌표 환각 방지)
-- **모델은 웹/네이티브를 구분하지 않는다** — 관찰 병합·좌표 변환은 전부 harness가 흡수
-- **replay는 LLM 0회 (예외 없음)** — resourceId→label→좌표 재grounding + evidence(따옴표 라벨 +
-  신규 노드 resourceId 시그니처 + selected/checked 상태) 판정. 깨진 스텝은 FAILED — 화면이 실제로
-  바뀐 것이므로 재녹화(--mode llm)냐 앱 수정이냐는 사람이 결정. fastObserve(단일 관찰 + 미스 시
-  target/evidence가 보일 때까지 폴링 — settle 확인 없음)로 액션당 관찰 1회
-- 트레이스는 결정론 직렬화(고정 키 순서, 휘발값 배제) — 같은 실행 2회면 diff 없음
-- **display 프로필 강제** — config의 `display:`(sizeClass `small|medium|large` — 대상 앱 디자인
-  시스템(경계 600/800dp) 정렬 — 또는 size+density 명시)를
-  실행 동안 `wm size/density`로 강제해 어떤 에뮬레이터에서든 같은 size class로 trace를 재생.
-  에뮬레이터에서만 동작(실기기는 경고 후 무시), 종료 시 이전 상태 복원. 녹화 trace에
-  `recordedWith.display` 스탬프, replay 시 불일치 경고
-- **기기 설정 핀** — config의 `device.settings`(`<namespace>.<key>: value`, `null`=삭제)를 실행 동안
-  `settings put`으로 강제하고, 시나리오 `setup.device.settings`는 그 시나리오의 launch 전에 덮고
-  끝나면 기본값으로 되돌린다(`DeviceSettings`). 앱 데이터가 아닌 전제(Google 자격 증명 제공자 →
-  "Use your saved password" 시트, 자동완성, 전체화면 안내)를 모델이 설정 앱을 조작하는 대신 adb로
-  결정론적으로 맞춘다. display와 같이 에뮬레이터 전용·변경분만·종료 시 복원
-- serialization 컴파일러 플러그인 미사용 — kotlinx-serialization **런타임**(JsonElement)만
+- 끝나면 `adb emu kill`; 아티팩트는 `.simul/reports/<stamp>/` 디렉토리 통째(받아서 `index.html`을 열면 끝)
 
 ## 빌드 & 테스트
 
