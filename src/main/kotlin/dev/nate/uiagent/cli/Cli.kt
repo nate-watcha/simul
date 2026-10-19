@@ -57,7 +57,7 @@ private fun printUsage() {
           simul run --tag <tag> | --state <name> | --all [same options]
                     [--runs <dir>]                        <dir>/<feature>/<name>.<state>/ + run.json + index.html (the HTML report)
                     [--summary <file.json> [--label <phase>]]   batch summary for the phase report
-          simul report [--tag T | --state S | <scenario.md>...]   replay the committed traces (recorded) → .simul/reports/<stamp>/index.html (+ run.json)
+          simul report                        replay every committed trace (recorded) → .simul/reports/<stamp>/index.html (+ run.json)
           simul report --runs <runs dir> [--out <dir>] [--title <app name>] [--check]   the report pages of an existing run
           simul report <summary.json>... [--format md|slack|junit] [--title T]
                     [--link Name=URL]... [--out FILE] [--check]  join record/verify phases → CI/Slack report

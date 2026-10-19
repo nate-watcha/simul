@@ -11,12 +11,12 @@ import java.io.File
 /**
  * `simul report` has two inputs:
  *
- * `simul report [selector]`
- *   The one people type: replay every committed trace with the screen recorded
+ * `simul report`
+ *   The one people type, and it takes nothing: replay every committed trace with the screen recorded
  *   (`simul run --all --mode replay --video --runs .simul/reports/<stamp>`) and write that run's HTML
  *   report into the same directory: `index.html` (failures first) + a page per scenario with its
  *   replay.mp4 step timeline (see [SitePages]), plus `run.json` — the batch summary the nightly joins
- *   with its record phase. A run selector (`--tag smoke`, `--state guest`, a path) narrows it.
+ *   with its record phase.
  *
  * `simul report --runs <dir> [--out <dir>] [--title <app name>] [--check]`
  *   The same pages from an existing `simul run --runs` directory (in place by default; with `--out`
@@ -35,7 +35,7 @@ import java.io.File
  *   Exit code: 0, or 1 with `--check` when any verdict is a failure — the CI gate.
  */
 internal fun reportCommand(args: List<String>, cwd: File): Int {
-    if (args.none { it.endsWith(".json") || it in setOf("--runs", "--format", "--out", "--title", "--link", "--check") }) return replayAndReport(cwd, args)
+    if (args.isEmpty()) return replayAndReport(cwd)
     var format: String? = null
     var title = "simul report"
     var out: String? = null
@@ -89,11 +89,11 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
     return if (check && report.overall == Severity.FAIL) 1 else 0
 }
 
-/** `simul report [selector]`: replay the committed traces into a stamped reports directory and write its HTML. */
-private fun replayAndReport(cwd: File, selector: List<String>): Int {
+/** `simul report` alone: replay every committed trace into a stamped reports directory and write its HTML. */
+private fun replayAndReport(cwd: File): Int {
     val project = SimulProject.find(cwd) ?: return err("no .simul/ directory found from $cwd upwards")
     val dir = File(project.reportsDir, java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmm")))
-    val rc = runCommand(selector.ifEmpty { listOf("--all") } + listOf("--mode", "replay", "--video", "--runs", dir.path), cwd)
+    val rc = runCommand(listOf("--all", "--mode", "replay", "--video", "--runs", dir.path), cwd)
     val html = File(dir, "index.html")
     if (!html.isFile) return if (rc == 0) err("no report written under ${dir.relativeToOrSelf(cwd)}") else rc
     println()
