@@ -69,7 +69,7 @@ class DeviceController(
      * auto-changing content (carousels) and get suppressed from future diffs.
      */
     private fun stabilize(): LogicalLayout {
-        if (fastObserve) return device.observe()
+        if (fastObserve) return device.observeFast()
         var prev = device.observe()
         repeat(maxSettlePolls) {
             device.sleep(settleIntervalMs)
@@ -316,7 +316,7 @@ class DeviceController(
         while (polls < maxSettlePolls && !met) {
             device.sleep(settleIntervalMs)
             polls++
-            val now = device.observe()
+            val now = if (fastObserve) device.observeFast() else device.observe()
             grounding = now
             met = condition(now.elements)
         }

@@ -87,8 +87,16 @@ class ScenarioRunner(
     private val reportDir: File,
     private val app: String?,
     private val takeScreenshots: Boolean = true,
+    /**
+     * A `steps/NN.png` for every step, or only for the failed one. The CLI turns it off for a replay
+     * that is being screen-recorded: the mp4 has every frame and the report's pages only need the
+     * failed step's, while a `screencap -p` costs ~3s per step on a software-rendered emulator.
+     */
+    private val stepFrames: Boolean = true,
     /** Live progress sink: step start/result lines as they happen (a scenario can run for minutes). */
     private val log: (String) -> Unit = {},
+    /** Runs once setup (state restore, cold start, deeplink) is done and the first step is about to run — the CLI starts the screen recording here. */
+    private val onSetupDone: () -> Unit = {},
 ) {
     private val replayer by lazy { Replayer(controller, log = log) }
 
@@ -128,6 +136,7 @@ class ScenarioRunner(
                 ops.setup(app, appState = it.appState, clearData = it.clearData, launch = it.launch, deeplink = it.deeplink)
                 log("  setup: done (${secs(System.currentTimeMillis() - s)})")
             }
+            onSetupDone()
         } catch (ex: Exception) {
             val why = "setup failed: ${ex.message?.lineSequence()?.firstOrNull() ?: ex.toString()}"
             log("  $why")
@@ -179,7 +188,7 @@ class ScenarioRunner(
                 listener.delegate = null
             }
             // what the screen looked like when the step ended — the report's frame for this step
-            val stepShot = shoot("steps/${nn(n)}")
+            val stepShot = if (stepFrames || report.status == StepStatus.FAILED) shoot("steps/${nn(n)}") else null
             val layoutRel = saveLayout(n)
             var done = report.copy(
                 durationMs = System.currentTimeMillis() - s0,

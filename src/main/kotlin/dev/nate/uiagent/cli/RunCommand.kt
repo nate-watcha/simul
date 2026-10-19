@@ -177,14 +177,16 @@ internal fun executeScenario(
         // replay never builds a client — the key stays optional for CI that only replays
         val executor = SessionStepExecutor(stack.controller, { llm.client() }, llm.llmModel(), project.config.maxTurns,
             log = { log("    $it") })
+        // The screen recording starts when setup is done (state restored, app cold-started) and
+        // spans the steps — the journey itself, not the pm clear and the splash. It stops in
+        // `finally`: a crashed run must not leave screenrecord running on the device for the
+        // rest of its time limit. A recorded replay keeps only the failed step's screencap.
+        val recorder = if (video) ScreenRecorder() else null
         // steps are logged live by the runner — a scenario can run for minutes
-        val runner = ScenarioRunner(stack.controller, listener, ops, executor, reportDir, project.config.app, log = log)
+        val runner = ScenarioRunner(stack.controller, listener, ops, executor, reportDir, project.config.app,
+            stepFrames = !(video && mode == RunMode.REPLAY), log = log, onSetupDone = { recorder?.start() })
 
         log("── ${scenario.name} [${mode.name.lowercase()}] ${"─".repeat(30)}")
-        // The screen recording spans setup through the last step — the whole journey, as a
-        // teammate would watch it. It stops in `finally`: a crashed run must not leave
-        // screenrecord running on the device for the rest of its time limit.
-        val recorder = if (video) ScreenRecorder().also { it.start() } else null
         try {
             runner.run(scenario, trace, mode)
         } finally {

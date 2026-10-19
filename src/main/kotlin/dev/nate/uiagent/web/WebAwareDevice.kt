@@ -30,8 +30,12 @@ class WebAwareDevice(
     private val loadPollMs: Long = 500,
 ) : Device by delegate {
 
-    override fun observe(): LogicalLayout {
-        val native = delegate.observe()
+    override fun observe(): LogicalLayout = merge(delegate.observe())
+
+    // `Device by delegate` would route the interface default straight to the adb device and skip the merge
+    override fun observeFast(): LogicalLayout = merge(delegate.observeFast())
+
+    private fun merge(native: LogicalLayout): LogicalLayout {
         val discovery = cdp.discover(appId)
         // Only on-screen pages merge. A dismissed WebView can linger in /json as a dying
         // target (seen on-device in M4) — falling back to it would pollute native screens

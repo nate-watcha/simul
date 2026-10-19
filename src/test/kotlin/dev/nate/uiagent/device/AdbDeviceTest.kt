@@ -25,6 +25,14 @@ class AdbDeviceTest {
     }
 
     @Test
+    fun `observeFast asks for --no-idle up front and does not re-request on NO_IDLE`() {
+        val calls = mutableListOf<List<String>>()
+        val device = AdbDevice(onCommand = calls::add, retryDelayMs = 0) { dump }
+        assertEquals("확인", device.observeFast().elements.single().label)
+        assertEquals(listOf(listOf("android", "layout", "--no-idle")), calls)
+    }
+
+    @Test
     fun `NO_ROOT during cold start is retried and the eventual dump is used`() {
         var n = 0
         val device = AdbDevice(retryDelayMs = 0) { argv ->

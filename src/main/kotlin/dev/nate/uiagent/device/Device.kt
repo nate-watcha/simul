@@ -13,6 +13,15 @@ interface Device {
     /** Full logical layout (adapter-merged) of the current screen. */
     fun observe(): LogicalLayout
 
+    /**
+     * The same observation without the dump's own settle wait: `android layout` (≥ 1.0.16251017)
+     * first waits up to 3s for a 1s quiet window, which a busy screen (animation, screenrecord)
+     * rarely grants — every dump then costs the full 3s and often a `--no-idle` re-request on
+     * top. Replay polls for the screen it expects anyway ([DeviceController.waitUntil]), so it
+     * asks for the frame as it is. Default: the plain observation.
+     */
+    fun observeFast(): LogicalLayout = observe()
+
     fun tap(x: Int, y: Int)
     fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int)
     fun inputText(text: String)
@@ -40,12 +49,18 @@ class AdbDevice(
      * After the retries a persistent failure propagates with the CLI's stderr — the step then
      * FAILs with the real reason instead of grounding against an empty screen.
      */
-    override fun observe(): LogicalLayout {
+    override fun observe(): LogicalLayout = observe(noIdle = false)
+
+    /** `android layout --no-idle` from the first attempt — replay's observation (see [Device.observeFast]). */
+    override fun observeFast(): LogicalLayout = observe(noIdle = true)
+
+    private fun observe(noIdle: Boolean): LogicalLayout {
         // `adb` honors ANDROID_SERIAL on its own, but the `android` CLI does not and errors
         // out when several devices are online — pass the serial through explicitly.
         val serial = System.getenv("ANDROID_SERIAL")
         val argv = listOf(androidBin, "layout") +
-            (serial?.let { listOf("--device", it) } ?: emptyList())
+            (serial?.let { listOf("--device", it) } ?: emptyList()) +
+            (if (noIdle) listOf("--no-idle") else emptyList())
         var failure: ProcessFailure? = null
         repeat(OBSERVE_RETRIES) { attempt ->
             val out = try {
@@ -66,7 +81,7 @@ class AdbDevice(
         return try {
             run(argv)
         } catch (ex: ProcessFailure) {
-            if (NO_IDLE_MARKER !in ex.stderr) throw ex
+            if (NO_IDLE_MARKER !in ex.stderr || "--no-idle" in argv) throw ex
             val noIdle = argv + "--no-idle"
             onCommand(noIdle)
             run(noIdle)
