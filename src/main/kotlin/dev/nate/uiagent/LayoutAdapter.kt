@@ -23,7 +23,10 @@ object LayoutAdapter {
     private const val MAX_DX = 60
     private const val MAX_DY = 45
 
-    fun adapt(rawJson: String): LogicalLayout = LogicalLayout(build(parseRawLayout(rawJson)))
+    fun adapt(rawJson: String): LogicalLayout {
+        val parsed = parse(rawJson)
+        return LogicalLayout(build(parsed.roots), packages = parsed.packages)
+    }
 
     // ---------------------------------------------------------------- parse
 
@@ -50,13 +53,20 @@ object LayoutAdapter {
      * lands on stdout) is ignored.
      * Everything is normalised to the old vocabulary so traces and evidence stay valid.
      */
-    fun parseRawLayout(rawJson: String): List<RawNode> {
+    fun parseRawLayout(rawJson: String): List<RawNode> = parse(rawJson).roots
+
+    /** Raw node trees plus the packages their full resource-ids belong to ([LogicalLayout.packages]). */
+    class Parsed(val roots: List<RawNode>, val packages: Set<String>)
+
+    private fun parse(rawJson: String): Parsed {
+        val none = Parsed(emptyList(), emptySet())
         // skip any non-JSON preamble / postamble the CLI prints on stdout
-        val start = rawJson.indexOf('[').takeIf { it >= 0 } ?: return emptyList()
-        val end = rawJson.lastIndexOf(']').takeIf { it > start } ?: return emptyList()
+        val start = rawJson.indexOf('[').takeIf { it >= 0 } ?: return none
+        val end = rawJson.lastIndexOf(']').takeIf { it > start } ?: return none
         // malformed/truncated dump -> no elements, not a crash; callers poll again
         val parsed = runCatching { json.parseToJsonElement(rawJson.substring(start, end + 1)) }.getOrNull()
-        val arr = parsed as? JsonArray ?: return emptyList()
+        val arr = parsed as? JsonArray ?: return none
+        val packages = linkedSetOf<String>()
         fun visit(el: JsonElement, into: MutableList<RawNode>) {
             val o = el as? JsonObject ?: return
             // `--full` only: invisible subtrees must not become tap targets
@@ -68,12 +78,14 @@ object LayoutAdapter {
                 into += children
                 return
             }
+            val fullId = o["resource-id"]?.jsonPrimitive?.contentOrNull
+            fullId?.let(::packageOf)?.let(packages::add)
             into += RawNode(
                 interactions = o["interactions"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull?.lowercase() } ?: emptyList(),
                 state = o["state"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull?.lowercase() } ?: emptyList(),
                 text = o["text"]?.jsonPrimitive?.contentOrNull,
                 contentDesc = o["content-desc"]?.jsonPrimitive?.contentOrNull,
-                resourceId = o["resource-id"]?.jsonPrimitive?.contentOrNull?.let(::shortResourceId),
+                resourceId = fullId?.let(::shortResourceId),
                 center = center,
                 bounds = o["bounds"]?.jsonPrimitive?.contentOrNull?.let(::parseBounds),
                 children = children,
@@ -82,7 +94,7 @@ object LayoutAdapter {
         val roots = mutableListOf<RawNode>()
         val nodes = if (arr.isWindowList()) selectWindows(arr).flatMap { it["content"] as? JsonArray ?: JsonArray(emptyList()) } else arr
         nodes.forEach { visit(it, roots) }
-        return roots
+        return Parsed(roots, packages)
     }
 
     /** Layout V3: every top-level entry is a window wrapper (has `content`, never a `center`). */
@@ -112,6 +124,9 @@ object LayoutAdapter {
 
     /** `com.example.app:id/recycler_view` -> `recycler_view` (what traces and scenarios use). */
     fun shortResourceId(id: String): String = fullIdPrefix.replace(id, "")
+
+    /** `com.example.app:id/recycler_view` -> `com.example.app`; null for a short (legacy) id. */
+    private fun packageOf(id: String): String? = fullIdPrefix.find(id)?.value?.removeSuffix(":id/")
 
     // ---------------------------------------------------------------- merge
 

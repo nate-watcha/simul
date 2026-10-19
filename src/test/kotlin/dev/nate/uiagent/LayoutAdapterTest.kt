@@ -190,6 +190,17 @@ class LayoutTreeTest {
     }
 
     @Test
+    fun `the observation's packages come from the full resource-ids`() {
+        val dump = """
+        [{"window-title":"Google Play Store","type":"APPLICATION","active":true,"bounds":"[0,0][720,1280]","content":[
+         {"class":"android.widget.Button","text":"Subscribe","resource-id":"com.android.vending:id/0_resource_name_obfuscated","interactions":["CLICKABLE"],"bounds":"[48,1132][672,1204]","center":"[360,1168]"}]}]
+        """.trimIndent()
+        val l = LayoutAdapter.adapt(dump)
+        assertEquals(setOf("com.android.vending"), l.packages)
+        assertEquals("0_resource_name_obfuscated", l.elements.single().resourceId)
+    }
+
+    @Test
     fun `a scroll container never takes a text child as its label`() {
         // 실측 (settings screen): the ScrollView's only direct text child is the e-mail line, and a
         // WebView got named after the paragraph crossing its center — content that scrolls away.

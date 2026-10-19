@@ -47,6 +47,7 @@ class WebAwareDevice(
             return if (native.elements.any(::isWebViewNode))
                 LogicalLayout(
                     native.elements,
+                    packages = native.packages,
                     webNote = "WebView present but not inspectable (release build or debugging disabled)" +
                         (discovery.failure?.let { " — $it" } ?: ""),
                 )
@@ -59,13 +60,14 @@ class WebAwareDevice(
         val page = (eval as? CdpClient.Eval.Ok)?.value?.let(WebLayout::parsePage)
             ?: return LogicalLayout(
                 native.elements,
+                packages = native.packages,
                 webNote = "web content observation failed" +
                     ((eval as? CdpClient.Eval.Failed)?.reason?.let { " — $it" } ?: "") +
                     " (showing native layout only)",
             )
         val rect = target.rect
             ?: native.elements.firstOrNull(::isWebViewNode)?.bounds
-            ?: return LogicalLayout(native.elements, webNote = "web content observation failed — WebView bounds unknown")
+            ?: return LogicalLayout(native.elements, packages = native.packages, webNote = "web content observation failed — WebView bounds unknown")
 
         val webElements = WebLayout.toLogicalElements(page, rect)
 
@@ -110,7 +112,7 @@ class WebAwareDevice(
             if (e.origin == Origin.NATIVE) newId[e.id] = i
             e.copy(id = i, parentId = e.parentId?.let { newId[it] })
         }
-        return LogicalLayout(merged, webNote = WebLayout.scrollHint(page))
+        return LogicalLayout(merged, webNote = WebLayout.scrollHint(page), packages = native.packages)
     }
 
     /**

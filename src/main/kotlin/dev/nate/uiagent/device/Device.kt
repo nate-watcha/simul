@@ -27,6 +27,13 @@ interface Device {
     fun inputText(text: String)
     fun keyBack()
     fun sleep(ms: Long)
+
+    /**
+     * Disconnect whatever accessibility-automation client the observation channel left attached,
+     * right before a tap that must look like a user's ([DeviceController] decides when). No-op
+     * for devices that keep none.
+     */
+    fun releaseAutomation() {}
 }
 
 /** Live device via `android layout` + `adb shell input`. */
@@ -91,15 +98,30 @@ class AdbDevice(
     private companion object {
         const val OBSERVE_RETRIES = 5
         const val NO_IDLE_MARKER = "Could not obtain idle state"
+        /** The on-device server `android layout` starts and leaves resident between dumps. */
+        const val LAYOUT_SERVER = "com.android.cli.interact.instrumentation"
     }
 
-    private fun input(vararg args: String) {
-        val argv = listOf(adbBin, "shell", "input", *args)
+    private fun shell(vararg args: String) {
+        val argv = listOf(adbBin, "shell", *args)
         onCommand(argv)
-        runProcess(argv)
+        run(argv)
     }
+
+    private fun input(vararg args: String) = shell("input", *args)
 
     override fun tap(x: Int, y: Int) = input("tap", "$x", "$y")
+
+    /**
+     * `android layout` runs through an instrumentation server that stays resident after the dump
+     * (warm dump 1.0s; a dump that has to start it again 2.2s, measured on a Mac emulator). While
+     * it is alive the system reports an accessibility automation client (`dumpsys accessibility`
+     * → `Ui Automation[...]`, `accessibility_enabled` = 1), and Google Play's purchase sheet drops
+     * the tap on its "Subscribe" button in that state — the same `input tap` lands once the server
+     * is stopped (kloud billing-subscribe-declined, 2026-10-19: two runner taps ignored, manual
+     * taps fine, confirmed by force-stopping the server between two taps on a fresh sheet).
+     */
+    override fun releaseAutomation() = shell("am", "force-stop", LAYOUT_SERVER)
 
     override fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int) =
         input("swipe", "$x1", "$y1", "$x2", "$y2", "$durationMs")

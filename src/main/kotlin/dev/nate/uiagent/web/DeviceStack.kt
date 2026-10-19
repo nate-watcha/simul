@@ -32,6 +32,7 @@ class DeviceStack(
         trace = trace,
         maxScrollRounds = scrollLimit,
         listener = listener,
+        app = app,
     )
 
     override fun close() = cdp.close()

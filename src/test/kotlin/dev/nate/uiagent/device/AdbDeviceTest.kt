@@ -25,6 +25,23 @@ class AdbDeviceTest {
     }
 
     @Test
+    fun `releaseAutomation force-stops the layout server and a tap alone is just the touch`() {
+        // Google Play drops its purchase-button tap while the resident `android layout` server
+        // holds a UiAutomation connection (kloud billing-subscribe-declined, 2026-10-19).
+        val calls = mutableListOf<List<String>>()
+        val device = AdbDevice(onCommand = calls::add, retryDelayMs = 0) { "" }
+        device.releaseAutomation()
+        device.tap(360, 1168)
+        assertEquals(
+            listOf(
+                listOf("adb", "shell", "am", "force-stop", "com.android.cli.interact.instrumentation"),
+                listOf("adb", "shell", "input", "tap", "360", "1168"),
+            ),
+            calls,
+        )
+    }
+
+    @Test
     fun `observeFast asks for --no-idle up front and does not re-request on NO_IDLE`() {
         val calls = mutableListOf<List<String>>()
         val device = AdbDevice(onCommand = calls::add, retryDelayMs = 0) { dump }

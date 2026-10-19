@@ -21,6 +21,8 @@ class DeviceController(
     private val maxSettlePolls: Int = 7,
     private val maxScrollRounds: Int = Defaults.SCROLL_LIMIT,
     private val listener: ActionListener? = null,
+    /** Package of the app under test; null = unknown (every screen then counts as the app's). */
+    private val app: String? = null,
 ) {
     private var grounding: LogicalLayout? = null
 
@@ -177,10 +179,24 @@ class DeviceController(
             is Resolution.Match -> {
                 if (!fastObserve) plainTextGuard(r.element)?.let { return@traced it }
                 lastResolved = r.element
-                device.tap(r.element.center.x, r.element.center.y)
+                userTap(r.element)
                 "Tapped '${handleOf(r.element)}'.\n" + settleAndDiff("tap $target")
             }
         }
+    }
+
+    /**
+     * A tap on a window of another package than the app under test (Google Play's purchase
+     * sheet, a system dialog) is injected with no automation client attached
+     * ([Device.releaseAutomation]): Play drops its "Subscribe" tap while the `android layout`
+     * server holds a UiAutomation connection — the same `input tap` lands once the server is
+     * stopped (실측 2026-10-19, kloud billing-subscribe-declined; other taps on that sheet were
+     * fine). In-app taps keep the server warm; a foreign tap costs the next dump its restart.
+     */
+    private fun userTap(e: LogicalElement) {
+        val pkgs = grounding?.packages
+        if (app != null && pkgs != null && pkgs.isNotEmpty() && app !in pkgs) device.releaseAutomation()
+        device.tap(e.center.x, e.center.y)
     }
 
     /**
@@ -217,7 +233,7 @@ class DeviceController(
                 if ("focusable" !in r.element.interactions)
                     return@traced "ERROR: '${handleOf(r.element)}' is not focusable; cannot type into it."
                 lastResolved = r.element
-                device.tap(r.element.center.x, r.element.center.y)
+                userTap(r.element)
                 device.sleep(300)
                 device.inputText(text)
                 "Typed \"$text\" into '${handleOf(r.element)}'.\n" + settleAndDiff("type $target")

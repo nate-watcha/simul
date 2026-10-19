@@ -44,6 +44,7 @@ internal class FakeDevice(vararg initial: LogicalLayout) : Device {
     override fun inputText(text: String) { gestures += "text $text" }
     override fun keyBack() { gestures += "back" }
     override fun sleep(ms: Long) {}
+    override fun releaseAutomation() { gestures += "release" }
 }
 
 /** One screen that never changes unless the test swaps [layout]; gestures are recorded. */

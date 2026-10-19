@@ -3,6 +3,7 @@ package dev.nate.uiagent.device
 import dev.nate.uiagent.layout
 import dev.nate.uiagent.el
 import dev.nate.uiagent.FakeDevice
+import dev.nate.uiagent.LogicalLayout
 import dev.nate.uiagent.Bounds
 import dev.nate.uiagent.Point
 import kotlin.test.Test
@@ -35,6 +36,23 @@ class DeviceControllerTest {
         assertContains(result, "Tapped '웹툰'")
         assertContains(result, "+ {\"label\":\"웹툰 홈 배너\"")
         assertContains(result, "(state changed)")
+    }
+
+    @Test
+    fun `a tap on another package's window releases the automation client first - in-app taps do not`() {
+        // Google Play's purchase sheet ignores "Subscribe" while the layout server's UiAutomation
+        // is connected (실측 2026-10-19); taps inside the app keep the server warm.
+        val subscribe = el("Subscribe", interactions = listOf("clickable"), center = Point(360, 1168))
+        fun tapOn(packages: Set<String>): List<String> {
+            val dev = FakeDevice(LogicalLayout(layout(subscribe).elements, packages = packages))
+            val c = DeviceController(dev, settleIntervalMs = 0, app = "com.frograms.wplay")
+            c.fullLayout()
+            c.tap("Subscribe")
+            return dev.gestures
+        }
+        assertEquals(listOf("release", "tap 360 1168"), tapOn(setOf("com.android.vending")))
+        assertEquals(listOf("tap 360 1168"), tapOn(setOf("com.frograms.wplay")))
+        assertEquals(listOf("tap 360 1168"), tapOn(emptySet()), "legacy dump without full ids")
     }
 
     @Test

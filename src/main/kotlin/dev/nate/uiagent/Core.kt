@@ -139,6 +139,13 @@ class LogicalLayout(
      * (e.g. "WebView present but not inspectable"). Null when web observation is fine or N/A.
      */
     val webNote: String? = null,
+    /**
+     * Android packages whose resource-ids appear in this observation (`com.android.vending:id/x`
+     * → `com.android.vending`). Empty for dumps without full ids (CLI ≤ 1.0.15498356) and for
+     * synthetic layouts. [dev.nate.uiagent.device.DeviceController] uses it to tell a foreign
+     * window (Google Play's purchase sheet, a system dialog) from the app under test.
+     */
+    val packages: Set<String> = emptySet(),
 ) {
     /** True when web content was merged into this observation (diffing is disabled then). */
     val hasWeb: Boolean by lazy { elements.any { it.origin == Origin.WEB } }
