@@ -17,35 +17,21 @@
 ./gradlew installDist            # → build/install/simul/bin/simul
 ln -s "$(pwd)/scripts/simul" ~/.local/bin/simul   # PATH 래퍼
 
-simul                            # 인터랙티브 모드: 시나리오 목록/실행/녹화/상태 저장/ad-hoc REPL
-simul status                     # 시나리오 × trace × 최근 결과 × states 한눈에
+simul                            # 개발자는 이것 하나: 시나리오 목록/실행/녹화/상태 저장/ad-hoc REPL (TUI)
 simul init --app com.example     # 타겟 레포에 .simul/ 스캐폴드 + 작성 가이드 + Claude 스킬 설치
-simul run foo.md --mode llm      # authoring: LLM 실행 + <이름>.trace.json 기록
-simul run --all                  # CI: 기본 auto = 트레이스 재생(LLM 0회), 없으면 SKIP
-simul run foo.md --mode replay   # 순수 재생 — 깨진 스텝은 FAILED (replay는 LLM 0회 보장)
-simul run --tag billing          # 태그 필터 (--state <name>도 동일 형식)
-simul run --all --mode replay --video --runs runs/<app>/$(date +%F)   # 나이틀리: 리포트 구조로 결과 남기기 (아래)
-simul run foo.md --mode replay --video   # 화면 녹화 → replay.mp4 + 스텝별 video_ms (TUI에선 v)
-simul run --all --summary r.json --label verify   # 배치 요약 JSON (record/verify 단계 리포트 입력)
-simul report                             # 커밋된 trace 전부 replay(녹화) → .simul/reports/<stamp>/index.html — 이걸 연다
-simul run --all --mode replay --video --runs runs/today   # 같은 것, 디렉토리를 정해서 (나이틀리가 쓰는 형태)
-simul report r/*.json --format md|slack|junit [--check]   # record/verify 단계 병합 리포트 (아래)
-simul list                       # 시나리오 목록 + 트레이스 유무/신선도
-simul state save <name>          # 현재 앱 데이터를 .simul/states/<name>.tar 스냅샷으로 저장
-                                 #   → 시나리오의 setup.appState: <name>으로 로그인 등 전제 주입
 simul "Tap the \"웹툰\" tab"     # ad-hoc 단일 커맨드 (규약 없이 동작)
 
 ./gradlew runAgent --args='"설정 탭을 눌러"'   # 개발용 ad-hoc 직접 실행
 ```
 
-종료 코드: 전부 PASSED=0, 실패=1.
+그 외 커맨드는 나이틀리(아래) 전용이다. 종료 코드: 전부 PASSED=0, 실패=1.
 
-### 나이틀리 운영 (record → verify → report)
+### 나이틀리 운영 (record → report)
 
-PR 게이트는 replay만 돌리고(LLM 0회, `simul run --all`) 끝이다. 나이틀리는 **그날의 앱을 기준으로 두 번** 돈다:
-먼저 LLM이 전 시나리오를 다시 녹화(record)하고, `simul report`가 방금 녹화한 trace를 replay(verify)하면서 **HTML 리포트**(모두가 보는
-결과물 — 구조는 아래)를 쓴다. **trace PR 본문(md)·junit·게이트**는 record의 `--summary` JSON과 그 리포트 디렉토리의 `run.json`에서 나온다.
-어제 trace를 다시 재생하는 단계는 없다.
+나이틀리는 **그날의 앱을 기준으로 두 번** 돈다. 먼저 LLM이 전 시나리오를 다시 녹화하고(record — 산출물은 trace뿐),
+`simul report`가 방금 녹화한 trace를 LLM 없이 replay하면서(그래서 훨씬 빠르다) **HTML 리포트**(모두가 보는 결과물 — 구조는 아래)를 쓴다.
+**trace PR 본문(md)·junit·게이트**는 record의 요약 JSON과 그 리포트 디렉토리의 `run.json`에서 나온다. 어제 trace를 다시 재생하는 단계는 없다.
+PR 게이트가 필요하면 `simul report` 하나를 돌리고 종료 코드를 본다.
 워크플로 파일은 **앱 레포가 가진다** — 이 레포는 커맨드만 제공하고, 조립 순서는 이것이다:
 
 ```bash
@@ -60,22 +46,22 @@ simul report $J --format junit --out $R/junit.xml                               
 simul report $J --check >/dev/null                                                       # 게이트: regression/trace flake/crash → exit 1
 ```
 
-각 `simul run`은 실패해도 다음 단계를 막지 않게 돌린다(GitHub Actions면 `continue-on-error: true`).
-phase 역할은 라벨이 아니라 **mode와 순서**로 정해진다: 첫 llm 런이 record, 그 직후 replay가 verify(그 외 replay는 열로만 보인다).
-`simul report`가 남기는 `run.json`이 verify의 `--summary`와 같은 것이다 — md 리포트는 record의 `--summary` JSON과 그것을 읽는다.
+두 단계는 실패해도 다음 단계를 막지 않게 돌린다(GitHub Actions면 `continue-on-error: true`).
+phase 역할은 라벨이 아니라 **mode와 순서**로 정해진다: llm 런이 record, 그 뒤 replay가 verify.
 record가 FAILED인 시나리오는 trace를 건드리지 않으므로 verify는 커밋된 trace를 재생한다 — 그 결과가 어떻든 verdict는 regression이다.
 
-**replay가 남기는 것** (`--runs <dir>`; 없으면 종전대로 `.simul/reports/<시나리오>-<stamp>/`에 같은 내용)
+**`simul report`가 남기는 것**
 
 ```
-runs/<app>/<YYYY-MM-DD>/
+.simul/reports/<stamp>/
+  index.html + <feature>/<name>.<state>.html   # 아래 "HTML 리포트"
   run.json                      # 배치: 빌드(appVersionName), 시작/종료 시각, 시나리오 목록 (RunSummary)
   <feature>/<name>.<state>/     # feature = 시나리오 디렉토리, name = md 파일명, state 없으면 <name>/
     result.json                 # 아래 스키마
     steps/01.png … NN.png       # 스텝이 끝난 순간의 화면
     layout/01.json … NN.json    # 그 순간의 layout 트리 (resourceId, bounds, state)
     logcat.txt                  # 시나리오 구간 logcat (threadtime + epoch 타임스탬프)
-    replay.mp4                  # 화면 녹화 (--video)
+    replay.mp4                  # 화면 녹화
 ```
 
 `result.json`에는 `title`/`owner`(md frontmatter), `trace_recorded_at`(trace 파일의
@@ -85,11 +71,8 @@ runs/<app>/<YYYY-MM-DD>/
 "중단 시각 − 길이(ffprobe)"로 잡아 스텝 시각을 환산한다. setup이 깨진 시나리오는 `SKIPPED_SETUP`(앱 판정 아님).
 replay는 액션마다 전후 스크린샷을 찍지 않는다(스텝 끝 프레임 하나 + 녹화); `--mode llm`(녹화)은 종전처럼 찍는다.
 
-**HTML 리포트** — 로컬에서는 `simul report` 한 줄이다: 커밋된 trace를 전부 replay(녹화)하고 `.simul/reports/<stamp>/index.html`을 쓴다.
-`simul run --runs <dir>`도 끝나면 같은 디렉토리 안에 페이지를 쓴다(시나리오 디렉토리가 곧 그 페이지의 자산 디렉토리 — mp4는 그 자리, 360px JPEG
-스텝 썸네일만 `steps/`에 추가). 다른 곳에 두거나 앱 이름을 붙이려면 `simul report --runs <dir> [--out <dir>] [--title <앱 이름>] [--check]`
-(`--out`이면 페이지·mp4·썸네일을 거기로 복사). PASS/FAIL은 result.json 그대로이고 리포트는 다시 판정하지 않는다. `--check`는 FAILED가
-하나라도 있으면 exit 1.
+**HTML 리포트** — 페이지는 run 디렉토리 안에 들어간다(시나리오 디렉토리가 곧 그 페이지의 자산 디렉토리 — mp4는 그 자리, 360px JPEG 스텝
+썸네일만 `steps/`에 추가). PASS/FAIL은 result.json 그대로이고 리포트는 다시 판정하지 않는다.
 
 - `index.html`: 헤더(앱, 날짜·빌드, 상태 칩 실패/안 돌림/통과) → **실패 카드**(실패 시점 스크린샷·깨진 스텝·reason·owner) + setup 실패 카드
   (`SKIPPED_SETUP`, 앱 판정 아님) → **기능별 상태** 카드(가장 나쁜 상태, 시나리오 수·states) → 통과 한 줄 → 전체 목록(접힘).

@@ -50,31 +50,14 @@ private fun printUsage() {
         simul $AGENT_VERSION — natural-language UI test runner
 
         usage:
-          simul                               interactive mode (full-screen, TTY + .simul/ 필요)
+          simul                               interactive mode — scenarios, runs, recording, states, ad-hoc REPL (TTY + .simul/)
           simul init [--app <package>]        set up .simul/ + the scenario-authoring Claude skill
-          simul run <scenario.md>... [--mode replay|llm|auto] [--dry-run] [--url U]
-                    [--video]                             record the screen → replay.mp4 with a step timeline
-          simul run --tag <tag> | --state <name> | --all [same options]
-                    [--runs <dir>]                        <dir>/<feature>/<name>.<state>/ + run.json + index.html (the HTML report)
-                    [--summary <file.json> [--label <phase>]]   batch summary for the phase report
-          simul report                        replay every committed trace (recorded) → .simul/reports/<stamp>/index.html (+ run.json)
-          simul report --runs <runs dir> [--out <dir>] [--title <app name>] [--check]   the report pages of an existing run
-          simul report <summary.json>... [--format md|slack|junit] [--title T]
-                    [--link Name=URL]... [--out FILE] [--check]  join record/verify phases → CI/Slack report
-          simul status                        scenarios × trace × last run × states, at a glance
-          simul list
-          simul state save <name>             snapshot current app data → .simul/states/<name>.tar
-          simul "<natural-language command>" [ad-hoc options]
+          simul "<natural-language command>"  ad-hoc single command, no .simul/ needed
 
-        modes:
-          auto (default)  replay if a trace exists, otherwise SKIP with a warning
-          replay          play the committed trace deterministically; broken steps FAIL (no LLM)
-          llm             interpret every step from scratch and (re)record the trace
-
-        nightly pipeline (wire these into your CI — see the README):
-          simul run --all --mode llm    --summary r/record.json                 # re-record every scenario on today's app
-          simul report                                                        # replay the fresh traces → .simul/reports/<stamp>/{index.html,run.json}
-          simul report r/record.json .simul/reports/<stamp>/run.json --format md --check   # trace PR body + gate
+        nightly (wired into the app repo's CI — see the README):
+          simul run --all --mode llm --summary r/record.json --label record   # re-record every scenario with the LLM; the traces are the output
+          simul report                                                        # replay what it recorded, no LLM → .simul/reports/<stamp>/index.html + run.json
+          simul report r/record.json .simul/reports/<stamp>/run.json --format md|junit [--check]   # job summary / trace PR body / gate
         """.trimIndent()
     )
 }
