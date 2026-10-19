@@ -39,6 +39,15 @@ class ScenarioMdTest {
     }
 
     @Test
+    fun `title and owner come from the frontmatter and survive state expansion`() {
+        val s = ScenarioMd.parse("---\nname: coupon\ntitle: 쿠폰을 등록한다\nowner: nate\nstates: [member, guest]\n---\n1. Tap the \"a\" button\n")
+        assertEquals("쿠폰을 등록한다", s.title)
+        assertEquals("nate", s.owner)
+        assertEquals(listOf("쿠폰을 등록한다"), s.variants().map { it.title }.distinct())
+        assertEquals(null, ScenarioMd.parse("---\nname: x\n---\n1. a\n").title)
+    }
+
+    @Test
     fun `no frontmatter still yields steps`() {
         val s = ScenarioMd.parse("1. first\n2. second\n")
         assertEquals(listOf("first", "second"), s.steps)

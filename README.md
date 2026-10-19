@@ -24,9 +24,12 @@ simul run foo.md --mode llm      # authoring: LLM 실행 + <이름>.trace.json �
 simul run --all                  # CI: 기본 auto = 트레이스 재생(LLM 0회), 없으면 SKIP
 simul run foo.md --mode replay   # 순수 재생 — 깨진 스텝은 FAILED (replay는 LLM 0회 보장)
 simul run --tag billing          # 태그 필터 (--state <name>도 동일 형식)
-simul run --all --summary r.json --label verify   # 배치 요약 JSON (simul report 입력)
-simul run foo.md --mode replay --gif   # 화면 녹화 → 리포트 폴더에 run.gif(1.5배속; --video면 run.mp4 원본) (TUI에선 v)
-simul report r/*.json --format md|slack|junit|html [--check]   # 나이틀리 3단계 병합 리포트 (아래)
+simul run --all --mode replay --video --runs runs/<app>/$(date +%F)   # 나이틀리: 리포트 구조로 결과 남기기 (아래)
+simul run foo.md --mode replay --video   # 화면 녹화 → replay.mp4 + 스텝별 video_ms (TUI에선 v)
+simul run --all --summary r.json --label verify   # 배치 요약 JSON (record/verify 단계 리포트 입력)
+simul report --runs runs/<app>/<date> --out site/<app>/<date>   # 나이틀리 정적 사이트 (홈 + 시나리오 페이지)
+simul report --runs runs/<app>/<date> --format slack --site-url URL   # Slack 요약
+simul report r/*.json --format md|slack|junit [--check]   # record/verify 단계 병합 리포트 (아래)
 simul list                       # 시나리오 목록 + 트레이스 유무/신선도
 simul state save <name>          # 현재 앱 데이터를 .simul/states/<name>.tar 스냅샷으로 저장
                                  #   → 시나리오의 setup.appState: <name>으로 로그인 등 전제 주입
@@ -37,20 +40,71 @@ simul "Tap the \"웹툰\" tab"     # ad-hoc 단일 커맨드 (규약 없이 동�
 
 종료 코드: 전부 PASSED=0, 실패=1.
 
-### 나이틀리 운영 (baseline → record → verify → report)
+### 나이틀리 운영 (replay → report)
 
-PR 게이트는 replay만 돌리고(LLM 0회, `simul run --all`) 끝이다. 나이틀리는 세 번 돌고 한 번 묶는다.
+PR 게이트는 replay만 돌리고(LLM 0회, `simul run --all`) 끝이다. 나이틀리는 커밋된 trace를 전부 재생하고
+결과를 정적 사이트와 Slack으로 낸다(스펙: `docs/report/SPEC.md`, 레이아웃 기준: `docs/report/mockups/`).
 워크플로 파일은 **앱 레포가 가진다** — 이 레포는 커맨드만 제공하고, 조립 순서는 이것이다:
 
 ```bash
+APP=com.example; D=$(date +%F)
+simul run --all --mode replay --video --runs runs/$APP/$D          # 커밋된 trace 재생 + 화면 녹화 → runs/$APP/$D/
+simul report --runs runs/$APP/$D --out site/$APP/$D --title WatchaPlay \
+    --repo-url https://github.com/org/app --site-url $SITE_URL/$APP/$D   # 정적 사이트 (GitHub Pages / 사내 호스팅)
+simul report --runs runs/$APP/$D --format slack --site-url $SITE_URL/$APP/$D --out slack.json   # curl -d @slack.json $SLACK_WEBHOOK_URL
+simul report --runs runs/$APP/$D --check >/dev/null                                             # 게이트: 실패 → exit 1
+```
+
+**replay가 남기는 것** (`--runs <dir>`; 없으면 종전대로 `.simul/reports/<시나리오>-<stamp>/`에 같은 내용)
+
+```
+runs/<app>/<YYYY-MM-DD>/
+  run.json                      # 배치: 빌드(appVersionName), 시작/종료 시각, 시나리오 목록 (RunSummary)
+  <feature>/<name>.<state>/     # feature = 시나리오 디렉토리, name = md 파일명, state 없으면 <name>/
+    result.json                 # 아래 스키마
+    steps/01.png … NN.png       # 스텝이 끝난 순간의 화면
+    layout/01.json … NN.json    # 그 순간의 layout 트리 (resourceId, bounds, state) — "화면 바뀜"은 이걸로 판정
+    logcat.txt                  # 시나리오 구간 logcat (threadtime + epoch 타임스탬프)
+    replay.mp4                  # 화면 녹화 (--video)
+```
+
+`result.json`은 SPEC의 스키마에 몇 가지를 더한다: `title`/`owner`(md frontmatter), `trace_recorded_at`(trace 파일의
+마지막 커밋 날짜, 수정 중이면 mtime), `layout_hash`(스텝별 resourceId·bounds 지문), `started_at_ms`,
+스텝마다 `started_ms`·`video_ms`·`actions[{tool,target,at_ms,video_ms}]`·`evidence_expected`/`evidence_found`·
+`screenshot`·`layout`. `video_ms`는 replay.mp4 안의 위치다 — screenrecord는 시작이 늦고 끝은 정확하므로 mp4의 t=0을
+"중단 시각 − 길이(ffprobe)"로 잡아 스텝 시각을 환산한다. setup이 깨진 시나리오는 `SKIPPED_SETUP`(앱 판정 아님).
+replay는 액션마다 전후 스크린샷을 찍지 않는다(스텝 끝 프레임 하나 + 녹화); `--mode llm`(녹화)은 종전처럼 찍는다.
+
+**사이트** (`simul report --runs … --out …`)
+
+- `index.html`: 헤더(앱, 날짜·빌드, 상태 칩 실패/화면 바뀜/재녹화 필요/통과) → **어제와 다른 것**(실패 카드: 실패 시점
+  스크린샷·깨진 스텝·reason·owner; 화면 바뀜 카드: 어제/오늘 스크린샷·무엇이 바뀌었는지·"의도한 변경"·"이슈로 보내기";
+  재녹화 카드: 사유와 명령어) → **기능별 상태** 카드(가장 나쁜 상태, 시나리오 수·states, 7일 칸, 마지막 전부 통과)
+  → 통과 한 줄 → 전체 목록(접힘). 어제 = 같은 상위 디렉토리의 바로 전 날짜 디렉토리; 7일 칸도 거기서 나온다.
+- `<feature>/<name>.<state>.html`: 제목·상태 칩·owner·trace 녹화일, md 설명문, states 탭, 7일 칸, **스텝 목록**(실패
+  스텝만 펼쳐서 기대/실제 evidence, 탭 전후 2초 logcat, 재녹화 명령어, 이슈 링크; 이후 스텝은 SKIPPED로 흐리게)과
+  **replay.mp4 플레이어**: 스텝별로 색이 다른 진행 막대, 하단 오버레이 `n/N · 스텝 문장`. **스텝이나 막대를 누르면 영상이
+  그 스텝의 `video_ms`로 간다**(순수 JS). 녹화가 없으면 스텝 스크린샷이 그 자리에 뜬다. mp4·스크린샷(360px JPEG)은
+  페이지 옆 `<name>.<state>/`로 복사되므로 사이트 디렉토리만 올리면 된다. `site/<app>/index.html`은 최신 날짜로 리다이렉트.
+- 분류: `FAILED`는 result.json 그대로. `화면 바뀜`은 PASSED인데 어제의 같은 스텝 layout과 resourceId 집합이 다르거나
+  같은 resourceId의 bounds가 8px 이상 움직인 것(텍스트 변화는 무시). `재녹화 필요`는 `report-state/<app>/acknowledged.json`
+  (`{"<feature>/<name>.<state>": {"at", "by", "layout_hash"}}`, `--acknowledged`로 경로 지정 가능)에 "의도한 변경"으로
+  적혔는데 그 뒤로 trace가 재녹화되지 않은 것. 백엔드 없음 — "의도한 변경" 버튼은 그 파일에 넣을 한 줄과 레포 편집 링크다.
+- `--format slack`: 한 메시지 — `실패 N  이름들  @owner` / `화면 바뀜 N` / `재녹화 필요 N` / `통과 N · 소요 · 에뮬레이터`,
+  실패·화면 바뀜이 없으면 "전부 통과 N" 한 줄, [리포트 보기] [어제와 비교] 버튼(`--site-url`).
+
+### record/verify 단계 리포트 (`--summary`)
+
+trace를 전부 다시 녹화해 검증하는 세 단계 파이프라인은 `--summary` JSON과 md/slack/junit 리포트로 묶는다:
+
+```bash
 R=.simul/reports/nightly; rm -rf $R; mkdir -p $R
-simul run --all --mode replay --gif --summary $R/baseline.json --label baseline   # 커밋된 trace 재생 (+화면 녹화)
-simul run --all --mode llm          --summary $R/record.json   --label record     # 전 시나리오 재녹화 (LLM 키 필요)
-simul run --all --mode replay --gif --summary $R/verify.json   --label verify     # 방금 녹화한 trace 재생 (+화면 녹화)
+simul run --all --mode replay --summary $R/baseline.json --label baseline   # 커밋된 trace 재생
+simul run --all --mode llm    --summary $R/record.json   --label record     # 전 시나리오 재녹화 (LLM 키 필요)
+simul run --all --mode replay --summary $R/verify.json   --label verify     # 방금 녹화한 trace 재생
 
 J="$R/baseline.json $R/record.json $R/verify.json"     # 없는 파일은 빼도 된다 — 있는 phase만으로 판정
-simul report $J --title "simul nightly $(date +%F)" --link "Run=$RUN_URL" --format html  --out $R/report.html
-simul report $J --title "..." --link "Run=$RUN_URL" --format md    --out $R/report.md     # $GITHUB_STEP_SUMMARY / PR 본문
+simul report $J --title "simul record $(date +%F)" --link "Run=$RUN_URL" --format md    --out $R/report.md     # $GITHUB_STEP_SUMMARY / PR 본문
 simul report $J --title "..." --link "Run=$RUN_URL" --format slack --out $R/slack.json    # curl -d @slack.json $SLACK_WEBHOOK_URL
 simul report $J --format junit --out $R/junit.xml                                        # 테스트 리포터용
 simul report $J --check >/dev/null                                                       # 게이트: regression/trace flake/crash → exit 1
@@ -59,30 +113,6 @@ simul report $J --check >/dev/null                                              
 각 `simul run`은 실패해도 다음 단계를 막지 않게 돌린다(GitHub Actions면 `continue-on-error: true`).
 phase 역할은 라벨이 아니라 **mode와 순서**로 정해진다: 첫 llm 런이 record, 그 직전 replay가 baseline,
 직후 replay가 verify.
-
-**리포트가 담는 것**
-
-- `--format html`: **모두가 보는 상태판** — "앱 괜찮아? 뭐가 안 돼?"에 답한다. 위에서부터 한 줄 헤드라인(`✅ 앱 정상` /
-  `❌ 3개 안 됨` / `⚠️ 앱 정상, 확인할 게 2개`), **기능 영역 타일**(시나리오 디렉토리 하나 = 타일 하나, 상태별 개수;
-  디렉토리에 `README.md`가 있으면 첫 줄이 타일 이름), **안 되는 것**(깨진 시나리오만 gif + 어느 phase 몇 번 스텝 + 사유 +
-  화면 라벨 + 그 순간 스크린샷), **확인 필요**(재녹화·첫 녹화 — trace diff 리뷰 대상), 그리고 영역별 **체크리스트**:
-  시나리오 md의 설명 한 줄(summary.json `description`)이 "이 화면은 이렇게 동작한다"는 문장으로 ✅/❌/🔁 와 함께 나열되고
-  ▶를 누르면 gif와 스텝 격자가 펼쳐진다. 시나리오당 상태는 하나로 접힌다(동작 / 안 됨 / 불안정 / 바뀜 / 새 녹화 / 미실행).
-  baseline·record·verify 열, mode·소요시간·llm 토큰·evidence·에이전트 보고문은 여기 없다 — `--out` 옆에 같이 써지는
-  **`report.debug.html`**(시나리오마다 `debug` 링크, phase별 전체 스텝 상세)에 있다.
-  gif는 시나리오당 수 MB라 인라인하지 않고 `--out` 옆 `media/<시나리오>-<phase>.gif`로 복사해 두 페이지가 같이 참조한다 —
-  **아티팩트는 `report.html` + `report.debug.html` + `media/` 폴더를 함께** 올린다. 스크린샷 썸네일은 data URI라 폴더 밖이어도 보인다.
-- `--format md`: GitHub 잡 서머리·PR 본문용. 표 + "Needs attention"에 실패 사유·스크린샷·리포트 폴더·gif 경로.
-- `--format slack`: Block Kit payload(incoming webhook 또는 `chat.postMessage`). **일부러 짧다** — 헤드라인, 성공/실패
-  집계, 주의 시나리오 이름(verdict별 8개까지), 링크. 사유·스크린샷·gif는 채널에 안 보내고 HTML 리포트로 보낸다:
-  HTML 아티팩트를 먼저 올리고 그 URL을 `--link "HTML report=<artifact-url>"`로 넘겨 메시지에서 한 번에 열게 한다
-  (GitHub Actions면 `actions/upload-artifact@v4`의 `artifact-url` 출력).
-- `--format junit`: phase=testsuite, 시나리오=testcase.
-- 입력 summary.json의 시나리오 항목에 `gif`가 있어야 html에 gif가 붙는다 — 즉 **replay에 `--gif`를 붙인 런만**.
-  gif는 `adb shell screenrecord`(180s 세그먼트 자동 이어붙임) → `run.mp4` → ffmpeg(2-pass 팔레트, 360px·10fps,
-  **1.5배속** — replay는 대부분 화면 정착 대기라 빨리 돌려야 읽힌다) → `run.gif`. gif가 만들어지면 중간 산물 mp4는 지운다
-  (리포트 폴더 아티팩트에 둘 다 실리지 않게; 원본 타이밍이 필요하면 `--video`). 러너에 ffmpeg이 없으면 mp4만 남고
-  리포트엔 gif가 빠진다(FAILED 아님).
 
 세 결과가 시나리오당 하나의 verdict로 접힌다:
 
@@ -101,7 +131,8 @@ record가 다시 쓴 `.simul/scenarios/**/*.trace.json`은 워크플로가 PR로
 
 **러너 요구사항** (self-hosted — 호스티드 러너엔 에뮬레이터도 LLM도 없다)
 
-- PATH에 `simul`(이 레포 `./gradlew installDist` + `scripts/simul`), `adb`·`emulator`·`android`(CLI), `ffmpeg`(gif용, 선택)
+- PATH에 `simul`(이 레포 `./gradlew installDist` + `scripts/simul`), `adb`·`emulator`·`android`(CLI), `ffprobe`/`ffmpeg`(녹화
+  타임라인 보정·180s 세그먼트 이어붙임용, 선택)
 - 에뮬레이터 1대: 매번 콜드 부팅·스냅샷 저장 안 함(기기 드리프트가 앱 회귀로 둔갑하지 않게), `ANDROID_SERIAL` 고정.
   화면은 config.yaml `display:`가, 자격 증명 제공자·자동완성 같은 기기 설정은 `device.settings`가 실행 중
   강제하므로 AVD 해상도·설정은 무관. 단 "저장된 비밀번호" 시트처럼 Google 계정 데이터가 전제인 시나리오는
@@ -109,7 +140,8 @@ record가 다시 쓴 `.simul/scenarios/**/*.trace.json`은 워크플로가 PR로
 - debug 빌드 설치(WebView 채널이 debuggable 전제), `.simul/config.yaml llm.url`에 닿는 OpenAI 호환 LLM —
   키는 `llm.apiKey: ${VAR}` + 러너 시크릿. **replay 두 단계는 키 없이 돈다**
 - 로그인 등 상태 스냅샷(`.simul/states/*.tar`, gitignored)은 러너 로컬 디렉터리에서 체크아웃 뒤 복사
-- 끝나면 `adb emu kill`; 아티팩트로 `report.html + report.debug.html + media/`(30일)와 `.simul/reports/` 전체(스크린샷·agent.jsonl, 14일)
+- 끝나면 `adb emu kill`; 아티팩트로 `site/<app>/<date>/`(호스팅에 배포, 날짜별로 쌓는다)와 `runs/<app>/<date>/`
+  (다음 날 "어제 비교"와 7일 칸의 입력 — 최소 7일은 같은 상위 디렉토리에 남겨 둔다)
 
 ## 구조 (`dev.nate.uiagent`)
 
@@ -118,7 +150,7 @@ record가 다시 쓴 `.simul/scenarios/**/*.trace.json`은 워크플로가 PR로
 | (root) | `Core.kt` 공용 타입(geometry, `LogicalElement/Layout`, JSON 헬퍼, `Defaults`), `LayoutAdapter.kt` dump(flat/트리)→논리 요소 트리 병합, `Trace.kt` JSONL 트레이스, `Process.kt`, `Format.kt` 시간 포맷 |
 | `device` | `Device`/`AdbDevice` 관찰·제스처, `DeviceController` grounding·가드·diff 검증·wait-for-stable(+replay용 fastObserve), `Layout.kt` 모델용 렌더링/diff, `SwipeGeometry`, `AdbOps` 러너용 adb 조작(setup/스크린샷/wm/settings), `DisplayProfile`, `DeviceSettings` |
 | `agent` | Koog 1.3 기반 LLM 스택: `Llm.kt` OpenAI-호환 executor/모델/고정 파라미터, `Tools.kt` 디바이스 툴 + 기준 게이트, `Session.kt` GraphAIAgent + ChatMemory(시나리오당 단일 대화), `Prompt.kt` 시스템 프롬프트, `LlmStats.kt` 모델 비용 집계 |
-| `cli` | `simul` CLI(`Cli`/`RunCommand`/`InitCommand`/`Adhoc`), `.simul/` 규약(`Project`/`Config`), `BatchSession`(CLI·TUI 공용 display/settings 핀), 시나리오 러너(스텝 격리·라이브 로그), Record & Replay(`TraceFormat`/`Recorder`/`Evidence`/`Replayer`), 리포트(`ReportJson`/`RunSummary`/`Report`/`HtmlReport`), `Tui` |
+| `cli` | `simul` CLI(`Cli`/`RunCommand`/`InitCommand`/`Adhoc`), `.simul/` 규약(`Project`/`Config`), `BatchSession`(CLI·TUI 공용 display/settings 핀), 시나리오 러너(스텝 격리·라이브 로그), Record & Replay(`TraceFormat`/`Recorder`/`Evidence`/`Replayer`), 리포트(`ResultJson`/`LayoutJson`/`RunSummary`/`Report`/`Site`/`SitePages`), `Tui` |
 | `web` | WebView 관찰 채널: `CdpClient`(devtools socket discover + Runtime.evaluate), `WebLayout`(요소 추출 JS·좌표 변환), `WebAwareDevice`(관찰 병합), `DeviceStack`(디바이스 스택 조립) |
 
 핵심 설계 불변:

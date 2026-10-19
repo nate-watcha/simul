@@ -33,6 +33,10 @@ data class Scenario(
     val state: String? = null,
     /** Steps with their per-state criteria; [steps] is this list rendered for [state]. */
     val stepDefs: List<StepDef> = steps.map { StepDef.parse(it) },
+    /** Human title from the frontmatter (`title:`), what the report calls the scenario; null → name. */
+    val title: String? = null,
+    /** Who answers for this scenario (`owner:`) — the report mentions them on a failure. */
+    val owner: String? = null,
 ) {
     /** The app state this scenario requires: appState name, "guest" for clearData, or null
      *  (undeclared — runs against whatever state the device happens to be in). */
@@ -154,6 +158,8 @@ object ScenarioMd {
         return Scenario(
             name = name,
             tags = MiniYaml.list(y, "tags"),
+            title = MiniYaml.string(y, "title")?.takeIf { it.isNotBlank() },
+            owner = MiniYaml.string(y, "owner")?.takeIf { it.isNotBlank() },
             setup = setup,
             steps = stepDefs.map { it.render(null) },
             description = description,

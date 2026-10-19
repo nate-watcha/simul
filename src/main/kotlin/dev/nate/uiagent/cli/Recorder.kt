@@ -8,22 +8,34 @@ import dev.nate.uiagent.device.ActionListener
 private val ACTION_TOOLS = setOf("tap", "type", "scroll", "scrollToFind", "back", "waitForChange")
 
 /**
- * Controller listener for one step: records replayable actions and takes before/after
- * screenshots. Guard-rejected calls (ERROR/AMBIGUOUS — no gesture happened) are not recorded;
- * everything that moved the device is, including failed explorations (a NOT_FOUND scrollToFind
- * still scrolled, and replay must reproduce that state trajectory).
+ * When an action happened, for the report's timeline: [atMs] is wall-clock millis at the
+ * moment the gesture went to the device, so a screen recording can be seeked to it.
+ */
+data class ActionMark(val tool: String, val target: String?, val atMs: Long)
+
+/**
+ * Controller listener for one step: records replayable actions, stamps each with the time it
+ * happened, and (when given a [screenshot] sink) takes before/after screenshots. Guard-rejected
+ * calls (ERROR/AMBIGUOUS — no gesture happened) are not recorded; everything that moved the
+ * device is, including failed explorations (a NOT_FOUND scrollToFind still scrolled, and
+ * replay must reproduce that state trajectory).
  */
 class StepRecorder(
     private val stepIndex: Int,
     private val screenshot: ((name: String) -> String?)? = null,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : ActionListener {
 
     val actions = mutableListOf<TraceAction>()
     val screenshots = mutableListOf<String>()
+    /** Every gesture that reached the device, in order, with its wall-clock time. */
+    val marks = mutableListOf<ActionMark>()
     private var seq = 0
+    private var pendingAt = 0L
 
     override fun before(tool: String, args: List<Pair<String, String>>) {
         if (tool !in ACTION_TOOLS) return
+        pendingAt = clock()
         shoot("step$stepIndex-${seq + 1}-$tool-before")
     }
 
@@ -33,6 +45,7 @@ class StepRecorder(
         shoot("step$stepIndex-$seq-$tool-after")
         if (result.startsWith("ERROR") || result.startsWith("AMBIGUOUS")) return
         val m = args.toMap()
+        marks += ActionMark(tool, markTarget(tool, resolved, m), pendingAt)
         actions += when (tool) {
             "tap" -> TraceAction("tap", target = targetOf(resolved))
             "type" -> TraceAction("type", target = targetOf(resolved), text = m["text"])
@@ -40,6 +53,13 @@ class StepRecorder(
                 TraceAction(tool, args = args.associateTo(LinkedHashMap()) { it.first to it.second })
             else -> TraceAction(tool) // back, waitForChange
         }
+    }
+
+    /** What the timeline calls the action's target: the element's label/id, or the scroll container. */
+    private fun markTarget(tool: String, resolved: LogicalElement?, m: Map<String, String>): String? = when (tool) {
+        "tap", "type" -> resolved?.label ?: resolved?.resourceId ?: m["target"]
+        "scroll", "scrollToFind" -> listOfNotNull(m["scrollable"], m["direction"], m["target"]).joinToString(" ").ifEmpty { null }
+        else -> null
     }
 
     private fun targetOf(resolved: LogicalElement?): TraceTarget = TraceTarget(

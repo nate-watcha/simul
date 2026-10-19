@@ -18,6 +18,12 @@ interface DeviceOps {
     /** Capture a PNG screenshot into [dest]; false if capture failed (non-fatal). */
     fun screenshot(dest: File): Boolean
 
+    /** Clear the device log, so the next [logcatDump] covers exactly one scenario. */
+    fun logcatClear()
+
+    /** Dump the device log since the last clear into [dest] (threadtime + epoch timestamps); false when nothing was written. */
+    fun logcatDump(dest: File): Boolean
+
     fun appVersionName(app: String?): String?
     fun deviceName(): String?
 
@@ -98,6 +104,14 @@ class AdbOps(
 
 
     override fun screenshot(dest: File): Boolean = runToFile(listOf(adbBin, "exec-out", "screencap", "-p"), dest) == null
+
+    override fun logcatClear() {
+        runCatching { runProcess(listOf(adbBin, "logcat", "-c")) }
+    }
+
+    // epoch timestamps (seconds.millis, device clock) so a report can slice the log around a step
+    override fun logcatDump(dest: File): Boolean =
+        runToFile(listOf(adbBin, "logcat", "-d", "-v", "threadtime", "-v", "epoch"), dest) == null
 
     override fun appVersionName(app: String?): String? {
         if (app == null) return null

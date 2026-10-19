@@ -3,6 +3,7 @@ package dev.nate.uiagent.cli
 import dev.nate.uiagent.Trace
 import dev.nate.uiagent.device.AdbOps
 import dev.nate.uiagent.device.DeviceOps
+import dev.nate.uiagent.runProcess
 import dev.nate.uiagent.web.DeviceStack
 import java.io.File
 import java.text.SimpleDateFormat
@@ -10,10 +11,15 @@ import java.util.Date
 
 /**
  * `simul run <scenario.md>... | --tag <tag> | --state <name> | --all [--mode replay|llm|auto]
- *            [--dry-run] [--url U] [--gif | --video] [--summary <file.json> [--label <phase>]]`
+ *            [--dry-run] [--url U] [--video] [--runs <dir>] [--summary <file.json> [--label <phase>]]`
  *
  * CI invariant: CI only replays. The default mode is auto — replay when a trace exists, SKIP with
  * a warning when it doesn't; the LLM interprets full scenarios only under an explicit `--mode llm`.
+ *
+ * `--runs <dir>` lays the run out the way the report reads it (docs/report/SPEC.md): one
+ * directory per scenario and state, `<dir>/<feature>/<name>.<state>/`, each with its
+ * result.json, steps/, layout/, logcat.txt and replay.mp4, plus `<dir>/run.json` for the batch.
+ * Without it every run gets a stamped directory under `.simul/reports/` as before.
  */
 
 internal fun runCommand(args: List<String>, cwd: File): Int {
@@ -23,8 +29,9 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     var urlOverride: String? = null
     var stateFilter: String? = null
     var summaryPath: String? = null
+    var runsPath: String? = null
     var label: String? = null
-    var video = VideoOutput.NONE
+    var video = false
     val tags = mutableListOf<String>()
     val paths = mutableListOf<String>()
 
@@ -43,9 +50,10 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
             "--state" -> stateFilter = args.getOrNull(++i) ?: return err("--state needs a value")
             "--url" -> urlOverride = args.getOrNull(++i) ?: return err("--url needs a value")
             "--summary" -> summaryPath = args.getOrNull(++i) ?: return err("--summary needs a file path")
+            "--runs" -> runsPath = args.getOrNull(++i) ?: return err("--runs needs a directory")
             "--label" -> label = args.getOrNull(++i) ?: return err("--label needs a value")
-            "--gif" -> video = VideoOutput.GIF
-            "--video" -> video = VideoOutput.MP4
+            "--video" -> video = true
+            "--gif" -> return err("--gif is gone: the recording is replay.mp4 with a step timeline (use --video)")
             else -> if (a.startsWith("--")) return err("unknown option $a") else paths += a
         }
         i++
@@ -83,14 +91,15 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     val llm = project.config.llm.let { if (urlOverride != null) it.copy(url = urlOverride) else it }
     // The key is only needed when the LLM actually runs; replay must work without the secret.
     if (mode != RunMode.REPLAY && !dryRun) llm.keyProblem()?.let { return err(it) }
+    val runsDir = runsPath?.let { resolvePath(cwd, it).absoluteFile }
     var anyFailed = false
     var anyRan = false
     val outcomes = mutableListOf<ScenarioOutcome>()
     val batchStart = System.currentTimeMillis()
-    val startedAt = RunSummaryJson.stamp()
+    val startedAt = RunSummaryJson.stamp(batchStart)
 
     val ops = AdbOps(statesDir = project.statesDir)
-    BatchSession(project, ops, ::println).use { batch ->
+    BatchSession(project, ops, ::println, runsDir).use { batch ->
         if (!dryRun) batch.pin()
         for ((md, scenario) in targets) {
             if (dryRun) {
@@ -110,28 +119,39 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     }
 
     if (!anyRan && !dryRun) println("warning: no scenario was executed (all skipped)")
-    if (summaryPath != null && !dryRun) {
-        val file = resolvePath(cwd, summaryPath)
+    if (!dryRun && (summaryPath != null || runsDir != null)) {
+        val ended = System.currentTimeMillis()
         val summary = RunSummary(
             label = label ?: mode.name.lowercase(),
             mode = mode.name.lowercase(),
             startedAt = startedAt,
-            durationMs = System.currentTimeMillis() - batchStart,
+            durationMs = ended - batchStart,
             agentVersion = AGENT_VERSION,
             appVersionName = ops.appVersionName(project.config.app),
             device = ops.deviceName(),
             scenarios = outcomes,
             androidCli = ops.androidCliVersion(),
+            app = project.config.app,
+            endedAt = RunSummaryJson.stamp(ended),
         )
-        RunSummaryJson.write(summary, file)
-        val shown = file.relativeToOrSelf(cwd).path.let { if (it.startsWith("..")) file.absolutePath else it }
-        println("summary: $shown (${outcomes.count { it.passed }}/${outcomes.size} passed)")
+        val passedLine = "(${outcomes.count { it.passed }}/${outcomes.size} passed)"
+        fun shown(f: File) = f.relativeToOrSelf(cwd).path.let { if (it.startsWith("..")) f.absolutePath else it }
+        summaryPath?.let { p ->
+            val file = resolvePath(cwd, p)
+            RunSummaryJson.write(summary, file)
+            println("summary: ${shown(file)} $passedLine")
+        }
+        runsDir?.let { dir ->
+            RunSummaryJson.write(summary, File(dir, "run.json"))
+            println("runs: ${shown(dir)} $passedLine")
+        }
     }
     return if (anyFailed) 1 else 0
 }
 
 internal fun executeScenario(
     project: SimulProject,
+    md: File,
     scenario: Scenario,
     trace: TraceFile?,
     mode: RunMode,
@@ -139,13 +159,15 @@ internal fun executeScenario(
     traceFile: File,
     ops: DeviceOps,
     log: (String) -> Unit = ::println,
-    video: VideoOutput = VideoOutput.NONE,
+    video: Boolean = false,
+    runsDir: File? = null,
 ): ScenarioRunResult {
-    val reportDir = ReportDirs.create(project.reportsDir, scenario.name)
+    val reportDir = if (runsDir != null) ReportDirs.inRuns(runsDir, project, md, scenario)
+                    else ReportDirs.create(project.reportsDir, scenario.name)
 
     val jsonl = Trace(File(reportDir, "agent.jsonl"))
     val listener = SwitchableListener()
-    var media: List<File> = emptyList()
+    var recording: ScreenRecorder.Recording? = null
     var recorderProblem: String? = null
     val result = DeviceStack(project.config.app, jsonl, project.config.scrollLimit, listener).use { stack ->
         // turn lines nest under the runner's step line in the live log
@@ -159,11 +181,11 @@ internal fun executeScenario(
         // The screen recording spans setup through the last step — the whole journey, as a
         // teammate would watch it. It stops in `finally`: a crashed run must not leave
         // screenrecord running on the device for the rest of its time limit.
-        val recorder = if (video != VideoOutput.NONE) ScreenRecorder().also { it.start() } else null
+        val recorder = if (video) ScreenRecorder().also { it.start() } else null
         try {
             runner.run(scenario, trace, mode)
         } finally {
-            recorder?.let { media = it.stop(File(reportDir, "run.mp4")); recorderProblem = it.problem }
+            recorder?.let { recording = it.stop(File(reportDir, "replay.mp4")); recorderProblem = it.problem }
         }
     }
 
@@ -171,19 +193,26 @@ internal fun executeScenario(
     // what the recording cost: model time vs. the scenario's wall time, and the tokens it took
     result.llm?.let { log("  ${it.summary(totalMs = result.durationMs)}") }
 
-    if (video != VideoOutput.NONE) {
-        fun rel(f: File) = f.relativeToOrSelf(project.appRoot).path
+    fun rel(f: File) = f.relativeToOrSelf(project.appRoot).path
+    val videoInfo = recording?.let { rec -> rec.file?.let { VideoInfo(it, rec.startedAtMs, rec.durationMs) } }
+    if (video) {
         recorderProblem?.let { log("  video: $it") }
-        media.forEach { log("  video: ${rel(it)}") }
-        if (video == VideoOutput.GIF && media.size == 1) {
-            // --gif wants the gif only: the mp4 is the intermediate and goes, so an artifact of the
-            // report dir does not carry both (--video is the way to keep the raw recording)
-            val gif = File(reportDir, "run.gif")
-            val failure = Gif.convert(media[0], gif)
-            if (failure == null) { media[0].delete(); media = listOf(gif); log("  gif: ${rel(gif)}") }
-            else log("  gif: $failure")
-        }
+        recording?.files?.forEach { log("  video: ${rel(it)}") }
     }
+
+    val full = result.copy(reportDir = reportDir, video = videoInfo)
+    val relPath = md.relativeToOrSelf(project.scenariosDir).path
+    ResultJson.write(full, mode.name.lowercase(), ResultJson.Meta(
+        feature = areaOf(relPath),
+        name = md.nameWithoutExtension,
+        state = scenario.state,
+        file = relPath,
+        title = scenario.title ?: scenario.name,
+        owner = scenario.owner,
+        description = scenario.description,
+        traceRecordedAt = traceRecordedAt(traceFile, project.appRoot),
+        env = ResultJson.Env(ops.appVersionName(project.config.app), ops.deviceName(), ops.androidCliVersion()),
+    ), reportDir)
 
     result.updatedTrace?.let { updated ->
         TraceJson.write(updated, traceFile)
@@ -195,16 +224,46 @@ internal fun executeScenario(
             log("  trace recorded: ${traceFile.path}")
         }
     }
-    return result.copy(reportDir = reportDir, media = media)
+    return full
 }
 
+/**
+ * `YYYY-MM-DD` the trace was last recorded: the date of its last commit when the file is
+ * clean in git, else its modification date (a fresh, uncommitted recording). Null without a
+ * trace. The report uses it to tell "acknowledged but not yet re-recorded".
+ */
+fun traceRecordedAt(traceFile: File, appRoot: File): String? {
+    if (!traceFile.isFile) return null
+    val mtime = SimpleDateFormat("yyyy-MM-dd").format(Date(traceFile.lastModified()))
+    val git = runCatching {
+        val dirty = runProcess(listOf("git", "-C", appRoot.path, "status", "--porcelain", "--", traceFile.absolutePath)).isNotBlank()
+        if (dirty) null
+        else runProcess(listOf("git", "-C", appRoot.path, "log", "-1", "--format=%cs", "--", traceFile.absolutePath)).trim().ifEmpty { null }
+    }.getOrNull()
+    return git ?: mtime
+}
 
-/** Where one run's `report.json` / screenshots / agent.jsonl go: `<reports>/<scenario>-yyyyMMdd-HHmmss`. */
+/** Where one run's result.json / steps / layout / logcat go. */
 object ReportDirs {
     private const val STAMP = "yyyyMMdd-HHmmss"
 
+    /** Ad-hoc runs: `<reports>/<scenario>-yyyyMMdd-HHmmss`, a fresh directory per run. */
     fun create(reportsDir: File, scenario: String): File =
         File(reportsDir, "$scenario-${SimpleDateFormat(STAMP).format(Date())}").also { it.mkdirs() }
+
+    /**
+     * A nightly run laid out for the report: `<runs>/<feature>/<name>.<state>/` (`<name>/` for a
+     * stateless scenario; root-level scenarios sit directly under `<runs>`). Rerunning into the
+     * same runs dir replaces the scenario's directory, so no stale step of an earlier run survives.
+     */
+    fun inRuns(runsDir: File, project: SimulProject, md: File, scenario: Scenario): File {
+        val relPath = md.relativeToOrSelf(project.scenariosDir).path
+        val key = md.nameWithoutExtension + (scenario.state?.let { ".$it" } ?: "")
+        val dir = File(runsDir, listOf(areaOf(relPath), key).filter { it.isNotEmpty() }.joinToString("/"))
+        if (dir.isDirectory) dir.deleteRecursively()
+        dir.mkdirs()
+        return dir
+    }
 
     /** The newest report dir of [scenario] — exact-stamp match, so a scenario whose name prefixes another's never steals its reports. */
     fun latest(reportsDir: File, scenario: String): File? {

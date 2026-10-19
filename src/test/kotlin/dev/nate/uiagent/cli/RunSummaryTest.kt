@@ -48,7 +48,7 @@ class RunSummaryTest {
         assertEquals(".simul/reports/nav-basic-20260919-020000/screenshots/step2-1-tap-after.png", f.screenshot)
         assertEquals(listOf("로그인", "닫기"), f.screen)
         assertTrue(!o.traceUpdated)
-        assertEquals(null, o.gif, "no recording → no gif field")
+        assertEquals(null, o.video, "no recording → no video field")
     }
 
     @Test
