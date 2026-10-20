@@ -23,6 +23,20 @@ class RecorderTest {
     }
 
     @Test
+    fun `a quoted anchor the element carries is recorded as the target instead of its full label`() {
+        // Google Play's payment row: the card name changes with whatever the account paid with last.
+        val row = el("Test card, always declines. Change payment method", interactions = listOf("clickable"), center = Point(360, 636))
+        val r = StepRecorder(1, anchors = listOf("Change payment method"))
+        r.after("tap", listOf("target" to "Test card, always declines. Change payment method"), row, "Tapped")
+        assertEquals(TraceTarget(null, "Change payment method", Point(360, 636)), r.actions.single().target)
+
+        // no quoted anchor on the element: the full label, as before
+        val plain = StepRecorder(1, anchors = listOf("Subscribe"))
+        plain.after("tap", listOf("target" to "x"), row, "Tapped")
+        assertEquals("Test card, always declines. Change payment method", plain.actions.single().target?.label)
+    }
+
+    @Test
     fun `records scrollToFind args in call order, even NOT_FOUND explorations`() {
         val r = StepRecorder(1)
         r.after(

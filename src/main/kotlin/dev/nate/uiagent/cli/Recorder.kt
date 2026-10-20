@@ -24,6 +24,8 @@ class StepRecorder(
     private val stepIndex: Int,
     private val screenshot: ((name: String) -> String?)? = null,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** The step command's quoted labels — the author's names for what gets tapped (see [targetOf]). */
+    private val anchors: List<String> = emptyList(),
 ) : ActionListener {
 
     val actions = mutableListOf<TraceAction>()
@@ -62,9 +64,18 @@ class StepRecorder(
         else -> null
     }
 
+    /**
+     * The trace's identity for a tapped element. When the step quotes a label that this element
+     * carries, that quoted anchor is recorded instead of the element's full label: the author chose
+     * it as the stable part, and the rest of the label may be content that changes between runs
+     * (실측: Google Play's payment row reads "Test card, always declines. Change payment method" —
+     * the card name is whatever the account used last, so a trace holding the full label broke as
+     * soon as another scenario paid with a different card). Replay resolves the anchor the same way
+     * the model's tap did (exact, then substring).
+     */
     private fun targetOf(resolved: LogicalElement?): TraceTarget = TraceTarget(
         resolved?.resourceId,
-        resolved?.label,
+        resolved?.label?.let { label -> anchors.firstOrNull { resolved.matchesExact(it) || resolved.matchesLoose(it) } ?: label },
         resolved?.center,
         origin = if (resolved?.origin == Origin.WEB) "web" else null,
     )

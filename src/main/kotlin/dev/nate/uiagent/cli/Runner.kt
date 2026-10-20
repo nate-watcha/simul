@@ -245,7 +245,7 @@ class ScenarioRunner(
         }
         // record mode keeps the per-action before/after shots: they are what a reviewer of a
         // fresh trace looks at
-        val recorder = StepRecorder(n, ::shoot)
+        val recorder = StepRecorder(n, ::shoot, anchors = quotedLabels(spec.command))
         listener.delegate = recorder
         // The session carries the screen state across steps via each action's diff, so a fresh
         // full observation (and its ~1k prompt tokens) is only needed at conversation start.
