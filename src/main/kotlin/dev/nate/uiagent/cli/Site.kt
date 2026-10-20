@@ -13,6 +13,10 @@ import java.io.File
  *   <feature>/<name>.<state>/result.json   one replayed scenario (ResultJson)
  * ```
  *
+ * Every scenario of the batch is a row, not only those with a result.json: a scenario the replay skipped
+ * (no trace, because tonight's recording failed and nothing was ever committed) has no directory, and it is
+ * exactly the one the report must show (run 39395891887: 7 failed recordings, index empty).
+ *
  * Nothing is judged here — a scenario failed when its recording failed (the agent could not perform it
  * on tonight's app) or its replay did (result.json says so).
  */
@@ -34,7 +38,9 @@ object Site {
 
     class Row(val result: ResultJson.Result, val kind: Kind, val record: ScenarioOutcome? = null) {
         val id get() = result.id
-        /** The LLM could not re-record this scenario tonight (the replay then ran the committed trace). */
+        /** The replay never ran this scenario (no trace, no steps) — there is nothing of it but the summary line. */
+        val replayed get() = result.steps.isNotEmpty()
+        /** The LLM could not re-record this scenario tonight (the replay then ran the committed trace, if any). */
         val recordFailed get() = record != null && record.status in setOf("FAILED", "CRASH")
         /** `step 2 `Tap …` — agent error: …` / `crash — OutOfMemoryError` */
         val recordFailure: String? get() = record?.takeIf { recordFailed }?.let { o ->
@@ -42,27 +48,53 @@ object Site {
         }
     }
 
-    /** Every result.json under [dir] (at most three levels deep), plus run.json when present. */
+    /**
+     * `billing/coupon.member` — a summary line's identity in the run directory's terms (ResultJson.Result.id):
+     * feature and name from the md path, state from the `name@state` variant name. Not the scenario's `name`
+     * (frontmatter, e.g. `auth-email-login`), which result.json keeps apart from its file name.
+     */
+    fun idOf(o: ScenarioOutcome): String {
+        val feature = areaOf(o.path)
+        val name = o.path.substringAfterLast('/').removeSuffix(".md")
+        val state = o.name.substringAfter('@', "").ifEmpty { null }
+        return (if (feature.isEmpty()) "" else "$feature/") + name + (state?.let { ".$it" } ?: "")
+    }
+
+    /** A result for a summary line the replay left no directory for: the summary's status and reason, no steps. */
+    private fun placeholder(dir: File, summary: RunSummary, o: ScenarioOutcome): ResultJson.Result {
+        val id = idOf(o)
+        return ResultJson.Result(
+            dir = File(dir, id), scenario = o.name, title = o.name,
+            feature = areaOf(o.path), name = o.path.substringAfterLast('/').removeSuffix(".md"), state = o.name.substringAfter('@', "").ifEmpty { null },
+            file = o.path, owner = null, description = o.description, traceRecordedAt = null,
+            status = o.status, failedStep = null, reason = o.reason, mode = o.mode ?: summary.mode,
+            startedAt = summary.startedAt, startedAtMs = 0, durationMs = o.durationMs, layoutHash = "",
+            appVersion = summary.appVersionName, device = summary.device, video = null, llm = null, steps = emptyList(),
+        )
+    }
+
+    /** Every result.json under [dir] (at most three levels deep), plus a placeholder for each run.json scenario without one. */
     fun load(dir: File): Run {
         val summary = File(dir, "run.json").takeIf { it.isFile }?.let { runCatching { RunSummaryJson.read(it) }.getOrNull() }
         val record = File(dir, "record.json").takeIf { it.isFile }?.let { runCatching { RunSummaryJson.read(it) }.getOrNull() }
-        val results = dir.walkTopDown().maxDepth(3)
+        val onDisk = dir.walkTopDown().maxDepth(3)
             .filter { it.isFile && it.name == ResultJson.FILE }
             .mapNotNull(ResultJson::read)
-            .sortedWith(compareBy({ it.feature }, { it.name }, { it.state ?: "" }))
             .toList()
+        val ids = onDisk.map { it.id }.toSet()
+        val missing = summary?.scenarios.orEmpty().filter { idOf(it) !in ids }.map { placeholder(dir, summary!!, it) }
+        val results = (onDisk + missing).sortedWith(compareBy({ it.feature }, { it.name }, { it.state ?: "" }))
         return Run(dir, summary, results, record)
     }
 
-    /** FAILED when the recording or the replay failed, SKIPPED_SETUP straight from result.json; the rest passed. */
+    /** FAILED when the recording or the replay failed; PASSED when the replay passed; anything else never ran (setup, no trace). */
     fun classify(run: Run): List<Row> = run.results.map { r ->
-        val key = r.name + (r.state?.let { "@$it" } ?: "")
-        val rec = run.record?.scenarios?.firstOrNull { it.name == key }
+        val rec = run.record?.scenarios?.firstOrNull { idOf(it) == r.id }
         val recFailed = rec != null && rec.status in setOf("FAILED", "CRASH")
         Row(r, when {
-            r.status == "FAILED" || recFailed -> Kind.FAILED
-            r.status == "SKIPPED_SETUP" -> Kind.SETUP
-            else -> Kind.PASSED
+            r.status == "FAILED" || r.status == "CRASH" || recFailed -> Kind.FAILED
+            r.status == "PASSED" -> Kind.PASSED
+            else -> Kind.SETUP
         }, rec)
     }
 

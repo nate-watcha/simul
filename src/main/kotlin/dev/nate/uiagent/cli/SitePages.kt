@@ -28,6 +28,11 @@ object SitePages {
         /** What the pages call the app (`--title`); default the package name from run.json. */
         val appName: String? = null,
         val thumbWidth: Int = 360,
+        /**
+         * The app repo root that record.json's screenshot paths are relative to (`.simul/reports/<name>-<stamp>/steps/NN.png`);
+         * default: three levels above the run directory, which is where `simul report` puts it.
+         */
+        val appRoot: File? = null,
     )
 
     class Built(val index: File, val pages: List<File>, val rows: List<Site.Row>) {
@@ -46,8 +51,9 @@ object SitePages {
         val run = Site.load(runDir)
         val rows = Site.classify(run)
         out.mkdirs()
-        val pages = rows.map { row -> renderDetail(run, row, rows, out, opts) }
-        val index = File(out, "index.html").apply { writeText(renderHome(run, rows, opts)) }
+        val shots = rows.associate { it.id to copyRecordShot(run, it, out, opts) }
+        val pages = rows.map { row -> renderDetail(run, row, rows, out, opts, shots[row.id]) }
+        val index = File(out, "index.html").apply { writeText(renderHome(run, rows, opts, shots)) }
         return Built(index, pages, rows)
     }
 
@@ -101,9 +107,23 @@ object SitePages {
         return "${r.key}/replay.mp4"
     }
 
+    /**
+     * The screenshot of the step the LLM recording broke on, as `<out>/<id>/record/NN.jpg` — the only picture there is of
+     * a scenario whose recording failed and whose replay then had no trace to run. record.json names it relative to the
+     * app root, which the run directory sits three levels under (`.simul/reports/<stamp>`).
+     */
+    private fun copyRecordShot(run: Site.Run, row: Site.Row, out: File, opts: Options): String? {
+        val f = row.record?.takeIf { row.recordFailed }?.failedStep ?: return null
+        val rel = f.screenshot ?: return null
+        val roots = listOfNotNull(opts.appRoot, run.dir.absoluteFile.parentFile?.parentFile?.parentFile, File("."))
+        val png = roots.map { File(it, rel) }.firstOrNull { it.isFile } ?: return null
+        val name = "record/${f.index.toString().padStart(2, '0')}.jpg"
+        return if (writeJpeg(png, File(out, "${row.id}/$name"), opts.thumbWidth)) "${row.result.key}/$name" else null
+    }
+
     // ------------------------------------------------------------------ home
 
-    fun renderHome(run: Site.Run, rows: List<Site.Row>, opts: Options): String {
+    fun renderHome(run: Site.Run, rows: List<Site.Row>, opts: Options, shots: Map<String, String?> = emptyMap()): String {
         val counts = rows.groupingBy { it.kind }.eachCount()
         val app = opts.appName ?: run.app ?: "app"
         val build = run.results.firstNotNullOfOrNull { it.appVersion } ?: run.summary?.appVersionName
@@ -138,7 +158,7 @@ object SitePages {
         if (diffs.isEmpty()) sb.append("<p class=dim>전부 통과 ${passed.size} — ${if (run.record != null) "오늘 녹화되고 " else ""}끝까지 재생됨.</p>")
         if (failed.isNotEmpty()) {
             sb.append("<div class=\"cards two\">")
-            for (row in failed) failureCard(sb, row)
+            for (row in failed) failureCard(sb, row, shots[row.id])
             sb.append("</div>")
         }
         if (setup.isNotEmpty()) {
@@ -174,18 +194,23 @@ object SitePages {
         return sb.toString()
     }
 
-    private fun failureCard(sb: StringBuilder, row: Site.Row) {
+    private fun failureCard(sb: StringBuilder, row: Site.Row, recordShot: String?) {
         val r = row.result
         val step = r.failedStepOf
-        val thumb = step?.n?.let { "${r.id}/steps/${it.toString().padStart(2, '0')}.jpg" }
+        // the replay's failed frame; for a scenario that never replayed, the recording's
+        val thumb = step?.n?.let { "${r.id}/steps/${it.toString().padStart(2, '0')}.jpg" } ?: recordShot?.let { "${r.feature.let { f -> if (f.isEmpty()) "" else "$f/" }}$it" }
         sb.append("<article class=\"card fail\">")
         if (thumb != null) sb.append("<a class=shot href=\"${attr(pageOf(r))}\"><img src=\"${attr(thumb)}\" alt=\"실패 시점 스크린샷\" loading=lazy></a>")
         else sb.append("<div class=\"shot empty\">실패 시점<br>스크린샷 없음</div>")
         sb.append("<div class=body><div class=row>${chip(Site.Kind.FAILED, if (row.recordFailed) "녹화 실패" else "FAILED")}<span class=dim>${esc(r.feature.ifEmpty { "(root)" })}${r.state?.let { " · ${esc(it)}" } ?: ""}</span></div>")
         sb.append("<div class=title><a href=\"${attr(pageOf(r))}\">${esc(r.title)}</a></div>")
-        row.recordFailure?.let { sb.append("<div class=mono><span class=reason>LLM 녹화: ${esc(it)}</span><br><span class=dim>아래는 커밋된 trace의 재생 · ${esc(if (r.failed) "FAILED" else r.status)}</span></div>") }
+        row.recordFailure?.let {
+            val replay = if (row.replayed) "아래는 커밋된 trace의 재생 · ${esc(if (r.failed) "FAILED" else r.status)}" else "재생 없음 · ${esc(r.reason ?: "no trace")}"
+            sb.append("<div class=mono><span class=reason>LLM 녹화: ${esc(it)}</span><br><span class=dim>$replay</span></div>")
+        }
         if (step != null) sb.append("<div class=mono>${step.n}. ${esc(step.text)}<br><span class=reason>${esc(step.reason ?: "failed")}</span></div>")
-        sb.append("<div class=foot><span class=dim>${esc(hm(r.startedAt))} · ${esc(humanDuration(r.durationMs))}</span>${avatar(r.owner)}<a class=more href=\"${attr(pageOf(r))}\">상세</a></div></div></article>")
+        val when_ = if (row.replayed || row.record == null) "${esc(hm(r.startedAt))} · ${esc(humanDuration(r.durationMs))}" else "녹화 ${esc(humanDuration(row.record.durationMs))}"
+        sb.append("<div class=foot><span class=dim>$when_</span>${avatar(r.owner)}<a class=more href=\"${attr(pageOf(r))}\">상세</a></div></div></article>")
     }
 
     private fun setupCard(sb: StringBuilder, row: Site.Row) {
@@ -205,7 +230,7 @@ object SitePages {
 
     // ------------------------------------------------------------------ detail
 
-    private fun renderDetail(run: Site.Run, row: Site.Row, all: List<Site.Row>, out: File, opts: Options): File {
+    private fun renderDetail(run: Site.Run, row: Site.Row, all: List<Site.Row>, out: File, opts: Options, recordShot: String?): File {
         val r = row.result
         val app = opts.appName ?: run.app ?: "app"
         val thumbs = copyAssets(r, out, opts)
@@ -218,14 +243,24 @@ object SitePages {
         sb.append("<div class=topbar><div class=inner><span class=brand>simul</span><nav class=crumbs><a href=\"${u}index.html\">${esc(app)}</a><span>/</span><span>${esc(r.feature.ifEmpty { "(root)" })}</span><span>/</span><b>${esc(r.name)}</b></nav><span class=right>${esc(run.date)}</span></div></div><main class=detail>")
 
         // ---- header
-        val statusText = when (r.status) { "PASSED" -> "PASSED · $passedN/${r.steps.size}"; "FAILED" -> "FAILED · ${r.failedStep}/${r.steps.size}"; else -> "SETUP · 안 돌림" }
+        val statusText = when (r.status) { "PASSED" -> "PASSED · $passedN/${r.steps.size}"; "FAILED" -> "FAILED · ${r.failedStep}/${r.steps.size}"; "SKIPPED_SETUP" -> "SETUP · 안 돌림"; else -> "안 돌림 · ${r.reason ?: r.status}" }
         sb.append("<header><div class=row><h1>${esc(r.title)}</h1>${chip(row.kind, statusText)}")
         if (row.recordFailed) sb.append(chip(Site.Kind.FAILED, "녹화 실패"))
         sb.append("<span class=right>${avatar(r.owner)}${if (r.owner != null) " · " else ""}${esc(hm(r.startedAt))} · ${esc(humanDuration(r.durationMs))}</span></div>")
         if (r.description.isNotEmpty()) sb.append("<p class=desc>${esc(r.description)}</p>")
         row.record?.let { rec ->
-            sb.append("<div class=\"${if (row.recordFailed) "reason" else "dim"}\">LLM 녹화: ${esc(row.recordFailure ?: "${rec.status} · ${humanDuration(rec.durationMs)}")}" +
-                (if (row.recordFailed) " — trace는 커밋본 그대로, 아래는 그 재생" else " — 아래는 그 trace의 재생") + "</div>")
+            val then = when {
+                !row.recordFailed -> " — 아래는 그 trace의 재생"
+                row.replayed -> " — trace는 커밋본 그대로, 아래는 그 재생"
+                else -> " — 커밋된 trace가 없어 재생하지 않음"
+            }
+            sb.append("<div class=\"${if (row.recordFailed) "reason" else "dim"}\">LLM 녹화: ${esc(row.recordFailure ?: "${rec.status} · ${humanDuration(rec.durationMs)}")}$then</div>")
+            // what the agent saw when it gave up: the step, the harness reason, the screen's labels
+            rec.failedStep?.takeIf { row.recordFailed }?.let { f ->
+                sb.append("<div class=\"step failed record\"><div class=line><span class=icon>✕</span><div class=text><div class=mono><span class=n>녹화 ${f.index}.</span> ${esc(f.text)}</div><div class=meta>${esc(f.reason ?: "failed")}</div></div></div>")
+                if (f.screen.isNotEmpty()) sb.append("<div class=fail><div><h4>그때 화면</h4><div class=mono>${f.screen.take(12).joinToString("<br>") { "<span class=dim>· ${esc(it)}</span>" }}</div></div></div>")
+                sb.append("</div>")
+            }
         }
         sb.append("<div class=row>")
         val siblings = all.filter { it.result.feature == r.feature && it.result.name == r.name }
@@ -237,6 +272,7 @@ object SitePages {
         sb.append("<span class=right><span class=dim>${esc(".simul/scenarios/${r.file}")}</span></span></div></header>")
 
         sb.append("<div class=cols><section class=steps><h2>STEPS</h2>")
+        if (r.steps.isEmpty()) sb.append("<p class=dim>재생 없음 — ${esc(r.reason ?: r.status)}</p>")
         for (s in r.steps) stepRow(sb, r, s)
         sb.append("</section>")
 
@@ -245,10 +281,11 @@ object SitePages {
         sb.append("<div class=frame>")
         if (video != null) sb.append("<video id=v src=\"${attr(video)}\" preload=metadata playsinline></video>")
         else {
-            val first = executed.firstOrNull()?.let { thumbs[it.n] }
-            sb.append(if (first != null) "<img id=still src=\"${attr(first)}\" alt=\"스텝 화면\">" else "<span class=dim>녹화 없음 (--video)</span>")
+            val first = executed.firstOrNull()?.let { thumbs[it.n] } ?: recordShot
+            sb.append(if (first != null) "<img id=still src=\"${attr(first)}\" alt=\"${if (recordShot != null && thumbs.isEmpty()) "LLM 녹화가 멈춘 화면" else "스텝 화면"}\">" else "<span class=dim>녹화 없음 (--video)</span>")
         }
-        sb.append("<div class=caption id=cap>${executed.firstOrNull()?.let { "${it.n}/${r.steps.size} · ${esc(it.text)}" } ?: ""}</div></div>")
+        val recCaption = row.record?.failedStep?.takeIf { row.recordFailed && !row.replayed }?.let { "LLM 녹화 ${it.index} · ${esc(it.text)}" }
+        sb.append("<div class=caption id=cap>${executed.firstOrNull()?.let { "${it.n}/${r.steps.size} · ${esc(it.text)}" } ?: recCaption ?: ""}</div></div>")
         sb.append("<div class=controls>")
         if (video != null) sb.append("<button type=button id=play aria-label=\"재생\">▶</button>")
         sb.append("<span class=segments id=segs>")

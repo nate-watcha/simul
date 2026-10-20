@@ -144,7 +144,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
         runsDir?.let { dir ->
             RunSummaryJson.write(summary, File(dir, "run.json"))
             println("runs: ${shown(dir)} $passedLine")
-            runCatching { SitePages.build(dir, dir) }
+            runCatching { SitePages.build(dir, dir, SitePages.Options(appRoot = project.appRoot)) }
                 .onSuccess { println("report: ${shown(it.index)} — ${it.counts()}") }
                 .onFailure { println("warning: report not written: ${it.message}") }
         }

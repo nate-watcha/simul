@@ -147,6 +147,42 @@ class SiteTest {
     }
 
     @Test
+    fun `a scenario the replay skipped for want of a trace is still a row - a failed one when its recording failed`() {
+        // run 39395891887: the LLM failed 7 recordings, nothing was committed, the replay skipped them (no trace) and
+        // wrote no directory — and the index showed 7 passes and nothing else
+        scenario("2026-10-20", "auth", "login", null, StepStatus.PASSED, listOf(screenA, screenBNew))
+        val run = RunSummary("verify", "replay", "2026-10-20T02:10:00+09:00", 60_000L, "0.2.0", "4.21.0", "sdk", listOf(
+            ScenarioOutcome("auth-login", "auth/login.md", emptyList(), "PASSED", "replay", 20_000, "auth/login", false, 2, 0, 0, null, null),
+            ScenarioOutcome("auth-wish-wall", "auth/wish-wall.md", emptyList(), "SKIPPED", null, 0, null, false, 0, 0, 3, null, "no trace", description = "게스트가 보고싶어요를 누르면 로그인 시트가 뜬다."),
+        ), app = "WatchaPlay")
+        File(runs, "2026-10-20/run.json").writeText(RunSummaryJson.toJson(run).toString())
+        // the recording's last screenshot lives in the app repo, relative to its root
+        val shot = File(root, ".simul/reports/auth-wish-wall-20261020-175823/steps/02.png").also { it.parentFile.mkdirs() }
+        ImageIO.write(BufferedImage(72, 128, BufferedImage.TYPE_INT_RGB), "png", shot)
+        val rec = RunSummary("record", "llm", "2026-10-20T01:00:00+09:00", 20 * 60_000L, "0.2.0", "4.21.0", "sdk", listOf(
+            ScenarioOutcome("auth-login", "auth/login.md", emptyList(), "PASSED", "llm", 60_000, "r1", true, 2, 0, 0, null, null),
+            ScenarioOutcome("auth-wish-wall", "auth/wish-wall.md", emptyList(), "FAILED", "llm", 23_889, "r2", false, 1, 1, 1,
+                FailedStep(2, "Tap the \"보고싶어요\" button", "criterion anchor not on screen: \"다른 방법으로 계속하기\"", ".simul/reports/auth-wish-wall-20261020-175823/steps/02.png", listOf("호프", "보고싶어요")), null),
+        ), app = "WatchaPlay")
+        File(runs, "2026-10-20/record.json").writeText(RunSummaryJson.toJson(rec).toString())
+
+        val rows = Site.classify(Site.load(File(runs, "2026-10-20")))
+        assertEquals(listOf("auth/login" to Site.Kind.PASSED, "auth/wish-wall" to Site.Kind.FAILED), rows.map { it.id to it.kind })
+        assertTrue(rows[1].recordFailed && !rows[1].replayed)
+
+        val built = SitePages.build(File(runs, "2026-10-20"), File(runs, "2026-10-20"), SitePages.Options(appRoot = root))
+        assertEquals("실패 1 (녹화 실패 1) · 통과 1", built.counts())
+        val home = File(runs, "2026-10-20/index.html").readText()
+        assertTrue("<article class=\"card fail\">" in home && "LLM 녹화: step 2 `Tap the &quot;보고싶어요&quot; button` — criterion anchor not on screen" in home, home.substringAfter("<header"))
+        assertTrue("재생 없음 · no trace" in home && "auth/wish-wall/record/02.jpg" in home, "the card shows the recording's last frame, since there was no replay")
+        assertTrue(File(runs, "2026-10-20/auth/wish-wall/record/02.jpg").isFile)
+        val detail = File(runs, "2026-10-20/auth/wish-wall.html").readText()
+        assertTrue("녹화 실패</span>" in detail && "커밋된 trace가 없어 재생하지 않음" in detail && "재생 없음 — no trace" in detail, detail.substringAfter("<header"))
+        assertTrue("녹화 2.</span> Tap the &quot;보고싶어요&quot; button" in detail && "· 호프" in detail, "the recording's failed step and screen")
+        assertTrue("<img id=still src=\"wish-wall/record/02.jpg\"" in detail)
+    }
+
+    @Test
     fun `report command writes the pages from --runs, in place by default, and --check fails on a failure`() {
         scenario("2026-10-19", "billing", "coupon", null, StepStatus.FAILED, listOf(screenA, screenB))
         assertEquals(1, reportCommand(listOf("--runs", "runs/app/2026-10-19", "--check"), root))
