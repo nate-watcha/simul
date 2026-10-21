@@ -12,8 +12,14 @@ import java.io.File
 const val GUEST_STATE = "guest"
 
 interface DeviceOps {
-    /** Scenario setup: optional app-data restore (state snapshot or clear), cold start, deeplink. */
-    fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?)
+    /**
+     * Scenario setup: optional app-data restore (state snapshot or clear), cold start, deeplink.
+     * After a launch or deeplink it waits for the app's own "I have drawn my content" signal —
+     * `Activity.reportFullyDrawn()` (Compose `ReportDrawnWhen`), which the system logs as
+     * `Fully drawn <pkg>/<activity>: +Ns` — and returns that duration; null when the app never
+     * reported within [AdbOps.FULLY_DRAWN_TIMEOUT_MS] (or when nothing was launched).
+     */
+    fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?): String?
 
     /** Capture a PNG screenshot into [dest]; false if capture failed (non-fatal). */
     fun screenshot(dest: File): Boolean
@@ -58,7 +64,7 @@ class AdbOps(
     private val statesDir: File? = null,
 ) : DeviceOps {
 
-    override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?) {
+    override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?): String? {
         if ((clearData || appState != null) && app != null) {
             runCatching { runProcess(listOf(adbBin, "shell", "am", "force-stop", app)) }
             runProcess(listOf(adbBin, "shell", "pm", "clear", app))
@@ -99,6 +105,28 @@ class AdbOps(
             // this deeplink. Surface it as a precise setup failure instead of letting the test
             // fail later at the Verify step with a confusing "landmark not found".
             deeplinkError(out)?.let { throw RuntimeException("deeplink not handled by app: $link — $it") }
+        }
+        if (app == null || !(launch || deeplink != null)) return null
+        return awaitFullyDrawn(app)
+    }
+
+    /**
+     * Poll the device log for the app's `Fully drawn` line. `am start -W` returns at the first
+     * frame of whatever activity the intent resolved to (TTID) — for kloud that is a routing
+     * activity showing an ad splash, and the destination screen arrives seconds later, after
+     * a network round trip (measured: +3.6s after setup, splash timeout 5s). Only the app knows
+     * which activity is the destination, so that activity reports it and this waits for that.
+     * The runner cleared logcat before setup, so `-d` covers exactly this launch.
+     */
+    private fun awaitFullyDrawn(app: String): String? {
+        val deadline = System.currentTimeMillis() + FULLY_DRAWN_TIMEOUT_MS
+        while (true) {
+            val out = runCatching {
+                runProcess(listOf(adbBin, "logcat", "-d", "-v", "brief", "ActivityTaskManager:I", "ActivityManager:I", "*:S"))
+            }.getOrDefault("")
+            fullyDrawn(out, app)?.let { return it }
+            if (System.currentTimeMillis() >= deadline) return null
+            Thread.sleep(FULLY_DRAWN_POLL_MS)
         }
     }
 
@@ -186,6 +214,17 @@ class AdbOps(
     }
 
     companion object {
+        /** How long setup waits for the app to report fully drawn — above kloud's splash-ad timeout (5s) plus a load. */
+        const val FULLY_DRAWN_TIMEOUT_MS = 15_000L
+        private const val FULLY_DRAWN_POLL_MS = 500L
+
+        /**
+         * The `+Ns` the system logs when [app]'s activity calls `reportFullyDrawn()`
+         * (`ActivityTaskManager: Fully drawn com.x/.Main: +3s812ms`); null when no such line.
+         */
+        fun fullyDrawn(logcat: String, app: String): String? =
+            Regex("Fully drawn ${Regex.escape(app)}/\\S+: (\\+\\S+)").find(logcat)?.groupValues?.get(1)
+
         /** The error `am start -W` reports (on stdout, exit 0) when a URI resolves to nothing. */
         fun deeplinkError(amOutput: String): String? =
             amOutput.lineSequence().map { it.trim() }

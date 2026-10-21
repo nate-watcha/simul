@@ -66,7 +66,7 @@ class RunnerTest {
             override fun settingGet(namespace: String, key: String) = inner.settingGet(namespace, key)
             override fun settingPut(namespace: String, key: String, value: String) = inner.settingPut(namespace, key, value)
             override fun settingDelete(namespace: String, key: String) = inner.settingDelete(namespace, key)
-            override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?) = throw RuntimeException("adb shell am start failed")
+            override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?): String? = throw RuntimeException("adb shell am start failed")
         }
         val listener = SwitchableListener()
         val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
@@ -316,7 +316,7 @@ class RunnerTest {
         val listener = SwitchableListener()
         val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
         val throwingOps = object : DeviceOps by FakeOps() {
-            override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?) =
+            override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?): String? =
                 throw RuntimeException("adb shell am start failed\n/system/bin/sh: syntax error")
         }
         val logged = mutableListOf<String>()

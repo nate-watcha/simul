@@ -12,8 +12,11 @@ internal class FakeOps(private val versionName: String? = "5.4.0") : DeviceOps {
     val setups = mutableListOf<String>()
     var display: String? = null
 
-    override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?) {
+    /** What setup reports as the app's fully-drawn time; null = the app never reported. */
+    var fullyDrawn: String? = null
+    override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?): String? {
         setups += "$app|$appState|$clearData|$launch|$deeplink"
+        return fullyDrawn
     }
     override fun screenshot(dest: File): Boolean = false
     override fun logcatClear() {}

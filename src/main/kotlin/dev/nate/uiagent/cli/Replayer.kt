@@ -85,8 +85,13 @@ class Replayer(
      */
     private fun precondition(action: TraceAction): Boolean = when (action.tool) {
         "tap", "type" -> action.target?.let { ground(it) } != null
+        // A synthetic handle resolves to the nearest element within 50px, so a full-screen
+        // overlay (ad splash) centred where the list was "matches" — the wait must hold out
+        // for an element that can actually scroll (detail-soundtrack 2026-10-20: one poll,
+        // then the same "not scrollable" error).
         "scroll", "scrollToFind" ->
-            controller.resolve(action.args["scrollable"] ?: "") is Resolution.Match
+            (controller.resolve(action.args["scrollable"] ?: "") as? Resolution.Match)
+                ?.element?.interactions?.contains("scrollable") == true
         else -> true
     }
 

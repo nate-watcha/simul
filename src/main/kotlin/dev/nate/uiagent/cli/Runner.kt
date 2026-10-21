@@ -2,6 +2,7 @@ package dev.nate.uiagent.cli
 
 import dev.nate.uiagent.device.SettingChange
 import dev.nate.uiagent.device.DeviceSettings
+import dev.nate.uiagent.device.AdbOps
 import dev.nate.uiagent.device.DeviceOps
 import dev.nate.uiagent.Point
 import dev.nate.uiagent.agent.LlmStats
@@ -133,8 +134,14 @@ class ScenarioRunner(
                 ).joinToString(" + ").ifEmpty { "none" }
                 log("  setup: $what")
                 val s = System.currentTimeMillis()
-                ops.setup(app, appState = it.appState, clearData = it.clearData, launch = it.launch, deeplink = it.deeplink)
-                log("  setup: done (${secs(System.currentTimeMillis() - s)})")
+                val drawn = ops.setup(app, appState = it.appState, clearData = it.clearData, launch = it.launch, deeplink = it.deeplink)
+                log("  setup: done (${secs(System.currentTimeMillis() - s)}${drawn?.let { d -> ", app fully drawn $d" } ?: ""})")
+                if (drawn == null && app != null && (it.launch || it.deeplink != null)) {
+                    // The first observation may then catch a splash (an ad interstitial was
+                    // grounded as the scroll container, 실측) — the fix is in the app's entry screen.
+                    log("  setup: app did not report fully drawn within ${AdbOps.FULLY_DRAWN_TIMEOUT_MS / 1000}s — " +
+                        "the destination activity should call reportFullyDrawn() on its first frame (only the first call per launch counts)")
+                }
             }
             onSetupDone()
         } catch (ex: Exception) {

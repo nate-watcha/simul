@@ -53,6 +53,9 @@ simul report $V/record.json $V/run.json --check >/dev/null                  # �
   그 데이터가 AVD 이미지에 있어야 한다
 - debug 빌드 설치(WebView 채널이 debuggable 전제), `.simul/config.yaml llm.url`에 닿는 OpenAI 호환 LLM —
   키는 `llm.apiKey: ${VAR}` + 러너 시크릿
+- 앱의 목적지 액티비티(런치 홈·딥링크가 도착하는 곳)가 첫 프레임에 `reportFullyDrawn()`을 부른다(예: `onCreate`의
+  `doOnPreDraw`) — setup은 그 `Fully drawn` 신호를 기다려 첫 스텝을 시작한다(스플래시·광고 인터스티셜 액티비티 위에서 관찰하지
+  않게). 런치당 첫 호출만 유효하다. 신호가 15s 안에 없으면 경고만 남기고 진행한다
 - 로그인 등 상태 스냅샷(`.simul/states/*.tar`, gitignored)은 러너 로컬 디렉터리에서 체크아웃 뒤 복사
 - 끝나면 `adb emu kill`; 아티팩트는 `.simul/reports/<stamp>/` 디렉토리 통째(받아서 `index.html`을 열면 끝)
 

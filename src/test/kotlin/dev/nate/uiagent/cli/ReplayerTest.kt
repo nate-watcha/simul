@@ -135,6 +135,29 @@ class ReplayerTest {
     }
 
     @Test
+    fun `scroll handle landing on a non-scrollable overlay keeps waiting for the scrollable`() {
+        // An ad splash is one full-screen image centred 1px from where the list's synthetic
+        // handle points, so the nearest-element fallback grounds the handle on it (2026-10-20).
+        val splash = layout(el("[운영] 프로모_스플래시", center = Point(360, 640), id = 0))
+        val list = el(interactions = listOf("scrollable"), center = Point(360, 639), id = 0)
+        val detail = layout(list, el("삽입곡", resourceId = "tv_row_title", center = Point(360, 900), id = 1))
+        // the splash outlives the settle observation and the first poll; the detail arrives on the second
+        val dev = FakeDevice(splash, splash, splash, detail, detail)
+        val c = controller(dev)
+        c.fullLayout()
+
+        val step = TraceStep(
+            "Scroll down to find the \"삽입곡\" row",
+            listOf(TraceAction("scrollToFind", args = mapOf("scrollable" to "@x360y639", "target" to "삽입곡", "direction" to "down"))),
+            evidence = listOf("삽입곡"),
+        )
+        val r = Replayer(c).replayStep(step)
+
+        assertNull(r.broken)
+        assertTrue(dev.gestures.isEmpty(), "the row is on the arrived screen — no swipe needed")
+    }
+
+    @Test
     fun `missing evidence after actions is broken`() {
         val tab = el("웹툰", interactions = listOf("clickable"), center = Point(360, 1176), id = 0)
         val l = layout(tab)
