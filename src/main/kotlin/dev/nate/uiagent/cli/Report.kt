@@ -19,6 +19,12 @@ import java.io.File
  *   failure too) + a page per scenario with its replay.mp4 step timeline (see [SitePages]), plus
  *   `record.json` and `run.json`, the two batch summaries the md/junit report and the gate join.
  *
+ * `simul report <scenario.md>...`
+ *   The same record → replay → HTML for the named scenarios only — the try-out of a scenario someone
+ *   just wrote (the Slack request flow runs this on the runner and sends the result back). Same
+ *   directory layout; what it prints at the end is the scenario's own page (`<feature>/<name>.<state>.html`,
+ *   one per state), which is the feedback to hand over — `index.html` is still written beside it.
+ *
  * `simul report --runs <dir> [--out <dir>] [--title <app name>] [--check]`
  *   The same pages from an existing `simul run --runs` directory (in place by default; with `--out`
  *   the mp4s and thumbnails are copied there). `--check` exits 1 when any scenario failed.
@@ -36,7 +42,12 @@ import java.io.File
  *   Exit code: 0, or 1 with `--check` when any verdict is a failure — the CI gate.
  */
 internal fun reportCommand(args: List<String>, cwd: File): Int {
-    if (args.isEmpty()) return replayAndReport(cwd)
+    if (args.isEmpty()) return replayAndReport(cwd, emptyList())
+    // Scenario files, nothing else: the try-out form. (`--out x.md` below is a summary report's output, not a scenario.)
+    if (args.none { it.startsWith("--") } && args.any { it.endsWith(".md") }) {
+        if (!args.all { it.endsWith(".md") }) return err("`simul report <scenario.md>...` takes scenario files only (no summary.json)")
+        return replayAndReport(cwd, args)
+    }
     var format: String? = null
     var title = "simul report"
     var out: String? = null
@@ -90,20 +101,28 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
     return if (check && report.overall == Severity.FAIL) 1 else 0
 }
 
-/** `simul report` alone: record every scenario with the LLM, replay the recordings into the same stamped directory, write its HTML. */
-private fun replayAndReport(cwd: File): Int {
+/**
+ * `simul report` alone: record every scenario with the LLM, replay the recordings into the same stamped
+ * directory, write its HTML. With [scenarios] (md paths, as `simul run` resolves them) the same for those only,
+ * and the last line names their pages instead of the index.
+ */
+private fun replayAndReport(cwd: File, scenarios: List<String>): Int {
     val project = SimulProject.find(cwd) ?: return err("no .simul/ directory found from $cwd upwards")
     val dir = File(project.reportsDir, java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmm")))
     dir.mkdirs()
-    println("── record: every scenario with the LLM ──")
-    val recordRc = runCommand(listOf("--all", "--mode", "llm", "--summary", File(dir, "record.json").path, "--label", "record"), cwd)
+    val scope = scenarios.ifEmpty { listOf("--all") }
+    val what = if (scenarios.isEmpty()) "every scenario" else scenarios.joinToString(", ")
+    println("── record: $what with the LLM ──")
+    val recordRc = runCommand(scope + listOf("--mode", "llm", "--summary", File(dir, "record.json").path, "--label", "record"), cwd)
     println()
     println("── replay: what was just recorded, no LLM ──")
-    val replayRc = runCommand(listOf("--all", "--mode", "replay", "--video", "--runs", dir.path), cwd)
+    val replayRc = runCommand(scope + listOf("--mode", "replay", "--video", "--runs", dir.path), cwd)
     val html = File(dir, "index.html")
     if (!html.isFile) return if (replayRc == 0) err("no report written under ${dir.relativeToOrSelf(cwd)}") else replayRc
     println()
-    println("open ${html.relativeToOrSelf(cwd).path}")
+    val pages = if (scenarios.isEmpty()) listOf(html)
+                else Site.load(dir).results.map { SitePages.pageFile(dir, it) }.filter { it.isFile }.ifEmpty { listOf(html) }
+    pages.forEach { println("open ${it.relativeToOrSelf(cwd).path}") }
     return if (recordRc != 0 || replayRc != 0) 1 else 0
 }
 

@@ -124,6 +124,8 @@ class ReportTest {
         assertEquals(2, reportCommand(listOf("r/missing.json"), dir))
         assertEquals(2, reportCommand(listOf("r/record.json", "--format", "pdf"), dir))
         assertEquals(2, reportCommand(emptyList(), dir), "bare `simul report` needs a .simul project to replay")
+        assertEquals(2, reportCommand(listOf("nav/a.md"), dir), "`simul report <scenario.md>` is the same pipeline, scoped — it needs the project too")
+        assertEquals(2, reportCommand(listOf("nav/a.md", "r/record.json"), dir), "scenario files and summaries never mix")
     }
 
     @Test

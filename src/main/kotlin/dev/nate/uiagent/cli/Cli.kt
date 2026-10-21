@@ -58,6 +58,8 @@ private fun printUsage() {
           simul report                        re-record every scenario with the LLM, replay the recordings without it,
                                               write .simul/reports/<stamp>/ (index.html + record.json + run.json)
           simul report <stamp>/record.json <stamp>/run.json --format md|junit [--check]   # job summary / trace PR body / gate
+          simul report <scenario.md>...       the same record → replay → HTML for those scenarios only; prints their pages
+                                              (<stamp>/<feature>/<name>.<state>.html) — the try-out of a newly written scenario
         """.trimIndent()
     )
 }
