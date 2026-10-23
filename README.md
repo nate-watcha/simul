@@ -30,10 +30,11 @@ simul "Tap the \"웹툰\" tab"     # ad-hoc 단일 커맨드 (규약 없이 동�
 
 나이틀리는 `simul report` 한 줄이다. LLM이 전 시나리오를 다시 녹화하고(산출물은 trace), 그 trace를 LLM 없이 replay하면서(그래서 빠르다)
 **HTML 리포트**를 쓴다. 녹화가 실패한 시나리오(에이전트가 오늘 앱에서 못 했거나 LLM 게이트웨이 오류)는 커밋된 trace가 재생되더라도
-리포트에 **실패**로 올라온다. 워크플로 파일은 **앱 레포가 가진다** — 이 레포는 커맨드만 제공하고, 조립 순서는 이것이다:
+리포트에 **실패**로 올라오고, 그 페이지는 녹화의 타임라인(통과한 스텝, 멈춘 스텝에서 에이전트가 한 액션과 그때마다의 화면, 이후 SKIPPED)을 보여준다 —
+커밋 trace의 재생은 그 아래 접혀 있다. 워크플로 파일은 **앱 레포가 가진다** — 이 레포는 커맨드만 제공하고, 조립 순서는 이것이다:
 
 ```bash
-simul report                                   # 녹화 → 재생 → .simul/reports/<stamp>/ (index.html + record.json + run.json) — 이 디렉토리가 아티팩트
+simul report                                   # 녹화 → 재생 → .simul/reports/<stamp>/ (index.html + record.json + record/ + run.json) — 이 디렉토리가 아티팩트
 V=$(ls -d .simul/reports/[0-9]*/ | sort | tail -1)
 simul report $V/record.json $V/run.json --title "simul nightly $(date +%F)" --link "Run=$RUN_URL" --format md --out $V/report.md   # $GITHUB_STEP_SUMMARY / trace PR 본문
 simul report $V/record.json $V/run.json --format junit --out $V/junit.xml   # 테스트 리포터용

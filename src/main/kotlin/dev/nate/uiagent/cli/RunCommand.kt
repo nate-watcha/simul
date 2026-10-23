@@ -144,7 +144,8 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
         runsDir?.let { dir ->
             RunSummaryJson.write(summary, File(dir, "run.json"))
             println("runs: ${shown(dir)} $passedLine")
-            runCatching { SitePages.build(dir, dir, SitePages.Options(appRoot = project.appRoot)) }
+            // a recording is half of a report (`simul report` lays it under <stamp>/record/); the replay that follows builds the pages for both
+            if (mode != RunMode.LLM) runCatching { SitePages.build(dir, dir) }
                 .onSuccess { println("report: ${shown(it.index)} — ${it.counts()}") }
                 .onFailure { println("warning: report not written: ${it.message}") }
         }

@@ -146,40 +146,89 @@ class SiteTest {
         assertEquals(3, inPlace.pages.size)
     }
 
+    /**
+     * What `simul report` leaves of the LLM recording of one scenario under `<stamp>/record/`: steps up to [failedAt] passed,
+     * that one failed after a tap (its before/after frames in screenshots/), the rest skipped.
+     */
+    private fun recording(date: String, feature: String, name: String, failedAt: Int, total: Int, reason: String) {
+        val dir = File(runs, "$date/record/$feature/$name").apply { mkdirs() }
+        val t0 = 1_792_000_100_000L
+        fun png(rel: String) = ImageIO.write(BufferedImage(72, 128, BufferedImage.TYPE_INT_RGB), "png", File(dir, rel).also { it.parentFile.mkdirs() })
+        val steps = (1..total).map { n ->
+            when {
+                n < failedAt -> { png("steps/0$n.png"); StepReport(n, "Tap the \"btn$n\" button", StepStatus.PASSED, "llm", emptyList(), listOf("screen$n"), null, 3000, listOf("steps/0$n.png"), startedMs = (n - 1) * 3000L, marks = listOf(ActionMark("tap", "btn$n", t0 + (n - 1) * 3000L + 500))) }
+                n == failedAt -> {
+                    png("screenshots/step$n-1-tap-before.png"); png("screenshots/step$n-1-tap-after.png"); png("screenshots/step$n-2-scroll-after.png"); png("steps/0$n.png")
+                    StepReport(n, "Tap the \"보고싶어요\" button :: \"다른 방법으로 계속하기\" is shown", StepStatus.FAILED, "llm", emptyList(), emptyList(), reason, 9000,
+                        listOf("screenshots/step$n-1-tap-before.png", "screenshots/step$n-1-tap-after.png", "screenshots/step$n-2-scroll-after.png", "steps/0$n.png"),
+                        screen = listOf("호프", "보고싶어요"), startedMs = (n - 1) * 3000L, expectedEvidence = listOf("다른 방법으로 계속하기"),
+                        marks = listOf(ActionMark("tap", "보고싶어요", t0 + (n - 1) * 3000L + 700), ActionMark("scroll", "scroll@0", t0 + (n - 1) * 3000L + 4000)))
+                }
+                else -> StepReport(n, "Tap the \"btn$n\" button", StepStatus.SKIPPED, null, emptyList(), emptyList(), null, 0, emptyList())
+            }
+        }
+        // within 2s of the step's last gesture (the scroll at +4000)
+        File(dir, "logcat.txt").writeText("         ${(t0 + (failedAt - 1) * 3000L + 4500) / 1000}.000   672   833 E LoginSheet: not shown\n")
+        val r = ScenarioRunResult(name, StepStatus.FAILED, steps, null, 12000, startedAtMs = t0, reportDir = dir)
+        ResultJson.write(r, "llm", ResultJson.Meta(feature, name, null, "$feature/$name.md", name, "nate", "", null, ResultJson.Env("4.21.0", "sdk", "1.0.1")), dir)
+    }
+
     @Test
-    fun `a scenario the replay skipped for want of a trace is still a row - a failed one when its recording failed`() {
+    fun `a failed recording is told by its own timeline - the replay of yesterday's trace, if any, folds under it`() {
         // run 39395891887: the LLM failed 7 recordings, nothing was committed, the replay skipped them (no trace) and
-        // wrote no directory — and the index showed 7 passes and nothing else
+        // wrote no directory — and the index showed 7 passes and nothing else. And when a trace *was* committed, the page
+        // showed yesterday's replay as if it were tonight's failure, with one frame of the recording.
         scenario("2026-10-20", "auth", "login", null, StepStatus.PASSED, listOf(screenA, screenBNew))
         val run = RunSummary("verify", "replay", "2026-10-20T02:10:00+09:00", 60_000L, "0.2.0", "4.21.0", "sdk", listOf(
             ScenarioOutcome("auth-login", "auth/login.md", emptyList(), "PASSED", "replay", 20_000, "auth/login", false, 2, 0, 0, null, null),
             ScenarioOutcome("auth-wish-wall", "auth/wish-wall.md", emptyList(), "SKIPPED", null, 0, null, false, 0, 0, 3, null, "no trace", description = "게스트가 보고싶어요를 누르면 로그인 시트가 뜬다."),
         ), app = "WatchaPlay")
         File(runs, "2026-10-20/run.json").writeText(RunSummaryJson.toJson(run).toString())
-        // the recording's last screenshot lives in the app repo, relative to its root
-        val shot = File(root, ".simul/reports/auth-wish-wall-20261020-175823/steps/02.png").also { it.parentFile.mkdirs() }
-        ImageIO.write(BufferedImage(72, 128, BufferedImage.TYPE_INT_RGB), "png", shot)
+        recording("2026-10-20", "auth", "wish-wall", failedAt = 2, total = 3, reason = "criterion anchor not on screen: \"다른 방법으로 계속하기\"")
+        recording("2026-10-20", "auth", "login", failedAt = 1, total = 2, reason = "agent error: Error from client: OpenAILLMClient Status code: 500")
         val rec = RunSummary("record", "llm", "2026-10-20T01:00:00+09:00", 20 * 60_000L, "0.2.0", "4.21.0", "sdk", listOf(
-            ScenarioOutcome("auth-login", "auth/login.md", emptyList(), "PASSED", "llm", 60_000, "r1", true, 2, 0, 0, null, null),
+            ScenarioOutcome("auth-login", "auth/login.md", emptyList(), "FAILED", "llm", 4_000, "r1", false, 0, 1, 1, FailedStep(1, "Tap the \"btn1\" button", "agent error: Error from client: OpenAILLMClient Status code: 500", null), null),
             ScenarioOutcome("auth-wish-wall", "auth/wish-wall.md", emptyList(), "FAILED", "llm", 23_889, "r2", false, 1, 1, 1,
-                FailedStep(2, "Tap the \"보고싶어요\" button", "criterion anchor not on screen: \"다른 방법으로 계속하기\"", ".simul/reports/auth-wish-wall-20261020-175823/steps/02.png", listOf("호프", "보고싶어요")), null),
+                FailedStep(2, "Tap the \"보고싶어요\" button", "criterion anchor not on screen: \"다른 방법으로 계속하기\"", ".simul/reports/20261020-0100/record/auth/wish-wall/steps/02.png", listOf("호프", "보고싶어요")), null),
         ), app = "WatchaPlay")
         File(runs, "2026-10-20/record.json").writeText(RunSummaryJson.toJson(rec).toString())
 
-        val rows = Site.classify(Site.load(File(runs, "2026-10-20")))
-        assertEquals(listOf("auth/login" to Site.Kind.PASSED, "auth/wish-wall" to Site.Kind.FAILED), rows.map { it.id to it.kind })
-        assertTrue(rows[1].recordFailed && !rows[1].replayed)
+        val loaded = Site.load(File(runs, "2026-10-20"))
+        assertEquals(listOf("auth/login", "auth/wish-wall"), loaded.results.map { it.id }, "the recordings under record/ are not replay rows")
+        assertEquals(setOf("auth/login", "auth/wish-wall"), loaded.recordings.keys)
+        val rows = Site.classify(loaded)
+        assertEquals(listOf("auth/login" to Site.Kind.FAILED, "auth/wish-wall" to Site.Kind.FAILED), rows.map { it.id to it.kind })
+        assertTrue(rows[1].recordFailed && !rows[1].replayed && rows[1].recordTimeline != null)
+        assertEquals("step 2 `Tap the \"보고싶어요\" button` — criterion anchor not on screen: \"다른 방법으로 계속하기\"", rows[1].recordFailure)
 
-        val built = SitePages.build(File(runs, "2026-10-20"), File(runs, "2026-10-20"), SitePages.Options(appRoot = root))
-        assertEquals("실패 1 (녹화 실패 1) · 통과 1", built.counts())
+        val built = SitePages.build(File(runs, "2026-10-20"), File(runs, "2026-10-20"))
+        assertEquals("실패 2 (녹화 실패 2) · 통과 0", built.counts())
         val home = File(runs, "2026-10-20/index.html").readText()
-        assertTrue("<article class=\"card fail\">" in home && "LLM 녹화: step 2 `Tap the &quot;보고싶어요&quot; button` — criterion anchor not on screen" in home, home.substringAfter("<header"))
-        assertTrue("재생 없음 · no trace" in home && "auth/wish-wall/record/02.jpg" in home, "the card shows the recording's last frame, since there was no replay")
-        assertTrue(File(runs, "2026-10-20/auth/wish-wall/record/02.jpg").isFile)
+        val card = home.split("<article").first { "auth-wish-wall</a>" in it }.substringBefore("</article>")
+        // the card is the recording: how far the agent got, the step it stopped on, the frame it stopped on; the replay is one dim line
+        assertTrue("3스텝 중 2에서 멈춤" in card && "<i class=\"passed\" title=\"1." in card && "<i class=\"failed\" title=\"2." in card && "<i class=\"skipped\" title=\"3." in card, card)
+        assertTrue("2. Tap the &quot;보고싶어요&quot; button" in card && "criterion anchor not on screen" in card && "재생 없음 · no trace" in card, card)
+        assertTrue("src=\"auth/wish-wall/record/02.jpg\"" in card && File(runs, "2026-10-20/auth/wish-wall/record/02.jpg").isFile, card)
+        assertTrue("2스텝 중 1에서 멈춤" in home && "커밋 trace 재생 · PASSED" in home, "login: recorded nothing, yesterday's trace still replays")
+
         val detail = File(runs, "2026-10-20/auth/wish-wall.html").readText()
-        assertTrue("녹화 실패</span>" in detail && "커밋된 trace가 없어 재생하지 않음" in detail && "재생 없음 — no trace" in detail, detail.substringAfter("<header"))
-        assertTrue("녹화 2.</span> Tap the &quot;보고싶어요&quot; button" in detail && "· 호프" in detail, "the recording's failed step and screen")
-        assertTrue("<img id=still src=\"wish-wall/record/02.jpg\"" in detail)
+        assertTrue("녹화 실패 · 2/3</span>" in detail && "오늘 녹화 (LLM)" in detail && "3스텝 중 2에서 멈춤" in detail, detail.substringAfter("<header"))
+        // the timeline is the recording's: the passed step, the failed one expanded with what the agent did there, the rest skipped
+        assertTrue("<div class=\"step passed\" data-step=1" in detail && "→ btn1 · + screen1 · 3.0s" in detail)
+        assertTrue("<div class=\"step failed\" data-step=2" in detail && "→ scroll@0 · FAILED · criterion anchor not on screen" in detail)
+        assertTrue("기대 (시나리오)" in detail && "+ 다른 방법으로 계속하기" in detail && "· 다른 방법으로 계속하기 없음" in detail && "· 호프" in detail)
+        assertTrue("에이전트가 한 일" in detail && "tap 보고싶어요 → scroll scroll@0" in detail)
+        assertTrue("src=\"wish-wall/record/02-1.jpg\"" in detail && "<figcaption>1 tap</figcaption>" in detail && "src=\"wish-wall/record/02-2.jpg\"" in detail && "<figcaption>2 scroll</figcaption>" in detail, "the frame after each action of the failed step")
+        assertTrue(File(runs, "2026-10-20/auth/wish-wall/record/02-1.jpg").isFile)
+        assertTrue("LoginSheet: not shown" in detail, "logcat from the recording's directory")
+        assertTrue("<div class=\"step skipped\" data-step=3" in detail && "<i class=\"skipped\" data-step=3" in detail, "the skipped tail is on the timeline and the bar")
+        assertTrue("<img id=still src=\"wish-wall/record/01.jpg\"" in detail && "\"thumb\":\"wish-wall/record/02.jpg\"" in detail, "no video: the player shows the recording's step frames")
+        assertTrue("커밋된 trace가 없어 재생하지 않음" in detail && "<details class=replaysec" !in detail)
+
+        // a committed trace that still replays folds under the failed recording — static rows, not the player's
+        val login = File(runs, "2026-10-20/auth/login.html").readText()
+        assertTrue("녹화 실패 · 1/2</span>" in login && "<details class=replaysec><summary>커밋된 trace의 재생 · PASSED · 2/2" in login, login.substringAfter("<header"))
+        assertTrue("<div class=\"step passed static\"><div class=line>" in login && "step passed\" data-step=1" !in login, "the replay's steps do not drive the player")
     }
 
     @Test

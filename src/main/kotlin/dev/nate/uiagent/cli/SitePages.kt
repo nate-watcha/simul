@@ -16,11 +16,13 @@ import javax.imageio.ImageIO
  *  2. Scenario detail: `<feature>/<name>.<state>.html` — the md prose, the states, the steps (the failed
  *     one expanded with expected/found evidence and logcat) beside the replay: a `<video>` of replay.mp4
  *     with a step-coloured progress bar; clicking a step or a segment seeks the video to that step's
- *     `video_ms`. Without a recording the frame shows the step's screenshot instead.
+ *     `video_ms`. Without a recording the frame shows the step's screenshot instead. When tonight's LLM
+ *     recording failed, the page is about *that* timeline (the agent's steps, the failed one with its
+ *     actions and their frames, `record/NN.jpg`), and the replay of the committed trace is folded under it.
  *
- * Pages are self-contained apart from their assets beside them: `<name>.<state>/replay.mp4` and
- * `steps/NN.jpg` (downscaled screenshots). Built inside the run directory itself (`simul run --runs`
- * does this; the page's asset directory *is* the scenario's directory) nothing is copied but the JPEGs.
+ * Pages are self-contained apart from their assets beside them: `<name>.<state>/replay.mp4`,
+ * `steps/NN.jpg` and `record/NN.jpg` (downscaled screenshots). Built inside the run directory itself
+ * (`simul run --runs` does this; the page's asset directory *is* the scenario's directory) nothing is copied but the JPEGs.
  */
 object SitePages {
 
@@ -28,11 +30,6 @@ object SitePages {
         /** What the pages call the app (`--title`); default the package name from run.json. */
         val appName: String? = null,
         val thumbWidth: Int = 360,
-        /**
-         * The app repo root that record.json's screenshot paths are relative to (`.simul/reports/<name>-<stamp>/steps/NN.png`);
-         * default: three levels above the run directory, which is where `simul report` puts it.
-         */
-        val appRoot: File? = null,
     )
 
     class Built(val index: File, val pages: List<File>, val rows: List<Site.Row>) {
@@ -47,13 +44,24 @@ object SitePages {
         }.joinToString(" · ")
     }
 
+    /** One picture of a recording beside its page, with what to call it. */
+    class Frame(val caption: String, val src: String)
+
+    /**
+     * A failed recording's pictures, copied as `<id>/record/…jpg`: the frame each step ended on (by step number) and,
+     * for the step it stopped on, the frame after each action the agent took there.
+     */
+    class RecordFrames(val steps: Map<Int, String>, val actions: List<Frame>) {
+        companion object { val NONE = RecordFrames(emptyMap(), emptyList()) }
+    }
+
     fun build(runDir: File, out: File, opts: Options = Options()): Built {
         val run = Site.load(runDir)
         val rows = Site.classify(run)
         out.mkdirs()
-        val shots = rows.associate { it.id to copyRecordShot(run, it, out, opts) }
-        val pages = rows.map { row -> renderDetail(run, row, rows, out, opts, shots[row.id]) }
-        val index = File(out, "index.html").apply { writeText(renderHome(run, rows, opts, shots)) }
+        val frames = rows.associate { it.id to (it.recordTimeline?.let { rec -> copyRecordFrames(rec, out, opts) } ?: RecordFrames.NONE) }
+        val pages = rows.map { row -> renderDetail(run, row, rows, out, opts, frames.getValue(row.id)) }
+        val index = File(out, "index.html").apply { writeText(renderHome(run, rows, opts, frames)) }
         return Built(index, pages, rows)
     }
 
@@ -62,8 +70,6 @@ object SitePages {
     private fun esc(s: String) = escapeHtml(s)
     private fun attr(s: String) = esc(s).replace("'", "&#39;")
 
-    /** `10/19` from `2026-10-19`. */
-    private fun md(date: String?): String = date?.takeIf { it.length >= 10 }?.let { "${it.substring(5, 7).trimStart('0')}/${it.substring(8, 10).trimStart('0')}" } ?: "?"
     /** `02:14` from an ISO stamp. */
     private fun hm(iso: String?): String = iso?.takeIf { it.length >= 16 }?.substring(11, 16) ?: ""
     private fun clock(ms: Long): String = "${ms / 60000}:${"%02d".format((ms / 1000) % 60)}"
@@ -73,6 +79,13 @@ object SitePages {
     fun pageFile(out: File, r: ResultJson.Result) = File(out, pageOf(r))
     private fun chip(kind: Site.Kind, text: String = kind.label) = "<span class=\"chip ${kind.cls}\">${esc(text)}</span>"
     private fun avatar(owner: String?) = owner?.let { "<span class=owner><span class=avatar>${esc(it.take(1).uppercase())}</span>${esc(it)}</span>" } ?: ""
+    private fun nn(n: Int) = n.toString().padStart(2, '0')
+    private fun cls(status: String) = when (status) { "PASSED" -> "passed"; "FAILED" -> "failed"; else -> "skipped" }
+    /** One cell per step, coloured by its status — the scenario's shape at a glance. */
+    private fun strip(steps: List<ResultJson.Step>) =
+        "<span class=\"strip wide\">" + steps.joinToString("") { "<i class=\"${cls(it.status)}\" title=\"${it.n}. ${attr(it.text)}\"></i>" } + "</span>"
+    /** `7스텝 중 3에서 멈춤` */
+    private fun stoppedAt(r: ResultJson.Result) = "${r.steps.size}스텝 중 ${r.failedStep ?: r.steps.size}에서 멈춤"
     /** Downscale a PNG screenshot to a JPEG of [width] px; false when unreadable. */
     fun writeJpeg(png: File, dest: File, width: Int): Boolean = runCatching {
         val src = ImageIO.read(png) ?: return false
@@ -87,14 +100,14 @@ object SitePages {
         ImageIO.write(dst, "jpg", dest)
     }.getOrDefault(false)
 
-    /** Copy a result's media next to its page: `<out>/<id>/replay.mp4`, `steps/NN.jpg`; returns the relative thumbnail per step n. */
+    /** Copy a result's step frames next to its page as `<out>/<id>/<sub>/NN.jpg`; returns the relative thumbnail per step n. */
     private fun copyAssets(r: ResultJson.Result, out: File, opts: Options, sub: String = "steps"): Map<Int, String> {
         val dir = File(out, r.id)
         val thumbs = LinkedHashMap<Int, String>()
         for (s in r.steps) {
             val png = s.screenshot?.let { File(r.dir, it) }?.takeIf { it.isFile } ?: continue
-            val rel = "${r.key}/$sub/${s.n.toString().padStart(2, '0')}.jpg"
-            if (writeJpeg(png, File(dir, "$sub/${s.n.toString().padStart(2, '0')}.jpg"), opts.thumbWidth)) thumbs[s.n] = rel
+            val rel = "${r.key}/$sub/${nn(s.n)}.jpg"
+            if (writeJpeg(png, File(dir, "$sub/${nn(s.n)}.jpg"), opts.thumbWidth)) thumbs[s.n] = rel
         }
         return thumbs
     }
@@ -109,23 +122,24 @@ object SitePages {
         return "${r.key}/replay.mp4"
     }
 
-    /**
-     * The screenshot of the step the LLM recording broke on, as `<out>/<id>/record/NN.jpg` — the only picture there is of
-     * a scenario whose recording failed and whose replay then had no trace to run. record.json names it relative to the
-     * app root, which the run directory sits three levels under (`.simul/reports/<stamp>`).
-     */
-    private fun copyRecordShot(run: Site.Run, row: Site.Row, out: File, opts: Options): String? {
-        val f = row.record?.takeIf { row.recordFailed }?.failedStep ?: return null
-        val rel = f.screenshot ?: return null
-        val roots = listOfNotNull(opts.appRoot, run.dir.absoluteFile.parentFile?.parentFile?.parentFile, File("."))
-        val png = roots.map { File(it, rel) }.firstOrNull { it.isFile } ?: return null
-        val name = "record/${f.index.toString().padStart(2, '0')}.jpg"
-        return if (writeJpeg(png, File(out, "${row.id}/$name"), opts.thumbWidth)) "${row.result.key}/$name" else null
+    private val ACTION_FRAME = Regex("step\\d+-(\\d+)-(\\w+)-after\\.png$")
+
+    /** The frames of a failed recording (see [RecordFrames]): `record/NN.jpg` per step, `record/NN-k.jpg` per action of the failed step. */
+    private fun copyRecordFrames(rec: ResultJson.Result, out: File, opts: Options): RecordFrames {
+        val steps = copyAssets(rec, out, opts, sub = "record")
+        val failed = rec.failedStepOf ?: return RecordFrames(steps, emptyList())
+        val actions = failed.screenshots.mapNotNull { shot ->
+            val m = ACTION_FRAME.find(shot) ?: return@mapNotNull null
+            val png = File(rec.dir, shot).takeIf { it.isFile } ?: return@mapNotNull null
+            val name = "record/${nn(failed.n)}-${m.groupValues[1]}.jpg"
+            if (writeJpeg(png, File(out, "${rec.id}/$name"), opts.thumbWidth)) Frame("${m.groupValues[1]} ${m.groupValues[2]}", "${rec.key}/$name") else null
+        }
+        return RecordFrames(steps, actions)
     }
 
     // ------------------------------------------------------------------ home
 
-    fun renderHome(run: Site.Run, rows: List<Site.Row>, opts: Options, shots: Map<String, String?> = emptyMap()): String {
+    fun renderHome(run: Site.Run, rows: List<Site.Row>, opts: Options, frames: Map<String, RecordFrames> = emptyMap()): String {
         val counts = rows.groupingBy { it.kind }.eachCount()
         val app = opts.appName ?: run.app ?: "app"
         val build = run.results.firstNotNullOfOrNull { it.appVersion } ?: run.summary?.appVersionName
@@ -160,7 +174,7 @@ object SitePages {
         if (diffs.isEmpty()) sb.append("<p class=dim>전부 통과 ${passed.size} — ${if (run.record != null) "오늘 녹화되고 " else ""}끝까지 재생됨.</p>")
         if (failed.isNotEmpty()) {
             sb.append("<div class=\"cards two\">")
-            for (row in failed) failureCard(sb, row, shots[row.id])
+            for (row in failed) failureCard(sb, row, frames[row.id] ?: RecordFrames.NONE)
             sb.append("</div>")
         }
         if (setup.isNotEmpty()) {
@@ -196,22 +210,38 @@ object SitePages {
         return sb.toString()
     }
 
-    private fun failureCard(sb: StringBuilder, row: Site.Row, recordShot: String?) {
+    /**
+     * A failed scenario. When tonight's recording failed, the card is about that: the frame the agent stopped on, how far
+     * it got, the step and why — the replay (of yesterday's trace, if any) is one dim line. Otherwise it is the replay's
+     * failed step and frame.
+     */
+    private fun failureCard(sb: StringBuilder, row: Site.Row, frames: RecordFrames) {
         val r = row.result
+        val rec = row.recordTimeline
         val step = r.failedStepOf
-        // the replay's failed frame; for a scenario that never replayed, the recording's
-        val thumb = step?.n?.let { "${r.id}/steps/${it.toString().padStart(2, '0')}.jpg" } ?: recordShot?.let { "${r.feature.let { f -> if (f.isEmpty()) "" else "$f/" }}$it" }
+        val prefix = r.feature.let { f -> if (f.isEmpty()) "" else "$f/" }
+        val thumb = rec?.failedStep?.let { frames.steps[it] }?.let { prefix + it }
+            ?: step?.n?.takeIf { rec == null }?.let { "${r.id}/steps/${nn(it)}.jpg" }
         sb.append("<article class=\"card fail\">")
         if (thumb != null) sb.append("<a class=shot href=\"${attr(pageOf(r))}\"><img src=\"${attr(thumb)}\" alt=\"실패 시점 스크린샷\" loading=lazy></a>")
         else sb.append("<div class=\"shot empty\">실패 시점<br>스크린샷 없음</div>")
         sb.append("<div class=body><div class=row>${chip(Site.Kind.FAILED, if (row.recordFailed) "녹화 실패" else "FAILED")}<span class=dim>${esc(r.feature.ifEmpty { "(root)" })}${r.state?.let { " · ${esc(it)}" } ?: ""}</span></div>")
         sb.append("<div class=title><a href=\"${attr(pageOf(r))}\">${esc(r.title)}</a></div>")
-        row.recordFailure?.let {
-            val replay = if (row.replayed) "아래는 커밋된 trace의 재생 · ${esc(if (r.failed) "FAILED" else r.status)}" else "재생 없음 · ${esc(r.reason ?: "no trace")}"
-            sb.append("<div class=mono><span class=reason>LLM 녹화: ${esc(it)}</span><br><span class=dim>$replay</span></div>")
+        val replayLine = if (row.replayed) "커밋 trace 재생 · ${esc(if (r.failed) "FAILED ${r.failedStep}/${r.steps.size}" else r.status)}" else "재생 없음 · ${esc(r.reason ?: "no trace")}"
+        when {
+            rec != null -> {
+                val f = rec.failedStepOf
+                sb.append("<div class=progress>${strip(rec.steps)}<span class=dim>${esc(stoppedAt(rec))}</span></div>")
+                if (f != null) sb.append("<div class=mono>${f.n}. ${esc(f.text)}<br><span class=reason>${esc(f.reason ?: "failed")}</span></div>")
+                sb.append("<div class=dim>$replayLine</div>")
+            }
+            row.recordFailed -> sb.append("<div class=mono><span class=reason>LLM 녹화: ${esc(row.recordFailure ?: "failed")}</span><br><span class=dim>$replayLine</span></div>")
+            step != null -> sb.append("<div class=mono>${step.n}. ${esc(step.text)}<br><span class=reason>${esc(step.reason ?: "failed")}</span></div>")
         }
-        if (step != null) sb.append("<div class=mono>${step.n}. ${esc(step.text)}<br><span class=reason>${esc(step.reason ?: "failed")}</span></div>")
-        val when_ = if (row.replayed || row.record == null) "${esc(hm(r.startedAt))} · ${esc(humanDuration(r.durationMs))}" else "녹화 ${esc(humanDuration(row.record.durationMs))}"
+        val t = rec ?: r
+        val when_ = if (rec != null) "녹화 ${esc(hm(t.startedAt))} · ${esc(humanDuration(t.durationMs))}"
+                    else if (row.replayed || row.record == null) "${esc(hm(r.startedAt))} · ${esc(humanDuration(r.durationMs))}"
+                    else "녹화 ${esc(humanDuration(row.record.durationMs))}"
         sb.append("<div class=foot><span class=dim>$when_</span>${avatar(r.owner)}<a class=more href=\"${attr(pageOf(r))}\">상세</a></div></div></article>")
     }
 
@@ -232,34 +262,49 @@ object SitePages {
 
     // ------------------------------------------------------------------ detail
 
-    private fun renderDetail(run: Site.Run, row: Site.Row, all: List<Site.Row>, out: File, opts: Options, recordShot: String?): File {
+    /**
+     * The scenario's page is about one timeline: the recording's when it failed tonight (every step the agent did,
+     * the one it stopped on expanded with its actions and their frames), else the replay's with its mp4. A failed
+     * recording's page keeps the replay of the committed trace folded under it — it says whether yesterday's path still
+     * works, nothing about tonight's failure.
+     */
+    private fun renderDetail(run: Site.Run, row: Site.Row, all: List<Site.Row>, out: File, opts: Options, frames: RecordFrames): File {
         val r = row.result
+        val rec = row.recordTimeline
+        val t = rec ?: r
         val app = opts.appName ?: run.app ?: "app"
-        val thumbs = copyAssets(r, out, opts)
-        val video = copyVideo(r, out)
+        val replayVideo = copyVideo(r, out)
+        val thumbs = if (rec != null) frames.steps else copyAssets(r, out, opts)
+        val video = if (rec != null) null else replayVideo
         val u = up(r.feature)
-        val executed = r.steps.filter { it.status != "SKIPPED" }
-        val passedN = r.steps.count { it.status == "PASSED" }
+        val executed = t.steps.filter { it.status != "SKIPPED" }
         val sb = StringBuilder()
         head(sb, r.title, u)
         sb.append("<div class=topbar><div class=inner><span class=brand>simul</span><nav class=crumbs><a href=\"${u}index.html\">${esc(app)}</a><span>/</span><span>${esc(r.feature.ifEmpty { "(root)" })}</span><span>/</span><b>${esc(r.name)}</b></nav><span class=right>${esc(run.date)}</span></div></div><main class=detail>")
 
         // ---- header
-        val statusText = when (r.status) { "PASSED" -> "PASSED · $passedN/${r.steps.size}"; "FAILED" -> "FAILED · ${r.failedStep}/${r.steps.size}"; "SKIPPED_SETUP" -> "SETUP · 안 돌림"; else -> "안 돌림 · ${r.reason ?: r.status}" }
-        sb.append("<header><div class=row><h1>${esc(r.title)}</h1>${chip(row.kind, statusText)}")
-        if (row.recordFailed) sb.append(chip(Site.Kind.FAILED, "녹화 실패"))
-        sb.append("<span class=right>${avatar(r.owner)}${if (r.owner != null) " · " else ""}${esc(hm(r.startedAt))} · ${esc(humanDuration(r.durationMs))}</span></div>")
+        val replayStatus = when (r.status) { "PASSED" -> "PASSED · ${r.steps.count { it.status == "PASSED" }}/${r.steps.size}"; "FAILED" -> "FAILED · ${r.failedStep}/${r.steps.size}"; "SKIPPED_SETUP" -> "SETUP · 안 돌림"; else -> "안 돌림 · ${r.reason ?: r.status}" }
+        sb.append("<header><div class=row><h1>${esc(r.title)}</h1>")
+        if (rec != null) sb.append(chip(Site.Kind.FAILED, "녹화 실패 · ${rec.failedStep ?: rec.steps.size}/${rec.steps.size}"))
+        else {
+            sb.append(chip(row.kind, replayStatus))
+            if (row.recordFailed) sb.append(chip(Site.Kind.FAILED, "녹화 실패"))
+        }
+        sb.append("<span class=right>${avatar(r.owner)}${if (r.owner != null) " · " else ""}${esc(hm(t.startedAt))} · ${esc(humanDuration(t.durationMs))}</span></div>")
         if (r.description.isNotEmpty()) sb.append("<p class=desc>${esc(r.description)}</p>")
-        row.record?.let { rec ->
+        if (rec != null) {
+            val f = rec.failedStepOf
+            sb.append("<div class=reason>LLM 녹화 ${esc(hm(rec.startedAt))} · ${esc(humanDuration(rec.durationMs))} — ${esc(stoppedAt(rec))}${f?.reason?.let { " · ${esc(it)}" } ?: ""} — 아래가 그 타임라인</div>")
+        } else row.record?.let { recSummary ->
             val then = when {
                 !row.recordFailed -> " — 아래는 그 trace의 재생"
                 row.replayed -> " — trace는 커밋본 그대로, 아래는 그 재생"
                 else -> " — 커밋된 trace가 없어 재생하지 않음"
             }
-            sb.append("<div class=\"${if (row.recordFailed) "reason" else "dim"}\">LLM 녹화: ${esc(row.recordFailure ?: "${rec.status} · ${humanDuration(rec.durationMs)}")}$then</div>")
-            // what the agent saw when it gave up: the step, the harness reason, the screen's labels
-            rec.failedStep?.takeIf { row.recordFailed }?.let { f ->
-                sb.append("<div class=\"step failed record\"><div class=line><span class=icon>✕</span><div class=text><div class=mono><span class=n>녹화 ${f.index}.</span> ${esc(f.text)}</div><div class=meta>${esc(f.reason ?: "failed")}</div></div></div>")
+            sb.append("<div class=\"${if (row.recordFailed) "reason" else "dim"}\">LLM 녹화: ${esc(row.recordFailure ?: "${recSummary.status} · ${humanDuration(recSummary.durationMs)}")}$then</div>")
+            // the recording left no directory: what record.json kept of the step the agent gave up on
+            recSummary.failedStep?.takeIf { row.recordFailed }?.let { f ->
+                sb.append("<div class=\"step failed static\"><div class=line><span class=icon>✕</span><div class=text><div class=mono><span class=n>녹화 ${f.index}.</span> ${esc(f.text)}</div><div class=meta>${esc(f.reason ?: "failed")}</div></div></div>")
                 if (f.screen.isNotEmpty()) sb.append("<div class=fail><div><h4>그때 화면</h4><div class=mono>${f.screen.take(12).joinToString("<br>") { "<span class=dim>· ${esc(it)}</span>" }}</div></div></div>")
                 sb.append("</div>")
             }
@@ -273,34 +318,45 @@ object SitePages {
         }
         sb.append("<span class=right><span class=dim>${esc(".simul/scenarios/${r.file}")}</span></span></div></header>")
 
-        sb.append("<div class=cols><section class=steps><h2>STEPS</h2>")
-        if (r.steps.isEmpty()) sb.append("<p class=dim>재생 없음 — ${esc(r.reason ?: r.status)}</p>")
-        for (s in r.steps) stepRow(sb, r, s)
+        // ---- the timeline
+        sb.append("<div class=cols><section class=steps><h2>${if (rec != null) "오늘 녹화 (LLM)" else "STEPS"}</h2>")
+        if (t.steps.isEmpty()) sb.append("<p class=dim>재생 없음 — ${esc(t.reason ?: t.status)}</p>")
+        for (s in t.steps) stepRow(sb, t, s, film = if (s.n == rec?.failedStep) frames.actions else emptyList())
         sb.append("</section>")
 
-        // ---- the replay
-        sb.append("<aside class=replay><h2>REPLAY</h2><div class=player>")
+        // ---- the player: the mp4 of a replay, the step frames of a recording
+        sb.append("<aside class=replay><h2>${if (rec != null) "녹화" else "REPLAY"} · ${esc(hm(t.startedAt))}</h2><div class=player>")
         sb.append("<div class=frame>")
         if (video != null) sb.append("<video id=v src=\"${attr(video)}\" preload=metadata playsinline></video>")
         else {
-            val first = executed.firstOrNull()?.let { thumbs[it.n] } ?: recordShot
-            sb.append(if (first != null) "<img id=still src=\"${attr(first)}\" alt=\"${if (recordShot != null && thumbs.isEmpty()) "LLM 녹화가 멈춘 화면" else "스텝 화면"}\">" else "<span class=dim>녹화 없음 (--video)</span>")
+            val first = executed.firstOrNull()?.let { thumbs[it.n] }
+            sb.append(if (first != null) "<img id=still src=\"${attr(first)}\" alt=\"스텝 화면\">" else "<span class=dim>녹화 없음 (--video)</span>")
         }
-        val recCaption = row.record?.failedStep?.takeIf { row.recordFailed && !row.replayed }?.let { "LLM 녹화 ${it.index} · ${esc(it.text)}" }
-        sb.append("<div class=caption id=cap>${executed.firstOrNull()?.let { "${it.n}/${r.steps.size} · ${esc(it.text)}" } ?: recCaption ?: ""}</div></div>")
+        sb.append("<div class=caption id=cap>${executed.firstOrNull()?.let { "${it.n}/${t.steps.size} · ${esc(it.text)}" } ?: ""}</div></div>")
         sb.append("<div class=controls>")
         if (video != null) sb.append("<button type=button id=play aria-label=\"재생\">▶</button>")
         sb.append("<span class=segments id=segs>")
         val total = executed.sumOf { it.durationMs }.coerceAtLeast(1)
-        for (s in executed) sb.append("<i class=\"${s.status.lowercase()}\" data-step=${s.n} style=\"flex:${(s.durationMs * 1000 / total).coerceAtLeast(20)}\" title=\"${s.n}. ${attr(s.text)}\"></i>")
+        for (s in t.steps) sb.append("<i class=\"${cls(s.status)}\" data-step=${s.n} style=\"flex:${(s.durationMs * 1000 / total).coerceAtLeast(20)}\" title=\"${s.n}. ${attr(s.text)}\"></i>")
         sb.append("</span>")
         if (video != null) sb.append("<span class=time id=time>0:00 / ${clock(r.video?.durationMs ?: 0)}</span>")
-        sb.append("</div><div class=dim>${if (video != null) "스텝이나 막대를 클릭하면 영상이 그 스텝으로 이동" else "스텝을 클릭하면 그 스텝의 화면"}</div><div class=btns>")
+        sb.append("</div><div class=dim>${if (video != null) "스텝이나 막대를 클릭하면 영상이 그 스텝으로 이동" else "스텝을 클릭하면 그 스텝이 끝난 화면"}</div><div class=btns>")
         if (video != null) sb.append("<a class=btn href=\"${attr(video)}\" download>mp4 다운로드</a>")
         sb.append("</div></div></aside></div>")
 
+        // ---- under a failed recording: what the replay of the committed trace did, folded
+        if (rec != null) {
+            if (!row.replayed) sb.append("<p class=dim>커밋된 trace가 없어 재생하지 않음 — ${esc(r.reason ?: "no trace")}</p>")
+            else {
+                sb.append("<details class=replaysec><summary>커밋된 trace의 재생 · ${esc(replayStatus)}<span class=dim> — 오늘 실패와 별개 (trace는 커밋본 그대로)</span></summary><div class=steps>")
+                for (s in r.steps) stepRow(sb, r, s, interactive = false)
+                if (replayVideo != null) sb.append("<div class=btns><a class=btn href=\"${attr(replayVideo)}\" download>재생 mp4 다운로드</a></div>")
+                sb.append("</div></details>")
+            }
+        }
+
         // ---- the step timeline for the player
-        sb.append("<script>const STEPS=").append(stepsJson(r, thumbs)).append(";").append(JS).append("</script>")
+        sb.append("<script>const STEPS=").append(stepsJson(t, thumbs)).append(";").append(JS).append("</script>")
         sb.append("</main><footer class=dim>generated by simul $AGENT_VERSION</footer></body></html>\n")
         val file = pageFile(out, r)
         file.parentFile?.mkdirs()
@@ -308,31 +364,44 @@ object SitePages {
         return file
     }
 
-    private fun stepRow(sb: StringBuilder, r: ResultJson.Result, s: ResultJson.Step) {
-        val cls = s.status.lowercase()
+    /**
+     * One step. A failed one is expanded: expected vs actual evidence, what the agent did there (a recording: the
+     * actions in order and the frame after each, [film]) and logcat around the failing moment. [interactive] rows
+     * drive the player; the folded replay under a failed recording is static.
+     */
+    private fun stepRow(sb: StringBuilder, r: ResultJson.Result, s: ResultJson.Step, interactive: Boolean = true, film: List<Frame> = emptyList()) {
         val icon = when (s.status) { "PASSED" -> "✓"; "FAILED" -> "✕"; else -> "–" }
-        sb.append("<div class=\"step $cls\" data-step=${s.n}${s.videoMs?.let { " data-video-ms=$it" } ?: ""}><div class=line><span class=icon>$icon</span><div class=text><div class=mono><span class=n>${s.n}.</span> ${esc(s.text)}")
+        val target = s.actions.lastOrNull()?.let { it.target ?: it.tool }?.let { "→ ${esc(it)} · " } ?: ""
+        val attrs = if (interactive) " data-step=${s.n}${s.videoMs?.let { " data-video-ms=$it" } ?: ""}" else ""
+        sb.append("<div class=\"step ${cls(s.status)}${if (interactive) "" else " static"}\"$attrs><div class=line><span class=icon>$icon</span><div class=text><div class=mono><span class=n>${s.n}.</span> ${esc(s.text)}")
         s.criterion?.let { sb.append("<br><span class=criterion>:: ${esc(it)}</span>") }
         sb.append("</div><div class=meta>")
         sb.append(when (s.status) {
-            "PASSED" -> (s.found.takeIf { it.isNotEmpty() }?.joinToString(", ", prefix = "+ ") ?: "evidence 없음") + " · " + "%.1fs".format(s.durationMs / 1000.0)
-            "FAILED" -> "FAILED · ${esc(s.reason ?: "")}"
+            "PASSED" -> target + (s.found.takeIf { it.isNotEmpty() }?.joinToString(", ", prefix = "+ ") ?: "evidence 없음") + " · " + "%.1fs".format(s.durationMs / 1000.0)
+            "FAILED" -> target + "FAILED · ${esc(s.reason ?: "")}"
             else -> "SKIPPED"
         })
         sb.append("</div></div></div>")
         if (s.status == "FAILED") {
             val missing = s.expected - s.found.toSet()
-            sb.append("<div class=fail><div class=cols2><div><h4>기대 (trace)</h4><div class=mono>")
+            sb.append("<div class=fail><div class=cols2><div><h4>기대 (${if (r.mode == "llm") "시나리오" else "trace"})</h4><div class=mono>")
             sb.append(if (s.expected.isEmpty()) "<span class=dim>evidence 없음</span>" else s.expected.joinToString("<br>") { "+ ${esc(it)}" })
-            sb.append("</div></div><div><h4>실제</h4><div class=mono>")
+            sb.append("</div></div><div><h4>실제</h4><div class=\"mono actual\">")
             val actual = s.found.map { "+ ${esc(it)}" } + missing.map { "<span class=miss>· ${esc(it)} 없음</span>" } +
                 s.screen.take(6).map { "<span class=dim>· ${esc(it)}</span>" }
             sb.append(if (actual.isEmpty()) "<span class=dim>-</span>" else actual.joinToString("<br>"))
             sb.append("</div></div></div>")
+            // a recording: the gestures the agent tried on this step, in order, and what each left on screen
+            if (s.actions.isNotEmpty() || film.isNotEmpty()) {
+                sb.append("<div><h4>에이전트가 한 일</h4>")
+                if (s.actions.isNotEmpty()) sb.append("<div class=mono>${s.actions.joinToString(" → ") { esc(it.target?.let { t -> "${it.tool} ${t}" } ?: it.tool) }}</div>")
+                if (film.isNotEmpty()) sb.append("<div class=film>${film.joinToString("") { "<figure><img src=\"${attr(it.src)}\" alt=\"${attr(it.caption)}\" loading=lazy><figcaption>${esc(it.caption)}</figcaption></figure>" }}</div>")
+                sb.append("</div>")
+            }
             // logcat around the failing moment: the last gesture of the step, else its start
             val at = r.startedAtMs + (s.actions.lastOrNull()?.atMs ?: s.startedMs)
             val lines = Site.logcatWindow(File(r.dir, "logcat.txt"), at - 2000, at + 2000)
-            if (lines.isNotEmpty()) sb.append("<h4>logcat (탭 전후 2초)</h4><pre class=log>${esc(lines.joinToString("\n") { it.replaceFirst(Regex("^\\d+\\.\\d+\\s+\\d+\\s+\\d+\\s+"), "") })}</pre>")
+            if (lines.isNotEmpty()) sb.append("<div><h4>logcat (탭 전후 2초)</h4><pre class=log>${esc(lines.joinToString("\n") { it.replaceFirst(Regex("^\\d+\\.\\d+\\s+\\d+\\s+\\d+\\s+"), "") })}</pre></div>")
             sb.append("</div>")
         }
         sb.append("</div>")
@@ -395,7 +464,7 @@ object SitePages {
         .chip{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;padding:2px 8px;border-radius:4px;white-space:nowrap}.chip.big{font-size:13px;padding:6px 12px;border-radius:6px}
         .chip.failed{color:var(--failfg);background:var(--failbg)}.chip.changed{color:var(--warnfg);background:var(--warnbg)}.chip.rerecord{color:var(--info);background:var(--infobg)}.chip.passed{color:var(--okfg);background:var(--okbg)}.chip.setup{color:var(--dim);background:#E8E8E3}
         .sh{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:14px}.legend{margin-left:auto;display:flex;gap:12px;font-size:12px;color:var(--dim)}.legend span{display:flex;align-items:center;gap:5px}
-        .legend i,.strip i{display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--line2)}.strip{display:inline-flex;gap:3px;vertical-align:middle}.strip.wide i{width:16px;height:14px}.strip i.passed{background:var(--ok)}.strip i.changed{background:var(--warn)}.strip i.failed{background:var(--fail)}.strip i.none{background:var(--line2)}
+        .legend i,.strip i{display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--line2)}.strip{display:inline-flex;gap:3px;vertical-align:middle}.strip.wide i{width:16px;height:14px}.strip i.passed{background:var(--ok)}.strip i.changed{background:var(--warn)}.strip i.failed{background:var(--fail)}.strip i.none,.strip i.skipped{background:var(--line2)}
         .legend i.passed{background:var(--ok)}.legend i.changed{background:var(--warn)}.legend i.failed{background:var(--fail)}
         .cards{display:grid;gap:16px}.cards.two{grid-template-columns:repeat(2,minmax(0,1fr))}.cards.three{grid-template-columns:repeat(3,minmax(0,1fr));margin-top:16px}.cards.four{grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
         .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:10px;min-width:0}.card.fail{border-left:4px solid var(--fail);flex-direction:row}.card.warn{border-left:4px solid var(--warn)}.card.info{border-left:4px solid var(--info)}.card.none{border-left:4px solid var(--line2)}
@@ -414,16 +483,19 @@ object SitePages {
         .tabs{display:flex;gap:4px;background:#E8E8E3;padding:3px;border-radius:8px}.tabs a{padding:6px 14px;border-radius:6px;color:var(--dim);font-size:13px;display:flex;align-items:center;gap:6px;text-decoration:none}.tabs a[aria-selected=true]{background:var(--card);color:var(--fg);font-weight:500}
         .cols{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}section.steps{flex:1 1 560px;min-width:0;display:flex;flex-direction:column;gap:10px}aside.replay{flex:0 1 380px;min-width:300px;display:flex;flex-direction:column;gap:10px;position:sticky;top:12px}
         section.steps h2,aside.replay h2{font-size:13px;color:var(--dim);letter-spacing:.04em;margin-bottom:4px}
-        .step{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;cursor:pointer}.step.on{border-color:var(--fg);box-shadow:0 0 0 1px var(--fg)}.step.skipped{opacity:.55;cursor:default}.step.failed{border-color:var(--fail)}
-        .step .line{display:flex;gap:12px}.step .icon{flex-shrink:0;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;background:var(--okbg);color:var(--okfg)}.step.failed .icon{background:var(--failbg);color:var(--failfg)}.step.skipped .icon{background:#E8E8E3;color:var(--faint)}
-        .step .text{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}.step .n{color:var(--faint)}.criterion{color:var(--dim)}.step .meta{font-size:12px;color:var(--dim)}.step.failed .meta{color:var(--failfg)}
-        .fail{margin-top:10px;display:flex;flex-direction:column;gap:10px;cursor:auto}.cols2{display:grid;grid-template-columns:1fr 1fr;gap:10px}.cols2>div{background:var(--code);border-radius:6px;padding:8px 10px}.cols2 .mono{line-height:1.5}.miss{color:var(--failfg)}
+        .step{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;cursor:pointer}.step.on{border-color:var(--fg);box-shadow:0 0 0 1px var(--fg)}.step.skipped{opacity:.55;cursor:default;border-style:dashed;border-color:var(--line2)}.step.failed{border-color:var(--fail);box-shadow:0 0 0 3px var(--failbg)}.step.static{cursor:default}
+        .step .line{display:flex;gap:12px}.step .icon{flex-shrink:0;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;background:var(--okbg);color:var(--okfg)}.step.failed .icon{background:var(--fail);color:#fff}.step.skipped .icon{background:#E8E8E3;color:var(--faint)}
+        .step .text{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}.step .n{color:var(--faint)}.criterion{color:var(--dim)}.step .meta{font-size:12px;color:var(--dim)}.step.failed .meta{color:var(--failfg);font-weight:500}
+        .fail{margin-top:12px;padding-left:34px;display:flex;flex-direction:column;gap:12px;cursor:auto}.cols2{display:grid;grid-template-columns:1fr 1fr;gap:12px}.cols2>div{display:flex;flex-direction:column;gap:6px}.cols2 .mono{background:var(--code);border-radius:6px;padding:8px 10px;line-height:1.6}.cols2 .mono.actual{background:var(--failbg)}.miss{color:var(--failfg)}
+        .film{display:flex;gap:8px;overflow-x:auto;padding:4px 0}.film figure{margin:0;flex:0 0 72px;display:flex;flex-direction:column;gap:3px;font-size:10px;color:var(--dim);text-align:center}.film img{display:block;width:100%;border-radius:6px;border:1px solid var(--line2)}
+        .progress{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px}
+        details.replaysec{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px}details.replaysec summary{cursor:pointer;font-weight:500;font-size:13px}details.replaysec .steps{display:flex;flex-direction:column;gap:10px;margin-top:12px}
         pre.log{margin:0;background:#1B1B1A;color:#E6E6E2;padding:10px 12px;border-radius:6px;font-size:11.5px;line-height:1.5;overflow:auto;max-height:260px;white-space:pre-wrap}
         .actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.actions code{background:var(--code);padding:6px 10px;border-radius:6px}.actions .btn{flex:0 0 auto}
         .player{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:12px}.frame{position:relative;width:100%;aspect-ratio:9/16;max-height:560px;border-radius:10px;background:#E8E8E3;border:1px solid var(--line2);overflow:hidden;display:flex;align-items:center;justify-content:center}
         .frame video,.frame img{width:100%;height:100%;object-fit:contain;background:#000}.caption{position:absolute;left:10px;right:10px;bottom:10px;background:rgba(27,27,26,.88);color:#fff;padding:8px 10px;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.5;pointer-events:none}
         .controls{display:flex;align-items:center;gap:10px}#play{width:32px;height:32px;border-radius:50%;border:0;background:var(--fg);color:#fff;cursor:pointer;font-size:11px;flex-shrink:0}
-        .segments{flex:1;display:flex;gap:3px}.segments i{height:8px;border-radius:4px;background:var(--line2);cursor:pointer;min-width:6px}.segments i.passed{background:var(--ok)}.segments i.failed{background:var(--fail)}.segments i.on{outline:2px solid var(--fg);outline-offset:1px}
+        .segments{flex:1;display:flex;gap:3px}.segments i{height:8px;border-radius:4px;background:var(--line2);cursor:pointer;min-width:6px}.segments i.passed{background:var(--ok)}.segments i.failed{background:var(--fail)}.segments i.skipped{cursor:default}.segments i.on{outline:2px solid var(--fg);outline-offset:1px}
         .time{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--dim)}
         footer{max-width:1200px;margin:0 auto;padding:0 24px 24px;font-size:12px}
         @media(max-width:900px){.cards.two,.cards.three,.cards.four{grid-template-columns:repeat(2,minmax(0,1fr))}aside.replay{position:static}}

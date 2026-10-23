@@ -195,6 +195,8 @@ object ResultJson {
         val layout: String?,
         val actions: List<Action>,
         val screen: List<String>,
+        /** Every frame of the step in order — a recording's before/after of each action, then the step-end frame. */
+        val screenshots: List<String> = listOfNotNull(screenshot),
     )
 
     data class Action(val tool: String, val target: String?, val atMs: Long, val videoMs: Long?)
@@ -248,6 +250,7 @@ object ResultJson {
                         (a as? JsonObject)?.let { Action(it.str("tool") ?: "", it.str("target"), it.long("at_ms") ?: 0, it.long("video_ms")) }
                     } ?: emptyList(),
                     screen = s.strList("screen"),
+                    screenshots = s.strList("screenshots").ifEmpty { listOfNotNull(s.str("screenshot")) },
                 )
             } ?: emptyList(),
         )
