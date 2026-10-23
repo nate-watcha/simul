@@ -18,7 +18,8 @@ import javax.imageio.ImageIO
  *     with a step-coloured progress bar; clicking a step or a segment seeks the video to that step's
  *     `video_ms`. Without a recording the frame shows the step's screenshot instead. When tonight's LLM
  *     recording failed, the page is about *that* timeline (the agent's steps, the failed one with its
- *     actions and their frames, `record/NN.jpg`), and the replay of the committed trace is folded under it.
+ *     actions and their frames, `record/NN.jpg`) with the recording's own mp4, and the replay of the committed
+ *     trace is folded under it.
  *
  * Pages are self-contained apart from their assets beside them: `<name>.<state>/replay.mp4`,
  * `steps/NN.jpg` and `record/NN.jpg` (downscaled screenshots). Built inside the run directory itself
@@ -120,6 +121,21 @@ object SitePages {
             src.copyTo(dest, overwrite = true)
         }
         return "${r.key}/replay.mp4"
+    }
+
+    /**
+     * A failed recording's mp4 for its page: left where it lies and linked relatively when the pages are built inside the
+     * run directory (`../record/<id>/replay.mp4` — minutes of LLM run are not copied twice into the artifact), copied to
+     * `<id>/record/replay.mp4` otherwise.
+     */
+    private fun recordVideo(rec: ResultJson.Result, out: File): String? {
+        val src = rec.video?.let { File(rec.dir, it.file) }?.takeIf { it.isFile } ?: return null
+        val pageDir = File(out, rec.feature).absoluteFile
+        if (src.absoluteFile.startsWith(out.absoluteFile)) return pageDir.toPath().relativize(src.absoluteFile.toPath()).toString().replace(File.separatorChar, '/')
+        val dest = File(out, "${rec.id}/record/replay.mp4")
+        dest.parentFile?.mkdirs()
+        src.copyTo(dest, overwrite = true)
+        return "${rec.key}/record/replay.mp4"
     }
 
     private val ACTION_FRAME = Regex("step\\d+-(\\d+)-(\\w+)-after\\.png$")
@@ -275,7 +291,7 @@ object SitePages {
         val app = opts.appName ?: run.app ?: "app"
         val replayVideo = copyVideo(r, out)
         val thumbs = if (rec != null) frames.steps else copyAssets(r, out, opts)
-        val video = if (rec != null) null else replayVideo
+        val video = if (rec != null) recordVideo(rec, out) else replayVideo
         val u = up(r.feature)
         val executed = t.steps.filter { it.status != "SKIPPED" }
         val sb = StringBuilder()
@@ -324,7 +340,7 @@ object SitePages {
         for (s in t.steps) stepRow(sb, t, s, film = if (s.n == rec?.failedStep) frames.actions else emptyList())
         sb.append("</section>")
 
-        // ---- the player: the mp4 of a replay, the step frames of a recording
+        // ---- the player: the timeline's mp4, else its step frames
         sb.append("<aside class=replay><h2>${if (rec != null) "녹화" else "REPLAY"} · ${esc(hm(t.startedAt))}</h2><div class=player>")
         sb.append("<div class=frame>")
         if (video != null) sb.append("<video id=v src=\"${attr(video)}\" preload=metadata playsinline></video>")
@@ -339,7 +355,7 @@ object SitePages {
         val total = executed.sumOf { it.durationMs }.coerceAtLeast(1)
         for (s in t.steps) sb.append("<i class=\"${cls(s.status)}\" data-step=${s.n} style=\"flex:${(s.durationMs * 1000 / total).coerceAtLeast(20)}\" title=\"${s.n}. ${attr(s.text)}\"></i>")
         sb.append("</span>")
-        if (video != null) sb.append("<span class=time id=time>0:00 / ${clock(r.video?.durationMs ?: 0)}</span>")
+        if (video != null) sb.append("<span class=time id=time>0:00 / ${clock(t.video?.durationMs ?: 0)}</span>")
         sb.append("</div><div class=dim>${if (video != null) "스텝이나 막대를 클릭하면 영상이 그 스텝으로 이동" else "스텝을 클릭하면 그 스텝이 끝난 화면"}</div><div class=btns>")
         if (video != null) sb.append("<a class=btn href=\"${attr(video)}\" download>mp4 다운로드</a>")
         sb.append("</div></div></aside></div>")

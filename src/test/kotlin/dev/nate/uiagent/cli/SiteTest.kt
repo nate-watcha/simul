@@ -169,7 +169,9 @@ class SiteTest {
         }
         // within 2s of the step's last gesture (the scroll at +4000)
         File(dir, "logcat.txt").writeText("         ${(t0 + (failedAt - 1) * 3000L + 4500) / 1000}.000   672   833 E LoginSheet: not shown\n")
-        val r = ScenarioRunResult(name, StepStatus.FAILED, steps, null, 12000, startedAtMs = t0, reportDir = dir)
+        // the recording is screen-recorded too; its mp4 started 1.5s before the scenario
+        File(dir, "replay.mp4").writeText("mp4")
+        val r = ScenarioRunResult(name, StepStatus.FAILED, steps, null, 12000, startedAtMs = t0, reportDir = dir, video = VideoInfo(File(dir, "replay.mp4"), t0 - 1500, 13500))
         ResultJson.write(r, "llm", ResultJson.Meta(feature, name, null, "$feature/$name.md", name, "nate", "", null, ResultJson.Env("4.21.0", "sdk", "1.0.1")), dir)
     }
 
@@ -222,7 +224,12 @@ class SiteTest {
         assertTrue(File(runs, "2026-10-20/auth/wish-wall/record/02-1.jpg").isFile)
         assertTrue("LoginSheet: not shown" in detail, "logcat from the recording's directory")
         assertTrue("<div class=\"step skipped\" data-step=3" in detail && "<i class=\"skipped\" data-step=3" in detail, "the skipped tail is on the timeline and the bar")
-        assertTrue("<img id=still src=\"wish-wall/record/01.jpg\"" in detail && "\"thumb\":\"wish-wall/record/02.jpg\"" in detail, "no video: the player shows the recording's step frames")
+        assertTrue("<video id=v src=\"../record/auth/wish-wall/replay.mp4\"" in detail && "0:00 / 0:13" in detail, "the player is the recording's own mp4, linked where it lies")
+        assertTrue("data-step=2 data-video-ms=4500" in detail && "\"thumb\":\"wish-wall/record/02.jpg\"" in detail, "steps seek into it")
+        assertTrue(!File(runs, "2026-10-20/auth/wish-wall/record/replay.mp4").exists(), "built in place: not copied")
+        // built elsewhere, the mp4 is copied beside the page
+        SitePages.build(File(runs, "2026-10-20"), File(root, "elsewhere"))
+        assertTrue(File(root, "elsewhere/auth/wish-wall/record/replay.mp4").isFile && "<video id=v src=\"wish-wall/record/replay.mp4\"" in File(root, "elsewhere/auth/wish-wall.html").readText())
         assertTrue("커밋된 trace가 없어 재생하지 않음" in detail && "<details class=replaysec" !in detail)
 
         // a committed trace that still replays folds under the failed recording — static rows, not the player's

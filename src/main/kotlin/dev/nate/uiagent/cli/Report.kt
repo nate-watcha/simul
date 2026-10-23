@@ -113,9 +113,9 @@ private fun replayAndReport(cwd: File, scenarios: List<String>): Int {
     val scope = scenarios.ifEmpty { listOf("--all") }
     val what = if (scenarios.isEmpty()) "every scenario" else scenarios.joinToString(", ")
     println("── record: $what with the LLM ──")
-    // the recording lands under record/ in the same layout as the replay, so a failed recording's page shows its own
-    // timeline (every step the agent did, the frame after each action) and not just the frame it stopped on
-    val recordRc = runCommand(scope + listOf("--mode", "llm", "--summary", File(dir, "record.json").path, "--label", "record", "--runs", File(dir, Site.RECORD_DIR).path), cwd)
+    // the recording lands under record/ in the same layout as the replay, screen recording included, so a failed
+    // recording's page plays its own timeline (every step the agent did, the frame after each action) and not just the frame it stopped on
+    val recordRc = runCommand(scope + listOf("--mode", "llm", "--video", "--summary", File(dir, "record.json").path, "--label", "record", "--runs", File(dir, Site.RECORD_DIR).path), cwd)
     println()
     println("── replay: what was just recorded, no LLM ──")
     val replayRc = runCommand(scope + listOf("--mode", "replay", "--video", "--runs", dir.path), cwd)
