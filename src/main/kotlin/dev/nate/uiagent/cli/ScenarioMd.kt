@@ -1,7 +1,7 @@
 package dev.nate.uiagent.cli
 
 import dev.nate.uiagent.device.GUEST_STATE
-import dev.nate.uiagent.device.DeviceSetting
+import dev.nate.uiagent.device.DevicePins
 import java.io.File
 
 /**
@@ -73,10 +73,10 @@ data class Scenario(
         /** Restore `.simul/states/<name>.tar` (saved via `simul state save`) — implies clearData. */
         val appState: String? = null,
         /**
-         * Emulator `settings` this scenario needs pinned differently from the config baseline,
-         * applied before the launch and put back when the scenario ends (see DeviceSettings).
+         * App locale / emulator `settings` this scenario needs pinned differently from the config
+         * baseline, applied before the launch and put back when the scenario ends (see DevicePins).
          */
-        val device: List<DeviceSetting> = emptyList(),
+        val device: DevicePins = DevicePins.NONE,
     )
 
     /** One numbered step: the command and its `::` criteria, each optionally bound to a state. */
@@ -146,7 +146,7 @@ object ScenarioMd {
                 launch = (setupMap["launch"] as? String)?.equals("true", ignoreCase = true) == true,
                 clearData = (setupMap["clearData"] as? String)?.equals("true", ignoreCase = true) == true,
                 appState = setupMap["appState"] as? String,
-                device = DeviceSetting.parse(setupMap["device"], "scenario '$name' setup"),
+                device = DevicePins.parse(setupMap["device"], "scenario '$name' setup"),
             )
         } else null
         if (states.isNotEmpty()) {

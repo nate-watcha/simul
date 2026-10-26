@@ -32,18 +32,27 @@ class DeviceSettingsTest {
                 DeviceSetting("global", "window_animation_scale", "0"),
                 DeviceSetting("secure", "immersive_mode_confirmations", "confirmed"),
             ),
-            DeviceSetting.parse(y["device"], "t"),
+            DevicePins.parse(y["device"], "t").settings,
         )
     }
 
     @Test
     fun `absent block is empty, malformed blocks fail loudly`() {
-        assertEquals(emptyList(), DeviceSetting.parse(null, "t"))
-        assertFailsWith<IllegalArgumentException> { DeviceSetting.parse(yaml("device:\n  settings: []")["device"], "t") }
-        assertFailsWith<IllegalArgumentException> { DeviceSetting.parse(yaml("device:\n  settings:\n    credential_service: x")["device"], "t") }
-        assertFailsWith<IllegalArgumentException> { DeviceSetting.parse(yaml("device:\n  settings:\n    private.credential_service: x")["device"], "t") }
-        assertFailsWith<IllegalArgumentException> { DeviceSetting.parse(yaml("device:\n  setting:\n    secure.x: y")["device"], "t") }
-        assertFailsWith<IllegalArgumentException> { DeviceSetting.parse(yaml("device:\n  settings:\n    secure.x: [a, b]")["device"], "t") }
+        assertEquals(DevicePins.NONE, DevicePins.parse(null, "t"))
+        assertFailsWith<IllegalArgumentException> { DevicePins.parse(yaml("device:\n  settings: []")["device"], "t") }
+        assertFailsWith<IllegalArgumentException> { DevicePins.parse(yaml("device:\n  settings:\n    credential_service: x")["device"], "t") }
+        assertFailsWith<IllegalArgumentException> { DevicePins.parse(yaml("device:\n  settings:\n    private.credential_service: x")["device"], "t") }
+        assertFailsWith<IllegalArgumentException> { DevicePins.parse(yaml("device:\n  setting:\n    secure.x: y")["device"], "t") }
+        assertFailsWith<IllegalArgumentException> { DevicePins.parse(yaml("device:\n  settings:\n    secure.x: [a, b]")["device"], "t") }
+    }
+
+    @Test
+    fun `device locale is a language tag or a preference list, next to settings`() {
+        assertEquals(DevicePins(locale = "ko-KR"), DevicePins.parse(yaml("device:\n  locale: ko-KR")["device"], "t"))
+        assertEquals("ko-KR,en-US", DevicePins.parse(yaml("device:\n  locale: ko-KR,en-US\n  settings:\n    secure.x: y")["device"], "t").locale)
+        assertFailsWith<IllegalArgumentException> { DevicePins.parse(yaml("device:\n  locale: korean")["device"], "t") }
+        assertFailsWith<IllegalArgumentException> { DevicePins.parse(yaml("device:\n  locale: ko KR")["device"], "t") }
+        assertFailsWith<IllegalArgumentException> { DevicePins.parse(yaml("device:\n  language: ko")["device"], "t") }
     }
 
     // ------------------------------------------------------------------ apply / restore

@@ -1,6 +1,7 @@
 package dev.nate.uiagent.cli
 
 import dev.nate.uiagent.agent.ScenarioSession
+import dev.nate.uiagent.device.DevicePins
 import dev.nate.uiagent.device.DeviceSetting
 import dev.nate.uiagent.device.DeviceOps
 import dev.nate.uiagent.FakeDevice
@@ -48,7 +49,7 @@ class RunnerTest {
         val h = Harness(dev) { c, _ -> c.tap("웹툰"); ScenarioSession.Verdict(true, "ok") }
         h.ops.settings["secure.credential_service"] = ""  // the config baseline
         val pinned = scenario.copy(setup = Scenario.Setup(deeplink = "app://home", launch = false,
-            device = listOf(DeviceSetting("secure", "credential_service", "com.google/.Pw"))))
+            device = DevicePins(settings = listOf(DeviceSetting("secure", "credential_service", "com.google/.Pw")))))
 
         val result = h.runner.run(pinned, trace = null, mode = RunMode.LLM)
 
@@ -66,14 +67,14 @@ class RunnerTest {
             override fun settingGet(namespace: String, key: String) = inner.settingGet(namespace, key)
             override fun settingPut(namespace: String, key: String, value: String) = inner.settingPut(namespace, key, value)
             override fun settingDelete(namespace: String, key: String) = inner.settingDelete(namespace, key)
-            override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?): String? = throw RuntimeException("adb shell am start failed")
+            override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?, locale: String?): String? = throw RuntimeException("adb shell am start failed")
         }
         val listener = SwitchableListener()
         val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
         val reportDir = tempDir()
         val runner = ScenarioRunner(controller, listener, failing, neverCalledExecutor, reportDir, "com.example")
         val pinned = scenario.copy(setup = Scenario.Setup(deeplink = "app://home", launch = false,
-            device = listOf(DeviceSetting("secure", "autofill_service", "com.x/.Af"))))
+            device = DevicePins(settings = listOf(DeviceSetting("secure", "autofill_service", "com.x/.Af")))))
 
         val result = runner.run(pinned, trace = null, mode = RunMode.REPLAY)
 
@@ -84,6 +85,30 @@ class RunnerTest {
         phone.ops.emulator = false
         phone.runner.run(pinned, trace = null, mode = RunMode.LLM)
         assertTrue(phone.ops.settingLog.isEmpty(), "never rewrite a person's phone settings")
+    }
+
+    @Test
+    fun `app locale is set inside setup after the clear that wipes it, a scenario override wins, and the prior locale comes back`() {
+        val dev = FakeDevice(screenA, screenA, screenB, screenB)
+        val h = Harness(dev) { c, _ -> c.tap("웹툰"); ScenarioSession.Verdict(true, "ok") }
+        // a developer's emulator where the app happens to be in English
+        h.ops.appLocale = "en-US"
+        val runner = ScenarioRunner(h.controller, h.listener, h.ops, h.executor, h.reportDir, app = "com.example", locale = "ko-KR")
+        val guest = scenario.copy(setup = Scenario.Setup(deeplink = null, launch = true, clearData = true))
+
+        assertEquals(StepStatus.PASSED, runner.run(guest, trace = null, mode = RunMode.LLM).status)
+        assertEquals(listOf("locale ko-KR", "locale en-US"), h.ops.localeLog, "set once by setup (after the clear), restored once at the end")
+        assertEquals("en-US", h.ops.appLocale)
+
+        h.ops.localeLog.clear()
+        val english = guest.copy(setup = guest.setup!!.copy(device = DevicePins(locale = "en-US")))
+        runner.run(english, trace = null, mode = RunMode.LLM)
+        assertEquals(listOf("locale en-US"), h.ops.localeLog, "the scenario's own locale beats the config baseline; nothing to restore when it already matched")
+
+        h.ops.localeLog.clear()
+        val noSetup = scenario.copy(setup = null)
+        runner.run(noSetup, trace = null, mode = RunMode.LLM)
+        assertTrue(h.ops.localeLog.isEmpty(), "no setup, no launch — the app's language is left alone")
     }
 
     // ------------------------------------------------------------------ llm / record
@@ -316,7 +341,7 @@ class RunnerTest {
         val listener = SwitchableListener()
         val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
         val throwingOps = object : DeviceOps by FakeOps() {
-            override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?): String? =
+            override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?, locale: String?): String? =
                 throw RuntimeException("adb shell am start failed\n/system/bin/sh: syntax error")
         }
         val logged = mutableListOf<String>()

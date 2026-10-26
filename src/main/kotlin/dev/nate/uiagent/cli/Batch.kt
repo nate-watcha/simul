@@ -42,7 +42,8 @@ class BatchSession(
             }
         }
         // Same for the emulator `settings` baseline: change only what differs, restore on exit.
-        DeviceSettings.apply(ops, project.config.device, { log("device: $it — restored on exit") }, pinned)
+        // (The app locale baseline is per scenario — `pm clear` wipes it — see ScenarioRunner.)
+        DeviceSettings.apply(ops, project.config.device.settings, { log("device: $it — restored on exit") }, pinned)
     }
 
     /**

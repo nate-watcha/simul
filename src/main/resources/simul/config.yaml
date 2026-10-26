@@ -11,8 +11,10 @@ defaults:
   scrollLimit: 3
 display:
   sizeClass: small   # small=720x1280@320(360dp) | medium(640dp) | large(1066dp)
-# device:            # emulator `settings` every scenario assumes (read → put only if different → restored on exit).
-#   settings:        # a scenario that needs the opposite declares the same block under its own `setup:`
+# device:            # what every scenario assumes of the device (a scenario that needs the opposite declares the same block under its own `setup:`)
+#   locale: ko-KR    # the app's language (Android 13+ per-app locale, `cmd locale set-app-locales`) — set in each setup after the
+#                    # pm clear that wipes it, restored when the scenario ends; the system language is never touched
+#   settings:        # emulator `settings` (read → put only if different → restored on exit)
 #     secure.credential_service: ""              # no credential provider → no "Use your saved password" sheet
 #     secure.credential_service_primary: ""
 #     secure.autofill_service: null              # null = `settings delete` (key unset)

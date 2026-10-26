@@ -87,6 +87,8 @@ class ScenarioRunner(
     private val llm: StepExecutor,
     private val reportDir: File,
     private val app: String?,
+    /** config.yaml `device.locale`: the app language every scenario runs in unless its setup says otherwise. */
+    private val locale: String? = null,
     private val takeScreenshots: Boolean = true,
     /**
      * A `steps/NN.png` for every step, or only for the failed one. The CLI turns it off for a replay
@@ -107,17 +109,27 @@ class ScenarioRunner(
         // happens inside (setup failure, step FAILED, harness exception), the next scenario
         // starts from the baseline the run began with.
         val pinned = mutableListOf<SettingChange>()
+        // The app locale the scenario replaced, to put back (`""` = it followed the system); null = untouched.
+        var localeBefore: String? = null
         // logcat for exactly this scenario's span: cleared before setup, dumped after the last step
         runCatching { ops.logcatClear() }
         try {
-            return runPinned(scenario, trace, mode, pinned)
+            return runPinned(scenario, trace, mode, pinned) { localeBefore = it }
         } finally {
             runCatching { ops.logcatDump(File(reportDir, "logcat.txt")) }
             if (pinned.isNotEmpty()) DeviceSettings.restore(ops, pinned) { log("  device: $it") }
+            localeBefore?.let { was ->
+                runCatching { ops.setAppLocales(app!!, was.ifEmpty { null }) }
+                    .onSuccess { log("  device: app locale restored to ${was.ifEmpty { "system" }}") }
+                    .onFailure { e -> log("  device: warning: could not restore app locale to ${was.ifEmpty { "system" }}: ${e.message?.lineSequence()?.firstOrNull()}") }
+            }
         }
     }
 
-    private fun runPinned(scenario: Scenario, trace: TraceFile?, mode: RunMode, pinned: MutableList<SettingChange>): ScenarioRunResult {
+    private fun runPinned(
+        scenario: Scenario, trace: TraceFile?, mode: RunMode,
+        pinned: MutableList<SettingChange>, localeReplaced: (String) -> Unit,
+    ): ScenarioRunResult {
         val t0 = System.currentTimeMillis()
 
         // A broken setup (bad deeplink, adb hiccup) fails THIS scenario — it must never kill
@@ -125,7 +137,15 @@ class ScenarioRunner(
         try {
             scenario.setup?.let {
                 // before the cold start, so the app reads the pinned values
-                DeviceSettings.apply(ops, it.device, { msg -> log("  device: $msg") }, pinned)
+                DeviceSettings.apply(ops, it.device.settings, { msg -> log("  device: $msg") }, pinned)
+                // The app locale is set inside ops.setup (after the pm clear that would wipe it);
+                // read what it was first so the scenario can leave the app as it found it.
+                val wantLocale = (it.device.locale ?: locale)?.takeIf { app != null }
+                if (wantLocale != null) {
+                    val was = ops.appLocales(app!!)
+                    if (was != wantLocale) localeReplaced(was ?: "")
+                    log("  device: app locale $wantLocale (was ${was ?: "system"})")
+                }
                 val what = listOfNotNull(
                     it.appState?.let { s -> "restore app state '$s' (pm clear + snapshot)" },
                     if (it.clearData && it.appState == null) "clear app data (guest)" else null,
@@ -134,7 +154,7 @@ class ScenarioRunner(
                 ).joinToString(" + ").ifEmpty { "none" }
                 log("  setup: $what")
                 val s = System.currentTimeMillis()
-                val drawn = ops.setup(app, appState = it.appState, clearData = it.clearData, launch = it.launch, deeplink = it.deeplink)
+                val drawn = ops.setup(app, appState = it.appState, clearData = it.clearData, launch = it.launch, deeplink = it.deeplink, locale = wantLocale)
                 log("  setup: done (${secs(System.currentTimeMillis() - s)}${drawn?.let { d -> ", app fully drawn $d" } ?: ""})")
                 if (drawn == null && app != null && (it.launch || it.deeplink != null)) {
                     // The first observation may then catch a splash (an ad interstitial was

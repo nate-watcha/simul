@@ -83,6 +83,35 @@ setup:
   있어야 한다. 그 전제는 앞 시나리오의 부수효과에 기대지 말고 러너 AVD 이미지에 한 번 저장해 둔다.
 - `states:` variant는 같은 `device` 블록을 상속한다.
 
+### 앱 언어
+
+같은 `device` 블록의 `locale`은 **앱의 언어**다(Android 13+ 앱별 언어, `cmd locale set-app-locales <app>`).
+시나리오의 따옴표 라벨은 한 언어로 쓰이므로 러너 AVD나 개발자 에뮬레이터의 시스템 언어와 무관하게 앱을
+그 언어로 띄운다. 시스템 언어는 건드리지 않는다(root와 프레임워크 재시작이 필요하다).
+
+```yaml
+# .simul/config.yaml — 모든 시나리오의 기본 언어
+device:
+  locale: ko-KR           # BCP-47 태그, 또는 선호 목록 `ko-KR,en-US`
+  settings: …
+```
+
+```yaml
+# 시나리오 frontmatter — 이 시나리오만 다른 언어로
+setup:
+  appState: guest
+  launch: true
+  device:
+    locale: en-US
+```
+
+- `settings`와 달리 앱 상태라 **pm clear가 지운다**(실측). 그래서 setup 안에서 pm clear·스냅샷 복원 **뒤**,
+  launch **앞**에 걸고, 시나리오가 끝나면 이전 값(보통 "시스템 따름")으로 되돌린다.
+- 앱이 매니페스트에 `localeConfig`를 선언하지 않아도 동작한다(설정 앱의 "앱 언어" 메뉴에만 안 뜬다). 앱이
+  자체 설정값(SharedPreferences)만 읽는 독자 구현이면 효과가 없다 — `AppCompatDelegate.setApplicationLocales`는
+  API 33+에서 같은 시스템 값으로 위임되므로 괜찮다.
+- 앱 하나만 건드리므로 pm clear와 같이 실기기에서도 적용한다(display/settings는 에뮬레이터 전용).
+
 ## 진입
 
 ```yaml

@@ -14,8 +14,11 @@ internal class FakeOps(private val versionName: String? = "5.4.0") : DeviceOps {
 
     /** What setup reports as the app's fully-drawn time; null = the app never reported. */
     var fullyDrawn: String? = null
-    override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?): String? {
+    override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?, locale: String?): String? {
         setups += "$app|$appState|$clearData|$launch|$deeplink"
+        // like the device: the clear wipes the app locale, then setup sets the wanted one
+        if (clearData || appState != null) appLocale = null
+        if (locale != null) setAppLocales(app!!, locale)
         return fullyDrawn
     }
     override fun screenshot(dest: File): Boolean = false
@@ -41,6 +44,14 @@ internal class FakeOps(private val versionName: String? = "5.4.0") : DeviceOps {
     }
     override fun settingDelete(namespace: String, key: String) {
         settings.remove("$namespace.$key"); settingLog += "delete $namespace.$key"
+    }
+    /** The app's per-app locale; null = follows the system. */
+    var appLocale: String? = null
+    /** Every locale write in order: `locale ko-KR` / `locale system`. */
+    val localeLog = mutableListOf<String>()
+    override fun appLocales(app: String): String? = appLocale
+    override fun setAppLocales(app: String, locales: String?) {
+        appLocale = locales?.ifEmpty { null }; localeLog += "locale ${appLocale ?: "system"}"
     }
 }
 

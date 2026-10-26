@@ -2,6 +2,7 @@ package dev.nate.uiagent.device
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -27,5 +28,13 @@ class DeviceOpsTest {
         val warn = "Starting: Intent { ... }\n" +
             "Warning: Activity not started, its current task has been brought to the front\nStatus: ok\n"
         assertNull(AdbOps.deeplinkError(warn))
+    }
+
+    @Test
+    fun `app locale is read from cmd locale output, empty list means system, unknown package is an error`() {
+        assertEquals("ko-KR,en-US", AdbOps.parseAppLocales("Locales for com.x for user 0 are [ko-KR,en-US]\n", "com.x"))
+        assertNull(AdbOps.parseAppLocales("Locales for com.x for user 0 are []", "com.x"))
+        assertFailsWith<RuntimeException> { AdbOps.parseAppLocales("Unknown package com.x for userId 0", "com.x") }
+        assertFailsWith<RuntimeException> { AdbOps.parseAppLocales("Unknown command: locale", "com.x") }
     }
 }

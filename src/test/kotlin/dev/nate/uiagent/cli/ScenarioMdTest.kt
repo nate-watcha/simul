@@ -1,5 +1,6 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.device.DevicePins
 import dev.nate.uiagent.device.DeviceSetting
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -65,6 +66,7 @@ class ScenarioMdTest {
             setup:
               launch: true
               device:
+                locale: en-US
                 settings:
                   secure.credential_service: com.google.android.gms/.PasswordAndPasskeyService
                   secure.autofill_service: null
@@ -72,13 +74,13 @@ class ScenarioMdTest {
             1. Verify the "saved_password_sheet" sheet is shown
             """.trimIndent()
         )
-        val expected = listOf(
+        val expected = DevicePins(locale = "en-US", settings = listOf(
             DeviceSetting("secure", "credential_service", "com.google.android.gms/.PasswordAndPasskeyService"),
             DeviceSetting("secure", "autofill_service", null),
-        )
+        ))
         assertEquals(expected, s.setup!!.device)
         assertEquals(listOf(expected, expected), s.variants().map { it.setup!!.device })
-        assertEquals(emptyList(), ScenarioMd.parse("---\nname: plain\nsetup:\n  launch: true\n---\n1. x \"y\"").setup!!.device)
+        assertEquals(DevicePins.NONE, ScenarioMd.parse("---\nname: plain\nsetup:\n  launch: true\n---\n1. x \"y\"").setup!!.device)
         assertFailsWith<IllegalArgumentException> {
             ScenarioMd.parse("---\nname: bad\nsetup:\n  device:\n    settings:\n      credential_service: x\n---\n1. x \"y\"")
         }

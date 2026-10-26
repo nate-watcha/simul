@@ -18,8 +18,12 @@ interface DeviceOps {
      * `Activity.reportFullyDrawn()` (Compose `ReportDrawnWhen`), which the system logs as
      * `Fully drawn <pkg>/<activity>: +Ns` — and returns that duration; null when the app never
      * reported within [AdbOps.FULLY_DRAWN_TIMEOUT_MS] (or when nothing was launched).
+     *
+     * [locale] is the app's language for this scenario (`cmd locale set-app-locales`), applied
+     * after the clear/restore and before the launch: `pm clear` wipes the per-app locale, so
+     * setting it any earlier would be undone (measured). null = leave the app's language alone.
      */
-    fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?): String?
+    fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?, locale: String? = null): String?
 
     /** Capture a PNG screenshot into [dest]; false if capture failed (non-fatal). */
     fun screenshot(dest: File): Boolean
@@ -55,6 +59,13 @@ interface DeviceOps {
     fun settingGet(namespace: String, key: String): String?
     fun settingPut(namespace: String, key: String, value: String)
     fun settingDelete(namespace: String, key: String)
+
+    // ---- per-app language (Android 13+, see DevicePins) ----
+
+    /** `cmd locale get-app-locales <app>`: the app's language list (`ko-KR` / `ko-KR,en-US`); null = follows the system language. */
+    fun appLocales(app: String): String?
+    /** `cmd locale set-app-locales <app> [--locales <locales>]`; null/empty = follow the system language again. */
+    fun setAppLocales(app: String, locales: String?)
 }
 
 class AdbOps(
@@ -64,7 +75,7 @@ class AdbOps(
     private val statesDir: File? = null,
 ) : DeviceOps {
 
-    override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?): String? {
+    override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?, locale: String?): String? {
         if ((clearData || appState != null) && app != null) {
             runCatching { runProcess(listOf(adbBin, "shell", "am", "force-stop", app)) }
             runProcess(listOf(adbBin, "shell", "pm", "clear", app))
@@ -87,6 +98,8 @@ class AdbOps(
             runProcess(listOf(adbBin, "shell", "run-as", app, "sh", "-c", "'tar xf /data/local/tmp/simul-state.tar'"))
             runCatching { runProcess(listOf(adbBin, "shell", "rm", "/data/local/tmp/simul-state.tar")) }
         }
+        // after the clear (which wipes it), before the launch (so the first frame is already in it)
+        if (locale != null && app != null) setAppLocales(app, locale)
         if (launch && app != null) {
             // cold start: kill, then fire the launcher intent; give the splash a head start
             // before the runner's wait-for-stable takes over
@@ -198,6 +211,18 @@ class AdbOps(
         runProcess(listOf(adbBin, "shell", "settings", "delete", namespace, key))
     }
 
+    override fun appLocales(app: String): String? =
+        parseAppLocales(runProcess(listOf(adbBin, "shell", "cmd", "locale", "get-app-locales", app)), app)
+
+    override fun setAppLocales(app: String, locales: String?) {
+        // `cmd locale` reports an unknown package on stdout with exit 0 — read the output.
+        val out = runProcess(
+            listOf(adbBin, "shell", "cmd", "locale", "set-app-locales", app) +
+                (if (locales.isNullOrEmpty()) emptyList() else listOf("--locales", locales))
+        )
+        localeError(out)?.let { throw RuntimeException("could not set app locale '${locales ?: ""}' for $app: $it") }
+    }
+
     /**
      * Snapshot the app's data dir (login token, selected profile, onboarding flags — caches
      * excluded) into [dest] via `run-as` (debuggable builds only). Binary-safe: the tar
@@ -224,6 +249,21 @@ class AdbOps(
          */
         fun fullyDrawn(logcat: String, app: String): String? =
             Regex("Fully drawn ${Regex.escape(app)}/\\S+: (\\+\\S+)").find(logcat)?.groupValues?.get(1)
+
+        /**
+         * The list in `Locales for <app> for user 0 are [ko-KR,en-US]`; null for `[]` (follows the
+         * system). An unknown package or any other error line throws — the output is the only signal.
+         */
+        fun parseAppLocales(out: String, app: String): String? {
+            localeError(out)?.let { throw RuntimeException("could not read app locale for $app: $it") }
+            val list = Regex("are \\[([^\\]]*)]").find(out)
+                ?: throw RuntimeException("could not read app locale for $app: unexpected output '${out.trim()}' (cmd locale needs Android 13+)")
+            return list.groupValues[1].trim().ifEmpty { null }
+        }
+
+        private fun localeError(out: String): String? =
+            out.lineSequence().map { it.trim() }
+                .firstOrNull { it.startsWith("Unknown package") || it.startsWith("Error") || it.startsWith("Exception") }
 
         /** The error `am start -W` reports (on stdout, exit 0) when a URI resolves to nothing. */
         fun deeplinkError(amOutput: String): String? =

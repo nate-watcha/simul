@@ -4,7 +4,7 @@ import ai.koog.prompt.executor.model.PromptExecutor
 import ai.koog.prompt.llm.LLModel
 import dev.nate.uiagent.Defaults
 import dev.nate.uiagent.agent.SimulLlm
-import dev.nate.uiagent.device.DeviceSetting
+import dev.nate.uiagent.device.DevicePins
 import dev.nate.uiagent.device.DisplayProfile
 import java.io.File
 
@@ -70,8 +70,8 @@ data class SimulConfig(
     val scrollLimit: Int,
     /** Emulator display to force for the whole run (trace portability across devices). */
     val display: DisplayProfile? = null,
-    /** Emulator `settings` pinned for the whole run — the baseline every scenario assumes (see DeviceSettings). */
-    val device: List<DeviceSetting> = emptyList(),
+    /** App locale + emulator `settings` pinned for the whole run — the baseline every scenario assumes (see DevicePins). */
+    val device: DevicePins = DevicePins.NONE,
 ) {
     companion object {
         fun load(file: File, env: (String) -> String? = System::getenv): SimulConfig {
@@ -87,7 +87,7 @@ data class SimulConfig(
                     MiniYaml.string(y, "display", "size"),
                     MiniYaml.string(y, "display", "density"),
                 ),
-                device = DeviceSetting.parse(y["device"], "config.yaml"),
+                device = DevicePins.parse(y["device"], "config.yaml"),
             )
         }
     }
