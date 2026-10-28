@@ -126,16 +126,18 @@ class DeviceControllerTest {
     }
 
     @Test
-    fun `type rejects non-ASCII without acting`() {
-        val l = layout(el("검색", interactions = listOf("clickable", "focusable")))
+    fun `type taps the field then sets Unicode text against its resourceId`() {
+        // Korean typing used to stop at an ASCII guard (adb `input text`); the accessibility
+        // set-text path takes any script, targeted by the field's id after the focusing tap.
+        val l = layout(el("검색", resourceId = "app:id/search_input", interactions = listOf("clickable", "focusable")))
         val dev = FakeDevice(l, l)
         val c = controller(dev)
         c.fullLayout()
 
-        val result = c.type("검색", "한글입력")
+        val result = c.type("검색", "타짜")
 
-        assertTrue(dev.gestures.isEmpty())
-        assertContains(result, "non-ASCII")
+        assertEquals(listOf("tap 100 100", "text 타짜 into app:id/search_input"), dev.gestures)
+        assertContains(result, "Typed \"타짜\"")
     }
 
     @Test

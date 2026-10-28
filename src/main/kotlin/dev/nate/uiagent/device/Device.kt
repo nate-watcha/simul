@@ -24,7 +24,13 @@ interface Device {
 
     fun tap(x: Int, y: Int)
     fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int)
-    fun inputText(text: String)
+
+    /**
+     * Put [text] into the input field the caller just tapped, replacing what it held.
+     * [resourceId] names that field when it has one; null means whichever element holds input
+     * focus. Any Unicode — the field is set through accessibility, not a keyboard (see [AdbDevice]).
+     */
+    fun inputText(text: String, resourceId: String?)
     fun keyBack()
     fun sleep(ms: Long)
 
@@ -36,7 +42,7 @@ interface Device {
     fun releaseAutomation() {}
 }
 
-/** Live device via `android layout` + `adb shell input`. */
+/** Live device via `android layout` / `android input text` + `adb shell input`. */
 class AdbDevice(
     private val adbBin: String = "adb",
     private val androidBin: String = "android",
@@ -61,13 +67,15 @@ class AdbDevice(
     /** `android layout --no-idle` from the first attempt — replay's observation (see [Device.observeFast]). */
     override fun observeFast(): LogicalLayout = observe(noIdle = true)
 
+    /**
+     * `adb` honors ANDROID_SERIAL on its own, but the `android` CLI does not and errors out when
+     * several devices are online — every `android` call gets the serial explicitly.
+     */
+    private fun androidArgs(command: String): List<String> =
+        listOf(androidBin, command) + (System.getenv("ANDROID_SERIAL")?.let { listOf("--device", it) } ?: emptyList())
+
     private fun observe(noIdle: Boolean): LogicalLayout {
-        // `adb` honors ANDROID_SERIAL on its own, but the `android` CLI does not and errors
-        // out when several devices are online — pass the serial through explicitly.
-        val serial = System.getenv("ANDROID_SERIAL")
-        val argv = listOf(androidBin, "layout") +
-            (serial?.let { listOf("--device", it) } ?: emptyList()) +
-            (if (noIdle) listOf("--no-idle") else emptyList())
+        val argv = androidArgs("layout") + (if (noIdle) listOf("--no-idle") else emptyList())
         var failure: ProcessFailure? = null
         repeat(OBSERVE_RETRIES) { attempt ->
             val out = try {
@@ -126,7 +134,26 @@ class AdbDevice(
     override fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int) =
         input("swipe", "$x1", "$y1", "$x2", "$y2", "$durationMs")
 
-    override fun inputText(text: String) = input("text", text.replace(" ", "%s"))
+    /**
+     * `android input text` (CLI ≥ 1.0.16625370): the resident layout server sets the field's text
+     * through the accessibility ACTION_SET_TEXT, so any Unicode goes in as written — `adb shell
+     * input text` only ever carried ASCII, and every Korean typing step stopped at the harness
+     * guard. The target is the field DeviceController just tapped: its resource-id when it has
+     * one (exact regex; `--match first` tolerates a duplicate id elsewhere on screen), otherwise
+     * whatever holds input focus. No keyboard takes part — IME composition and autocomplete are
+     * not exercised — but EditText's TextWatcher and Compose's onValueChange fire as for typed
+     * text, so search-as-you-type screens react the same.
+     */
+    override fun inputText(text: String, resourceId: String?) {
+        val selector = resourceId?.let { "id=/^${regexEscape(it)}$/" } ?: "focused=true"
+        val argv = androidArgs("input") + listOf("text", "--match", "first", text, selector)
+        onCommand(argv)
+        run(argv)
+    }
+
+    /** Selector values wrapped in slashes are regexes; `/` itself is escaped as `\/`. */
+    private fun regexEscape(s: String): String =
+        s.replace(Regex("[\\\\.\\[\\]{}()*+?^\$|/]")) { "\\" + it.value }
 
     override fun keyBack() = input("keyevent", "KEYCODE_BACK")
 

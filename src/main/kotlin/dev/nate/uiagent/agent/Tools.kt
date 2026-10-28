@@ -70,8 +70,8 @@ internal class DeviceTools(
         ) { a -> controller.tap(a.req("target")) })
         tool(make("type",
             "Type text into the element matching the target label. Replaces existing text. " +
-                "ASCII only; non-ASCII returns an error. Returns the layout diff.",
-            listOf("target" to "label or resourceId of the input field", "text" to "ASCII text to type"),
+                "Returns the layout diff.",
+            listOf("target" to "label or resourceId of the input field", "text" to "text to type, in any language"),
         ) { a -> controller.type(a.req("target"), a.req("text")) })
         tool(make("scrollToFind",
             "Scroll inside a scrollable element and search for a target label. Scrolls up to 3 times, " +

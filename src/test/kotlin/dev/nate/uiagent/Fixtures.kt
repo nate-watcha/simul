@@ -41,7 +41,7 @@ internal class FakeDevice(vararg initial: LogicalLayout) : Device {
 
     override fun tap(x: Int, y: Int) { gestures += "tap $x $y" }
     override fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int) { gestures += "swipe" }
-    override fun inputText(text: String) { gestures += "text $text" }
+    override fun inputText(text: String, resourceId: String?) { gestures += "text $text" + (resourceId?.let { " into $it" } ?: "") }
     override fun keyBack() { gestures += "back" }
     override fun sleep(ms: Long) {}
     override fun releaseAutomation() { gestures += "release" }
@@ -53,7 +53,7 @@ internal class StaticDevice(var layout: LogicalLayout) : Device {
     override fun observe(): LogicalLayout = layout
     override fun tap(x: Int, y: Int) { gestures += "tap $x $y" }
     override fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int) { gestures += "swipe" }
-    override fun inputText(text: String) { gestures += "text $text" }
+    override fun inputText(text: String, resourceId: String?) { gestures += "text $text" + (resourceId?.let { " into $it" } ?: "") }
     override fun keyBack() { gestures += "back" }
     override fun sleep(ms: Long) {}
 }

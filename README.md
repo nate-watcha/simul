@@ -74,7 +74,7 @@ Slack 메시지 블록을 뽑을 수 있다.
 
 ## 제약 / 스코프 밖
 
-- **비ASCII 타이핑 미지원**(`adb shell input text` 한계) → 즉시 FAILED
+- 타이핑은 키보드를 거치지 않는다(`android input text` = 접근성 set-text) — 어떤 언어든 들어가지만 IME 조합·자동완성은 검증 대상이 아니다
 - WebView 관찰은 debug 빌드(`setWebContentsDebuggingEnabled`) 전제, cross-origin iframe 미지원
 - 스크린샷/vision 판단, 웹 성능 계측 — 스코프 밖
 

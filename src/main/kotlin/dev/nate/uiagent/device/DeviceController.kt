@@ -1,6 +1,8 @@
 package dev.nate.uiagent.device
 
 import dev.nate.uiagent.Defaults
+import dev.nate.uiagent.Origin
+import dev.nate.uiagent.ProcessFailure
 import dev.nate.uiagent.Trace
 import dev.nate.uiagent.LogicalElement
 import dev.nate.uiagent.LogicalLayout
@@ -11,8 +13,7 @@ import dev.nate.uiagent.LogicalLayout
  * tool result IS the verification data.
  *
  * Guards live here, not in the prompt: unknown labels return errors without acting,
- * ambiguous labels return candidates without acting, scroll rounds are capped, non-ASCII
- * typing is rejected.
+ * ambiguous labels return candidates without acting, scroll rounds are capped.
  */
 class DeviceController(
     private val device: Device,
@@ -223,9 +224,12 @@ class DeviceController(
         return "ERROR: '${handleOf(e)}' is plain text (no interactions); tapping it does nothing."
     }
 
+    /**
+     * Tap the field, then set its text through the device ([Device.inputText]) — the tap gives it
+     * focus and is the fallback target when the field has no resource-id. A refused input
+     * (not editable, gone before the set) is a tool error the model sees, not a crashed step.
+     */
     fun type(target: String, text: String): String = traced("type", "target" to target, "text" to text) {
-        if (text.any { it.code > 127 })
-            return@traced "ERROR: non-ASCII text is not supported. The command cannot be completed if it requires typing this text."
         when (val r = resolve(target)) {
             is Resolution.NotFound -> notFoundMsg(target)
             is Resolution.Ambiguous -> ambiguousMsg(target, r.candidates)
@@ -235,7 +239,12 @@ class DeviceController(
                 lastResolved = r.element
                 userTap(r.element)
                 device.sleep(300)
-                device.inputText(text)
+                try {
+                    device.inputText(text, r.element.resourceId.takeIf { r.element.origin == Origin.NATIVE })
+                } catch (ex: ProcessFailure) {
+                    val why = ex.stderr.trim().lineSequence().firstOrNull { it.isNotBlank() } ?: "input failed"
+                    return@traced "ERROR: could not type into '${handleOf(r.element)}': $why"
+                }
                 "Typed \"$text\" into '${handleOf(r.element)}'.\n" + settleAndDiff("type $target")
             }
         }

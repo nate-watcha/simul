@@ -41,7 +41,7 @@ private class FileDevice(private val path: String) : Device {
     override fun observe(): LogicalLayout = LayoutAdapter.adapt(File(path).readText())
     override fun tap(x: Int, y: Int) = println("  [dry] tap $x $y")
     override fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int) = println("  [dry] swipe $x1,$y1 -> $x2,$y2")
-    override fun inputText(text: String) = println("  [dry] text $text")
+    override fun inputText(text: String, resourceId: String?) = println("  [dry] text $text into ${resourceId ?: "<focused>"}")
     override fun keyBack() = println("  [dry] back")
     override fun sleep(ms: Long) {}
 }
