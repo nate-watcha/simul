@@ -69,6 +69,14 @@ class CliProjectTest {
     }
 
     @Test
+    fun `--version prints the version without needing a project or a device`() {
+        val empty = tempDir()
+        val text = captureStdout { assertEquals(0, cliMain(arrayOf("--version"), empty)) }
+        assertEquals("simul $AGENT_VERSION", text.trim())
+        assertEquals(text, captureStdout { assertEquals(0, cliMain(arrayOf("-v"), empty)) })
+    }
+
+    @Test
     fun `version requirement above the binary warns`() {
         val root = makeProject()
         File(root, ".simul/config.yaml").writeText("agentVersion: \">=9.9\"\n")

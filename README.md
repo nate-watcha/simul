@@ -20,6 +20,7 @@ ln -s "$(pwd)/scripts/simul" ~/.local/bin/simul   # PATH 래퍼
 simul                            # 개발자는 이것 하나: 시나리오 목록/실행/녹화/상태 저장/ad-hoc REPL (TUI)
 simul init --app com.example     # 타겟 레포에 .simul/ 스캐폴드 + 작성 가이드 + Claude 스킬 설치
 simul "Tap the \"웹툰\" tab"     # ad-hoc 단일 커맨드 (규약 없이 동작)
+simul --version                  # 러너에 깔린 simul 버전 확인 (CI 로그용, `-v`도 됨)
 
 ./gradlew runAgent --args='"설정 탭을 눌러"'   # 개발용 ad-hoc 직접 실행
 ```

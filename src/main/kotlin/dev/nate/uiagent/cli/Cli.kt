@@ -27,6 +27,10 @@ fun cliMain(argv: Array<String>, cwd: File): Int = when (argv.firstOrNull()) {
         printUsage()
         0
     }
+    "--version", "-v" -> {
+        println("simul $AGENT_VERSION")
+        0
+    }
     "run" -> runCommand(argv.drop(1), cwd)
     "report" -> reportCommand(argv.drop(1), cwd)
     "list" -> listCommand(cwd)
@@ -53,6 +57,7 @@ private fun printUsage() {
           simul                               interactive mode — scenarios, runs, recording, states, ad-hoc REPL (TTY + .simul/)
           simul init [--app <package>]        set up .simul/ + the scenario-authoring Claude skill
           simul "<natural-language command>"  ad-hoc single command, no .simul/ needed
+          simul --version                     print the version (for CI to check which simul is on the runner)
 
         nightly (wired into the app repo's CI — see the README):
           simul report                        re-record every scenario with the LLM, replay the recordings without it,
