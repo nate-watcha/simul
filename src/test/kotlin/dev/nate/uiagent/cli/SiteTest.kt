@@ -45,7 +45,9 @@ class SiteTest {
             "--------- beginning of main\n" +
             "         ${(t0 + 1000) / 1000}.100   672   833 I CouponVM: apply(code=X)\n" +
             "         ${(t0 + 1500) / 1000}.900   672   833 E CouponRepo: HTTP 422\n" +
-            "         ${(t0 + 9000) / 1000}.000   672   833 I Later: unrelated\n")
+            "         ${(t0 + 1600) / 1000}.600  1566  1600 V FA-SVC  : Logging event: origin=app,name=w_coupon_apply,params=Bundle[{w_code=X, ga_screen_class(_sc)=MainNavActivity}]\n" +
+            "         ${(t0 + 9000) / 1000}.000   672   833 I Later: unrelated\n" +
+            "         ${(t0 + 9000) / 1000}.500  1566  1600 V FA-SVC  : Logging event: origin=auto,name=user_engagement,params=Bundle[{engagement_time_msec=8000}]\n")
         val r = ScenarioRunResult(name, status, steps, null, 2000, startedAtMs = t0, setupFailed = setupFailed, reportDir = dir, video = vid)
         ResultJson.write(r, "replay", ResultJson.Meta(feature, name, state, "$feature/$name.md", "쿠폰을 등록한다", "nate", "설정에서 쿠폰 메뉴로 들어간다.", traceAt,
             ResultJson.Env("4.21.0", "sdk_gphone64", "1.0.1")), dir)
@@ -74,6 +76,10 @@ class SiteTest {
         assertEquals(3700L, s2.actions.single().videoMs)
         assertEquals("steps/02.png", s2.screenshot)
         assertEquals("layout/02.json", s2.layout)
+        // the Firebase events of the scenario, on the step they fell in: step 2 began at +1000 and nothing came after it
+        assertEquals(emptyList(), r.steps[0].events)
+        assertEquals(listOf("w_coupon_apply", "user_engagement"), s2.events.map { it.name })
+        assertEquals(ResultJson.Event(1600, 4100, "app", "w_coupon_apply", mapOf("w_code" to "X", "ga_screen_class(_sc)" to "MainNavActivity")), s2.events[0])
         assertTrue(r.layoutHash.length == 12)
         assertEquals(true, ResultJson.readLastRun(File(r.dir, "result.json"))?.passed?.not())
     }
@@ -119,6 +125,7 @@ class SiteTest {
         assertTrue(":: the &quot;list&quot; item should be shown" in detail, "criterion on its own line")
         assertTrue("+ list<br>+ toast" in detail && "· toast 없음" in detail, "expected vs found")
         assertTrue("CouponRepo: HTTP 422" in detail && "Later: unrelated" !in detail, "logcat ±2s around the failing tap")
+        assertTrue("firebase 2</span> w_coupon_apply · user_engagement" in detail && "w_code=X" in detail, "the step's Firebase events, folded under it")
         assertTrue("href=\"../index.html\"" in detail)
         assertTrue(File(site, "billing/coupon.member/steps/02.jpg").isFile)
         // a page without a recording shows the step frame instead

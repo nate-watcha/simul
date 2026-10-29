@@ -28,7 +28,9 @@ import java.io.File
  * result.json          this file
  * steps/01.png …       the screen when each step ended
  * layout/01.json …     the layout tree at that moment (LayoutJson)
- * logcat.txt           the device log over the scenario (threadtime + epoch stamps)
+ * logcat.txt           the device log over the scenario (threadtime + epoch stamps); the Firebase Analytics
+ *                      events in it land on the step they fell in (`events`, AnalyticsEvents) — the setup's
+ *                      (the app's launch) in `setup_events`
  * replay.mp4           the screen recording (--video); every step and action carries its
  *                      `video_ms`, so a page can seek the player to it
  * ```
@@ -66,6 +68,21 @@ object ResultJson {
         val layouts = r.steps.map { s -> s.layout?.let { LayoutJson.read(File(dir, it)) } ?: emptyList() }
         val videoStart = r.video?.startedAtMs
         fun videoMs(absMs: Long): Long? = videoStart?.let { (absMs - it).coerceAtLeast(0) }
+        val events = AnalyticsEvents.bucket(
+            AnalyticsEvents.read(File(dir, "logcat.txt")),
+            r.steps.filter { it.status != StepStatus.SKIPPED }.map { it.index to r.startedAtMs + it.startedMs },
+        )
+        fun eventsJson(list: List<AnalyticsEvents.Logged>) = buildJsonArray {
+            list.forEach { e ->
+                add(buildJsonObject {
+                    put("at_ms", e.atEpochMs - r.startedAtMs)
+                    put("video_ms", videoMs(e.atEpochMs)?.let(::JsonPrimitive) ?: JsonNull)
+                    put("origin", e.origin)
+                    put("name", e.name)
+                    put("params", buildJsonObject { e.params.forEach { (k, v) -> put(k, v) } })
+                })
+            }
+        }
         val obj: JsonObject = buildJsonObject {
             put("scenario", r.scenario)
             put("title", meta.title)
@@ -98,6 +115,7 @@ object ResultJson {
                 }
             } ?: JsonNull)
             r.llm?.let { put("llm", llmJson(it)) }
+            events[0]?.let { put("setup_events", eventsJson(it)) }
             put("steps", buildJsonArray {
                 r.steps.forEach { s ->
                     val spec = StepSpec.parse(s.text)
@@ -128,6 +146,7 @@ object ResultJson {
                                 })
                             }
                         })
+                        events[s.index]?.let { put("events", eventsJson(it)) }
                         s.llm?.let { put("llm", llmJson(it)) }
                         if (s.screenshots.size > 1) put("screenshots", buildJsonArray { s.screenshots.forEach { add(JsonPrimitive(it)) } })
                         if (s.screen.isNotEmpty()) put("screen", buildJsonArray { s.screen.forEach { add(JsonPrimitive(it)) } })
@@ -166,6 +185,8 @@ object ResultJson {
         val video: Video?,
         val llm: LlmStats?,
         val steps: List<Step>,
+        /** The app's Firebase Analytics events during setup (its launch), before the first step. */
+        val setupEvents: List<Event> = emptyList(),
     ) {
         /** `coupon.member` / `coupon` — the directory a run of this scenario gets under a runs root (see ReportDirs). */
         val key: String get() = name + (state?.let { ".$it" } ?: "")
@@ -197,9 +218,20 @@ object ResultJson {
         val screen: List<String>,
         /** Every frame of the step in order — a recording's before/after of each action, then the step-end frame. */
         val screenshots: List<String> = listOfNotNull(screenshot),
+        /** The app's Firebase Analytics events that fell in this step, in log order. */
+        val events: List<Event> = emptyList(),
     )
 
     data class Action(val tool: String, val target: String?, val atMs: Long, val videoMs: Long?)
+
+    /** One Firebase Analytics event (AnalyticsEvents): [atMs] since the scenario started, [origin] `app`/`auto`. */
+    data class Event(val atMs: Long, val videoMs: Long?, val origin: String, val name: String, val params: Map<String, String>)
+
+    private fun events(o: JsonObject, key: String): List<Event> = o.arr(key)?.mapNotNull { el ->
+        val e = el as? JsonObject ?: return@mapNotNull null
+        Event(e.long("at_ms") ?: 0, e.long("video_ms"), e.str("origin") ?: "app", e.str("name") ?: return@mapNotNull null,
+            e.obj("params")?.entries?.associate { (k, v) -> k to ((v as? JsonPrimitive)?.content ?: v.toString()) } ?: emptyMap())
+    } ?: emptyList()
 
     private fun parse(file: File): JsonObject? =
         runCatching { json.parseToJsonElement(file.readText()).jsonObject }.getOrNull()
@@ -251,8 +283,10 @@ object ResultJson {
                     } ?: emptyList(),
                     screen = s.strList("screen"),
                     screenshots = s.strList("screenshots").ifEmpty { listOfNotNull(s.str("screenshot")) },
+                    events = events(s, "events"),
                 )
             } ?: emptyList(),
+            setupEvents = events(o, "setup_events"),
         )
     }
 

@@ -28,7 +28,12 @@ interface DeviceOps {
     /** Capture a PNG screenshot into [dest]; false if capture failed (non-fatal). */
     fun screenshot(dest: File): Boolean
 
-    /** Clear the device log, so the next [logcatDump] covers exactly one scenario. */
+    /**
+     * Clear the device log, so the next [logcatDump] covers exactly one scenario — and turn on Firebase
+     * Analytics' event log (`log.tag.FA-SVC VERBOSE`: the Play services measurement process then logs every
+     * event the app sends, `Logging event: origin=app,name=…,params=Bundle[{…}]`), so the dump carries the
+     * events of that scenario (see cli/AnalyticsEvents). A log level only; it persists until reboot and is not restored.
+     */
     fun logcatClear()
 
     /** Dump the device log since the last clear into [dest] (threadtime + epoch timestamps); false when nothing was written. */
@@ -147,6 +152,8 @@ class AdbOps(
     override fun screenshot(dest: File): Boolean = runToFile(listOf(adbBin, "exec-out", "screencap", "-p"), dest) == null
 
     override fun logcatClear() {
+        // `Log.isLoggable` reads the property live — the already-running Play services process picks it up (measured)
+        runCatching { runProcess(listOf(adbBin, "shell", "setprop", "log.tag.FA-SVC", "VERBOSE")) }
         runCatching { runProcess(listOf(adbBin, "logcat", "-c")) }
     }
 

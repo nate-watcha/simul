@@ -337,6 +337,7 @@ object SitePages {
         // ---- the timeline
         sb.append("<div class=cols><section class=steps><h2>${if (rec != null) "오늘 녹화 (LLM)" else "STEPS"}</h2>")
         if (t.steps.isEmpty()) sb.append("<p class=dim>재생 없음 — ${esc(t.reason ?: t.status)}</p>")
+        setupRow(sb, t)
         for (s in t.steps) stepRow(sb, t, s, film = if (s.n == rec?.failedStep) frames.actions else emptyList())
         sb.append("</section>")
 
@@ -398,6 +399,7 @@ object SitePages {
             else -> "SKIPPED"
         })
         sb.append("</div></div></div>")
+        eventsBlock(sb, s.events, s.startedMs)
         if (s.status == "FAILED") {
             val missing = s.expected - s.found.toSet()
             sb.append("<div class=fail><div class=cols2><div><h4>기대 (${if (r.mode == "llm") "시나리오" else "trace"})</h4><div class=mono>")
@@ -421,6 +423,33 @@ object SitePages {
             sb.append("</div>")
         }
         sb.append("</div>")
+    }
+
+    /** The app's launch events — what Firebase saw between setup and the first step — as a static row ahead of the steps. */
+    private fun setupRow(sb: StringBuilder, r: ResultJson.Result) {
+        if (r.setupEvents.isEmpty()) return
+        sb.append("<div class=\"step static setup\"><div class=line><span class=icon>⚙</span><div class=text><div class=mono><span class=n>setup</span> 앱 시작 — 첫 스텝 전</div><div class=meta>${esc(humanDuration(r.steps.firstOrNull { it.status != "SKIPPED" }?.startedMs ?: 0))}</div></div></div>")
+        eventsBlock(sb, r.setupEvents, 0)
+        sb.append("</div>")
+    }
+
+    /**
+     * The Firebase Analytics events of one step, folded: the summary names them (`w_view · w_exposed_cells ×2`), open
+     * shows each with its offset from [fromMs] and parameters — the app's own first, the automatic `ga_*` dim; `auto`
+     * events (screen_view, user_engagement) dim as a whole.
+     */
+    private fun eventsBlock(sb: StringBuilder, events: List<ResultJson.Event>, fromMs: Long) {
+        if (events.isEmpty()) return
+        val names = events.groupingBy { it.name }.eachCount().entries.joinToString(" · ") { (name, n) -> esc(name) + if (n > 1) " ×$n" else "" }
+        sb.append("<details class=events><summary><span class=k>firebase ${events.size}</span> $names</summary><div class=evlist>")
+        for (e in events) {
+            val params = e.params.entries.sortedBy { it.key.startsWith("ga_") }.joinToString(" · ") { (k, v) ->
+                val kv = "${esc(k)}=${esc(v)}"
+                if (k.startsWith("ga_")) "<span class=ga>$kv</span>" else kv
+            }
+            sb.append("<div class=ev><span class=at>+${"%.1f".format((e.atMs - fromMs).coerceAtLeast(0) / 1000.0)}s</span><b class=\"${if (e.origin == "app") "" else "auto"}\">${esc(e.name)}</b><span class=params>$params</span></div>")
+        }
+        sb.append("</div></details>")
     }
 
     private fun stepsJson(r: ResultJson.Result, thumbs: Map<Int, String>): String = buildJsonArray {
@@ -506,6 +535,9 @@ object SitePages {
         .film{display:flex;gap:8px;overflow-x:auto;padding:4px 0}.film figure{margin:0;flex:0 0 72px;display:flex;flex-direction:column;gap:3px;font-size:10px;color:var(--dim);text-align:center}.film img{display:block;width:100%;border-radius:6px;border:1px solid var(--line2)}
         .progress{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px}
         details.replaysec{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px}details.replaysec summary{cursor:pointer;font-weight:500;font-size:13px}details.replaysec .steps{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+        .step.setup{cursor:default;border-style:dashed;border-color:var(--line2)}.step.setup .icon{background:#E8E8E3;color:var(--dim)}
+        details.events{margin:8px 0 0 34px;cursor:auto}details.events summary{cursor:pointer;font-size:12px;color:var(--dim);list-style:none;display:flex;gap:8px;align-items:baseline;font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace}details.events summary::-webkit-details-marker{display:none}details.events summary .k{color:var(--faint);flex-shrink:0}details.events summary .k::before{content:'▸ '}details.events[open] summary .k::before{content:'▾ '}
+        .evlist{margin-top:6px;background:var(--code);border-radius:6px;padding:8px 10px;display:flex;flex-direction:column;gap:3px}.ev{display:flex;gap:10px;align-items:baseline;font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:11.5px;line-height:1.5}.ev .at{color:var(--faint);min-width:44px;text-align:right;flex-shrink:0}.ev b{font-weight:500;flex-shrink:0}.ev b.auto{color:var(--faint);font-weight:400}.ev .params{color:var(--dim);overflow-wrap:anywhere}.ev .params .ga{color:var(--faint)}
         pre.log{margin:0;background:#1B1B1A;color:#E6E6E2;padding:10px 12px;border-radius:6px;font-size:11.5px;line-height:1.5;overflow:auto;max-height:260px;white-space:pre-wrap}
         .actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.actions code{background:var(--code);padding:6px 10px;border-radius:6px}.actions .btn{flex:0 0 auto}
         .player{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:12px}.frame{position:relative;width:100%;aspect-ratio:9/16;max-height:560px;border-radius:10px;background:#E8E8E3;border:1px solid var(--line2);overflow:hidden;display:flex;align-items:center;justify-content:center}
