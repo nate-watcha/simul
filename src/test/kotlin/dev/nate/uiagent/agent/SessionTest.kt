@@ -152,8 +152,8 @@ class SessionTest {
         val llm = FakeExecutor(call("tap", """{"label":"웹툰"}""", "x"), reportCall(status = "FAILED"))
         val session = ScenarioSession(llm, controller(dev))
         session.runStep("Tap", "[L]")
-        val toolResult = lastToolResult(llm.requests[1]).output
-        assertTrue(toolResult.startsWith("ERROR: tool 'tap' requires parameter 'target'"), toolResult)
+        val toolResult = lastToolResult(llm.requests[1])
+        assertTrue(toolResult.isError && "tool 'tap' requires parameter 'target'" in toolResult.output, toolResult.output)
         assertTrue(dev.gestures.isEmpty())
     }
 

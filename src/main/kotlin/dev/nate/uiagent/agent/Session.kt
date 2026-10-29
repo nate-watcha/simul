@@ -80,6 +80,10 @@ class ScenarioSession(
             onLLMCallCompleted { ctx ->
                 turns.llmCompleted(ctx.response?.parts?.count { it is MessagePart.Tool.Call } ?: 0, ctx.response?.metaInfo)
             }
+            // calls Koog rejected before the tool ran (unparsable or missing arguments) — the tool
+            // itself never logs these, and they must still show in the turn line
+            onToolValidationFailed { ctx -> turns.tool("${ctx.toolName}() ← ERROR") }
+            onToolCallFailed { ctx -> turns.tool("${ctx.toolName}() ← ERROR") }
         }
     }
 
