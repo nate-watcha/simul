@@ -1,10 +1,8 @@
 package dev.nate.uiagent.cli
 
-import dev.nate.uiagent.el
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import kotlin.test.assertNull
 
 class StepSpecTest {
 
@@ -16,39 +14,9 @@ class StepSpecTest {
     }
 
     @Test
-    fun `verify detection is case-insensitive and prefix-based`() {
-        assertTrue(StepSpec.parse("Verify the \"다운로드\" title is shown").isVerify)
-        assertTrue(StepSpec.parse("verify \"X\" is shown").isVerify)
-        assertFalse(StepSpec.parse("Tap \"Verify\" button").isVerify)
+    fun `a step without the separator has no criterion`() {
+        val s = StepSpec.parse("Verify the \"다운로드\" title is shown")
+        assertEquals("Verify the \"다운로드\" title is shown", s.command)
+        assertNull(s.criterion)
     }
-
-    // ------------------------------------------------------------ judgeVerify
-
-    private val els = listOf(
-        el("다운로드", resourceId = "download_screen_title"),
-        el("보관함", state = listOf("selected")),
-    )
-
-    @Test
-    fun `presence passes on label or resourceId`() {
-        assertTrue(judgeVerify("Verify the \"다운로드\" title is shown", els)!!.passed)
-        assertTrue(judgeVerify("Verify the \"download_screen_title\" is shown", els)!!.passed)
-        assertFalse(judgeVerify("Verify the \"장르\" chip is shown", els)!!.passed)
-    }
-
-    @Test
-    fun `absence inverts the check`() {
-        assertTrue(judgeVerify("Verify the \"장르\" chip is not shown", els)!!.passed)
-        assertFalse(judgeVerify("Verify the \"다운로드\" title is not shown", els)!!.passed)
-    }
-
-    @Test
-    fun `state keyword outside quotes switches to statePresent`() {
-        assertTrue(judgeVerify("Verify the \"보관함\" tab is selected", els)!!.passed)
-        assertFalse(judgeVerify("Verify the \"다운로드\" title is selected", els)!!.passed)
-        // the keyword inside a quoted label must NOT trigger the state check
-        val labeled = listOf(el("selected items"))
-        assertTrue(judgeVerify("Verify \"selected items\" is shown", labeled)!!.passed)
-    }
-
 }

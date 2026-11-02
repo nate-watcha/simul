@@ -4,8 +4,9 @@ import dev.nate.uiagent.LogicalElement
 import dev.nate.uiagent.device.computeDiff
 
 /**
- * Deterministic step evidence and the Verify judgment — the content-independent signals a
- * replay re-checks without a model: quoted labels, structural resourceIds and stable states.
+ * Deterministic step evidence — the content-independent signals a replay re-checks without a
+ * model: quoted labels, structural resourceIds and stable states. Record-time judgment of every
+ * step, assertions included, is the model's; this file only decides what replay will gate on.
  */
 
 /** The labels a scenario could reference on the current screen, deduplicated and capped. */
@@ -32,7 +33,7 @@ private val STABLE_STATES = setOf("selected", "checked")
  * Only content-independent signals qualify:
  *
  * 1. Quoted labels from the step text that are present afterwards — the author's explicit
- *    assertion (this is what Verify steps are).
+ *    assertion.
  * 2. resourceIds of newly appeared nodes — a view id names the view, not its content, so the
  *    set {btn_play, tv_title, …} is a stable structural signature of the destination screen
  *    (recycled cells keep their ids whatever they display).
@@ -79,7 +80,7 @@ fun extractEvidence(
 fun statePresent(elements: List<LogicalElement>, se: StateEvidence): Boolean =
     elements.any { it.matchesExact(se.ref) && se.state in it.state }
 
-// ------------------------------------------------------- deterministic verify judgment
+// ------------------------------------------------------- step anchors
 
 /** The quoted labels of a step sentence — the author-chosen anchors. */
 fun quotedLabels(text: String): List<String> = quotedRegex.findAll(text)
@@ -90,33 +91,5 @@ fun quotedLabels(text: String): List<String> = quotedRegex.findAll(text)
 
 private val negationRegex = Regex("""\bnot\b|\bno longer\b|n't\b""", RegexOption.IGNORE_CASE)
 
-/** Does the sentence assert absence rather than presence? */
+/** Does the sentence assert absence rather than presence? (a negated criterion's anchors are not gated) */
 fun isNegated(text: String): Boolean = negationRegex.containsMatchIn(text)
-
-data class VerifyJudgment(val passed: Boolean, val reason: String?)
-
-/**
- * Deterministic judgment of a Verify step against the current elements — the record-mode
- * twin of the replay evidence gate, so a record-time pass can never assert more than CI
- * will re-check. Supports presence (`is shown`), absence (`is not shown`) and stable state
- * (`is selected` / `is checked`) over the quoted anchors. Returns null when the step names
- * no quoted anchor — nothing machine-checkable, the caller falls back to the LLM.
- */
-fun judgeVerify(stepText: String, elements: List<LogicalElement>): VerifyJudgment? {
-    val anchors = quotedLabels(stepText)
-    if (anchors.isEmpty()) return null
-    val negated = isNegated(stepText)
-    // only words outside quotes count — a quoted label may itself contain "selected"
-    val outside = quotedRegex.replace(stepText, "").lowercase()
-    val state = STABLE_STATES.firstOrNull { it in outside }
-
-    fun holds(anchor: String) =
-        if (state != null) statePresent(elements, StateEvidence(anchor, state))
-        else labelPresent(elements, anchor)
-
-    val offenders = if (negated) anchors.filter(::holds) else anchors.filterNot(::holds)
-    if (offenders.isEmpty()) return VerifyJudgment(true, null)
-    val what = state ?: "on screen"
-    val quoted = offenders.joinToString(", ") { "\"$it\"" }
-    return VerifyJudgment(false, if (negated) "unexpectedly $what: $quoted" else "not $what: $quoted")
-}

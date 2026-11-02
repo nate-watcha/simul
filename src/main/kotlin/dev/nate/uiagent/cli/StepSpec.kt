@@ -14,9 +14,6 @@ package dev.nate.uiagent.cli
  * harvested as replay evidence by the existing pipeline.
  */
 data class StepSpec(val command: String, val criterion: String?) {
-    /** Assertion steps — judged by the runner when they carry quoted anchors (see Runner). */
-    val isVerify: Boolean get() = command.startsWith("Verify", ignoreCase = true)
-
     companion object {
         const val SEPARATOR = " :: "
 

@@ -118,20 +118,20 @@ class RunnerTest {
         val dev = FakeDevice(screenA, screenA, screenB, screenB)
         val cost = LlmStats(calls = 3, durationMs = 1200, promptTokens = 20_000, completionTokens = 300, peakPromptTokens = 9_000)
         val h = Harness(dev) { c, text ->
-            c.tap("웹툰")
-            ScenarioSession.Verdict(true, "tab selected", llm = cost)
+            if (text.startsWith("Tap")) c.tap("웹툰")
+            ScenarioSession.Verdict(true, "ok", llm = cost)
         }
 
         val result = h.runner.run(scenario, trace = null, mode = RunMode.LLM)
 
         assertEquals(StepStatus.PASSED, result.status)
-        assertEquals(cost, result.steps[0].llm, "the llm step keeps its own stats")
-        assertNull(result.steps[1].llm, "the runner-judged Verify step never consulted the model")
-        assertEquals(cost, result.llm, "scenario stats = sum over llm steps")
+        assertEquals(cost, result.steps[0].llm, "each llm step keeps its own stats")
+        assertEquals(cost, result.steps[1].llm, "the Verify step is the model's too")
+        assertEquals(LlmStats.sum(listOf(cost, cost)), result.llm, "scenario stats = sum over llm steps")
 
         val json = writeResult(result, "llm", h.ops, h.reportDir).readText()
         assertTrue("\"llm\": {" in json && "\"peakPromptTokens\": 9000" in json, json)
-        assertEquals(2, Regex("\"llm\": \\{").findAll(json).count(), "scenario-level + the one llm step; no object on the runner step\n$json")
+        assertEquals(3, Regex("\"llm\": \\{").findAll(json).count(), "scenario-level + one per step\n$json")
     }
 
     @Test
@@ -142,15 +142,15 @@ class RunnerTest {
                 c.tap("웹툰")
                 ScenarioSession.Verdict(true, "tab selected")
             } else {
-                throw AssertionError("anchored Verify must be runner-judged, not reach the LLM")
+                ScenarioSession.Verdict(true, "shown")
             }
         }
 
         val result = h.runner.run(scenario, trace = null, mode = RunMode.LLM)
 
         assertEquals(StepStatus.PASSED, result.status)
-        assertEquals(listOf("llm", "runner"), result.steps.map { it.mode })
-        assertEquals(1, h.executor.calls, "the Verify step must not spend an LLM turn")
+        assertEquals(listOf("llm", "llm"), result.steps.map { it.mode })
+        assertEquals(2, h.executor.calls, "every step is the model's, the Verify step included")
         assertEquals(1, h.ops.setups.size, "setup must run once, by the runner not the model")
 
         val trace = assertNotNull(result.updatedTrace)
@@ -181,28 +181,14 @@ class RunnerTest {
         assertEquals(1, h.executor.calls, "skipped steps must not reach the LLM")
     }
 
-    // ------------------------------------------------------------------ runner verify / criterion
+    // ------------------------------------------------------------------ verify / criterion
 
     @Test
-    fun `anchored Verify FAILS deterministically when the anchor is absent`() {
-        val dev = FakeDevice(screenA)
-        val h = Harness(dev) { _, _ -> throw AssertionError("LLM must not judge an anchored Verify") }
-        val s = scenario.copy(steps = listOf("Verify \"웹툰 홈\" is shown"))
-
-        val result = h.runner.run(s, trace = null, mode = RunMode.LLM)
-
-        assertEquals(StepStatus.FAILED, result.status)
-        assertEquals("runner", result.steps[0].mode)
-        assertTrue("not on screen" in result.steps[0].reason!!, "${result.steps[0].reason}")
-        assertEquals(0, h.executor.calls)
-    }
-
-    @Test
-    fun `Verify without quoted anchor falls back to the LLM`() {
+    fun `a Verify step is judged by the model like any other step`() {
         val dev = FakeDevice(screenB)
         val h = Harness(dev) { _, _ -> ScenarioSession.Verdict(true, "judged by llm") }
         val result = h.runner.run(
-            scenario.copy(steps = listOf("Verify the home screen looks normal")),
+            scenario.copy(steps = listOf("Verify \"웹툰 홈\" is shown")),
             trace = null, mode = RunMode.LLM,
         )
         assertEquals(StepStatus.PASSED, result.status)

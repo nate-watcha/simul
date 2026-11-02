@@ -116,8 +116,7 @@ fun outcomeOf(project: SimulProject, md: File, scenario: Scenario, r: ScenarioRu
         path = scenarioPath(project, md, scenario),
         tags = scenario.tags,
         status = r.status.name,
-        mode = r.steps.firstNotNullOfOrNull { s -> s.mode?.takeIf { it != "runner" } }
-            ?: r.steps.firstNotNullOfOrNull { it.mode },
+        mode = r.steps.firstNotNullOfOrNull { it.mode },
         durationMs = r.durationMs,
         reportDir = reportRel,
         traceUpdated = r.updatedTrace != null,

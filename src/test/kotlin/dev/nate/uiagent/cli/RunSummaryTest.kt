@@ -66,13 +66,13 @@ class RunSummaryTest {
     }
 
     @Test
-    fun `llm record reports mode llm even when Verify steps were runner-judged`() {
+    fun `llm record reports mode llm and the trace update`() {
         val p = project()
         val md = File(p.scenariosDir, "nav/basic.md").apply { writeText("---\nname: nav-basic\n---\n1. a\n2. b\n") }
         val trace = TraceFile("nav-basic", AGENT_VERSION, "5.4.0", emptyList())
         val result = ScenarioRunResult(
             "nav-basic", StepStatus.PASSED,
-            listOf(step(1, StepStatus.PASSED, "runner"), step(2, StepStatus.PASSED, "llm")),
+            listOf(step(1, StepStatus.PASSED, "llm"), step(2, StepStatus.PASSED, "llm")),
             updatedTrace = trace, durationMs = 100,
         )
         val o = outcomeOf(p, md, ScenarioMd.parse(md), result)
@@ -109,7 +109,7 @@ class RunSummaryTest {
         val md = File(p.scenariosDir, "nav/basic.md").apply { writeText("---\nname: nav-basic\n---\n1. a\n2. b\n") }
         val cost = LlmStats(5, 30_000, 120_000, 900, 14_000)
         val recorded = ScenarioRunResult("nav-basic", StepStatus.PASSED,
-            listOf(step(1, StepStatus.PASSED, "llm").copy(llm = cost), step(2, StepStatus.PASSED, "runner")),
+            listOf(step(1, StepStatus.PASSED, "llm").copy(llm = cost), step(2, StepStatus.PASSED, "llm")),
             updatedTrace = null, durationMs = 50_000)
         val replayed = ScenarioRunResult("nav-basic", StepStatus.PASSED,
             listOf(step(1, StepStatus.PASSED, "replay"), step(2, StepStatus.PASSED, "replay")),

@@ -18,7 +18,7 @@ data class StepReport(
     val index: Int,
     val text: String,
     val status: StepStatus,
-    /** "llm", "replay" or "runner"; null for skipped steps. */
+    /** "llm" or "replay"; null for skipped steps. */
     val mode: String?,
     val actions: List<TraceAction>,
     /** Evidence present when the step ended (replay: what the gate found; record: what it extracted). */
@@ -266,10 +266,6 @@ class ScenarioRunner(
 
     private fun runLlmStep(n: Int, text: String): StepReport {
         val spec = StepSpec.parse(text)
-        if (spec.isVerify) {
-            runnerVerifyStep(n, text)?.let { return it }
-            log("  verify has no quoted anchor — falling back to LLM judgment")
-        }
         // record mode keeps the per-action before/after shots: they are what a reviewer of a
         // fresh trace looks at
         val recorder = StepRecorder(n, ::shoot, anchors = quotedLabels(spec.command))
@@ -300,32 +296,6 @@ class ScenarioRunner(
         return StepReport(n, text, status, "llm", recorder.actions.toList(), ev.appeared,
             reason, 0, recorder.screenshots.toList(), stateEvidence = ev.states, llm = verdict.llm,
             marks = recorder.marks.toList(), expectedEvidence = anchors)
-    }
-
-    /**
-     * Verify steps with quoted anchors are judged by the runner itself — replay's predicates
-     * (labelPresent/statePresent) applied at record time, zero LLM turns, nothing appended to
-     * the session. Returns null when the step is not machine-checkable (no quoted anchor);
-     * the caller falls back to the LLM.
-     */
-    private fun runnerVerifyStep(n: Int, text: String): StepReport? {
-        if (controller.currentElements.isEmpty()) {
-            log("  observing initial screen (~1s/dump)…")
-            controller.fullLayout()
-        }
-        var judgment = judgeVerify(text, controller.currentElements) ?: return null
-        if (!judgment.passed) {
-            // the previous action settled, but async content may land after it — poll for the
-            // anchor before declaring it missing (mirrors the Replayer's evidence wait)
-            log("  verify missed (${judgment.reason}) — waiting for it…")
-            controller.waitUntil { judgeVerify(text, it)?.passed == true }
-            judgment = judgeVerify(text, controller.currentElements) ?: return null
-        }
-        val els = controller.currentElements
-        val ev = extractEvidence(text, els, els, controller.volatileKeys)
-        val status = if (judgment.passed) StepStatus.PASSED else StepStatus.FAILED
-        return StepReport(n, text, status, "runner", emptyList(), ev.appeared,
-            judgment.reason, 0, emptyList(), stateEvidence = ev.states, expectedEvidence = quotedLabels(text))
     }
 
     /**
