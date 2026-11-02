@@ -5,8 +5,10 @@ package dev.nate.uiagent.cli
  * dependency (the serialization compiler plugin is deliberately unavailable, see Core.kt).
  *
  * Supported: nested maps by indentation, `key: scalar`, `key: [a, b]` inline lists, quoted
- * scalars, full-line `#` comments, blank lines. Nothing else (anchors, multi-line strings,
- * block lists) — config and frontmatter stay inside this subset by convention.
+ * scalars, `key: |` literal text blocks (the more-indented lines below, joined with newlines —
+ * blank and full-line `#` lines inside are dropped like everywhere else), full-line `#` comments,
+ * blank lines. Nothing else (anchors, folded `>` strings, block lists) — config and frontmatter
+ * stay inside this subset by convention.
  */
 object MiniYaml {
 
@@ -41,6 +43,15 @@ object MiniYaml {
                 val (child, next) = parseBlock(lines, i + 1, childIndent)
                 map[key] = child
                 i = next
+            } else if (rest == "|" || rest == "|-") {
+                // literal block: every following line indented deeper than the key, common indent removed
+                var j = i + 1
+                while (j < lines.size && indentOf(lines[j]) > indent) j++
+                val block = lines.subList(i + 1, j)
+                require(block.isNotEmpty()) { "yaml: '$key: |' has no text block" }
+                val strip = block.minOf(::indentOf)
+                map[key] = block.joinToString("\n") { it.substring(strip) }
+                i = j
             } else {
                 map[key] = scalarOrList(rest)
                 i++

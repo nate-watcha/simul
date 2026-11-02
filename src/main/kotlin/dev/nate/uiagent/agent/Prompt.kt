@@ -29,3 +29,17 @@ Rules:
 6. Keep every reason under 15 words.
 """.trimIndent()
 
+
+/**
+ * The system prompt of one session: the eval-fixed rules above, then what the consumer's
+ * config.yaml says about the app (`context:`) and about the account this scenario runs as
+ * (`states.<appState>`). Both are background for judging what a screen means — the model has no
+ * other way to know it is a non-subscriber looking at a paywall — never expected results; those
+ * stay in the step's `::` clause. Order is by how widely each part is shared (rules → app →
+ * account) so scenarios of one run share the longest prompt prefix for llama.cpp's cache.
+ */
+fun systemPrompt(appContext: String? = null, accountState: String? = null): String = buildString {
+    append(SYSTEM_PROMPT)
+    if (appContext != null) append("\n\nAPP UNDER TEST (background facts, not expected results):\n").append(appContext.trim())
+    if (accountState != null) append("\n\nACCOUNT STATE of this session: ").append(accountState.trim())
+}

@@ -18,7 +18,10 @@ setup:
 - 모든 시나리오는 `appState:` 또는 `clearData: true`를 선언한다. 없으면 결과가 기기의
   현재 상태에 따라 달라진다.
 - 이름과 태그에 전제를 드러낸다: `guest-library-login-prompt`, `tags: [member]`.
-  `simul run --state member-basic`으로 상태별 일괄 실행이 된다.
+- 상태가 **누구인지는 config.yaml `states:`에 한 줄씩** 적는다(`guest: 로그인하지 않은 사용자`, `member: 로그인한 구독 계정`).
+  그 줄이 시나리오의 모델 세션에 ACCOUNT STATE로 들어가, 비구독자가 감상하기에서 구독 화면을 만나는 것을 모델이
+  앱 오류로 오판하지 않게 한다. 앱 전반의 사실(어떤 앱인지, 누가 어떤 월을 만나는지)은 `context: |`에. 둘 다 **사실만** —
+  "떠야 한다"는 스텝의 `::`에 쓴다.
 - 스냅샷 복원은 debuggable 빌드(`run-as`) 전제다. 토큰이 Keystore로 암호화된 앱은
   복원이 깨지므로 로그인된 AVD 스냅샷으로 대체한다.
 - 스냅샷 tar에는 테스트 계정 토큰이 들어간다. 커밋 여부는 팀 보안 기준으로 정하고,

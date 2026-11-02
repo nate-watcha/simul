@@ -90,6 +90,20 @@ class SessionTest {
     }
 
     @Test
+    fun `app context and account state ride on the system prompt after the fixed rules`() {
+        val dev = StaticDevice(screen())
+        val llm = FakeExecutor(tapCall("웹툰"), reportCall())
+        val session = ScenarioSession(llm, controller(dev), appContext = "A subscription OTT app.", accountState = "guest — not signed in")
+        session.runStep("Tap the \"웹툰\" tab", "[LAYOUT]")
+
+        val system = llm.requests[0][0].textContent()
+        assertTrue(system.startsWith(SYSTEM_PROMPT), "the eval-fixed rules stay a byte-identical prefix")
+        assertTrue("APP UNDER TEST" in system && "A subscription OTT app." in system, system)
+        assertTrue(system.endsWith("ACCOUNT STATE of this session: guest — not signed in"), system)
+        assertEquals(SYSTEM_PROMPT, systemPrompt(), "no config → the bare rules")
+    }
+
+    @Test
     fun `text reply without tools fails the step but keeps the conversation intact`() {
         val dev = StaticDevice(screen())
         val llm = FakeExecutor(text("I think I am done"), reportCall())

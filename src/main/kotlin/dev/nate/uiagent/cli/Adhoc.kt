@@ -97,7 +97,7 @@ internal fun adhocCommand(argv: Array<String>, cwd: File): Int {
         val t0 = System.currentTimeMillis()
         val initialLayout = controller.fullLayout()
         val session = ScenarioSession(SimulLlm.executor(url, key), controller, maxIterations,
-            log = { println("  $it") }, model = SimulLlm.model(model))
+            log = { println("  $it") }, model = SimulLlm.model(model), appContext = project?.config?.context)
         val verdict = session.runStep(spec.command, initialLayout, spec.criterion)
         val elapsed = System.currentTimeMillis() - t0
 

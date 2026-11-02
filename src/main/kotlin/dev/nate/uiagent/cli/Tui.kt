@@ -506,7 +506,7 @@ class Tui(private val project: SimulProject) {
         val cfg = project.config
         DeviceStack(cfg.app, scrollLimit = cfg.scrollLimit).use { stack ->
             val controller = stack.controller
-            val session = ScenarioSession(cfg.llm.client(), controller, cfg.maxTurns, model = cfg.llm.llmModel())
+            val session = ScenarioSession(cfg.llm.client(), controller, cfg.maxTurns, model = cfg.llm.llmModel(), appContext = cfg.context)
             val reader = LineReaderBuilder.builder().terminal(terminal).build()
             println("ad-hoc — natural-language commands against the live device. :labels = current screen, :q = back")
             var first = true

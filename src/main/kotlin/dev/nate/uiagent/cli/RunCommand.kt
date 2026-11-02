@@ -177,7 +177,7 @@ internal fun executeScenario(
         // turn lines nest under the runner's step line in the live log
         // replay never builds a client — the key stays optional for CI that only replays
         val executor = SessionStepExecutor(stack.controller, { llm.client() }, llm.llmModel(), project.config.maxTurns,
-            log = { log("    $it") })
+            log = { log("    $it") }, appContext = project.config.context, accountState = project.config.accountState(scenario))
         // The screen recording starts when setup is done (state restored, app cold-started) and
         // spans the steps — the journey itself, not the pm clear and the splash. It stops in
         // `finally`: a crashed run must not leave screenrecord running on the device for the

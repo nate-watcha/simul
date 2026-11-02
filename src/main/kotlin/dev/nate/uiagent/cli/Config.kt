@@ -72,7 +72,25 @@ data class SimulConfig(
     val display: DisplayProfile? = null,
     /** App locale + emulator `settings` pinned for the whole run — the baseline every scenario assumes (see DevicePins). */
     val device: DevicePins = DevicePins.NONE,
+    /**
+     * `context: |` — facts about the app the model cannot see on screen (what kind of app, which
+     * walls a guest or non-subscriber meets, where payment goes). Appended to the system prompt of
+     * every session (see [dev.nate.uiagent.agent.systemPrompt]). Facts, never expectations: "may
+     * meet a subscription wall", not "tapping play must open the wall" — expectations are the
+     * step's `::` clause, and a prompt that already contains them lets a regression pass as normal.
+     */
+    val context: String? = null,
+    /** `states:` — one line per `.simul/states/<name>` describing who that account is; a scenario's session gets its own state's line (none → nothing is sent). */
+    val states: Map<String, String> = emptyMap(),
 ) {
+    /**
+     * The ACCOUNT STATE line for [scenario]'s session: `<state> — <description>` from `states:`,
+     * or null — when the scenario declares no state, and also when `states:` has no line for it
+     * (a bare snapshot name is not background the model can use, so nothing is sent).
+     */
+    fun accountState(scenario: Scenario): String? =
+        scenario.precondition?.let { s -> states[s]?.let { "$s — $it" } }
+
     companion object {
         fun load(file: File, env: (String) -> String? = System::getenv): SimulConfig {
             val y = if (file.isFile) MiniYaml.parse(file.readText()) else emptyMap()
@@ -88,6 +106,10 @@ data class SimulConfig(
                     MiniYaml.string(y, "display", "density"),
                 ),
                 device = DevicePins.parse(y["device"], "config.yaml"),
+                context = MiniYaml.string(y, "context")?.trim()?.ifEmpty { null },
+                states = (y["states"] as? Map<*, *>)?.entries
+                    ?.mapNotNull { (k, v) -> (v as? String)?.let { (k as String) to it.trim() } }
+                    ?.toMap() ?: emptyMap(),
             )
         }
     }

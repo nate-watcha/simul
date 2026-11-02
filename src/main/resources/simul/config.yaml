@@ -11,6 +11,14 @@ defaults:
   scrollLimit: 3
 display:
   sizeClass: small   # small=720x1280@320(360dp) | medium(640dp) | large(1066dp)
+# context: |         # what the model cannot see on screen — appended to every session's system prompt.
+#   A subscription video app. Guests and non-subscribers may meet a login or subscription
+#   wall on play, library and comments; payment goes to the Google Play sheet.
+#                    # Facts only. Never "tapping play must open the wall": expectations belong
+#                    # to a step's `::` clause — written here they let a regression pass as normal.
+# states:            # who each `.simul/states/<name>` is — the scenario's own line joins its prompt
+#   guest: not signed in
+#   member: signed in, subscribed
 # device:            # what every scenario assumes of the device (a scenario that needs the opposite declares the same block under its own `setup:`)
 #   locale: ko-KR    # the app's language (Android 13+ per-app locale, `cmd locale set-app-locales`) — set in each setup after the
 #                    # pm clear that wipes it, restored when the scenario ends; the system language is never touched

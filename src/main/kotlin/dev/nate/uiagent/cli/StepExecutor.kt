@@ -38,12 +38,15 @@ class SessionStepExecutor(
     private val model: LLModel = SimulLlm.model(),
     private val maxIterations: Int = Defaults.MAX_TURNS,
     private val log: (String) -> Unit = {},
+    /** System-prompt background for the session: config `context:` and this scenario's account state (see [dev.nate.uiagent.agent.systemPrompt]). */
+    private val appContext: String? = null,
+    private val accountState: String? = null,
 ) : StepExecutor {
 
     private var session: ScenarioSession? = null
 
     override fun runStep(stepText: String, initialLayout: String?, criterion: String?): ScenarioSession.Verdict {
-        val s = session ?: ScenarioSession(executor(), controller, maxIterations, log, model)
+        val s = session ?: ScenarioSession(executor(), controller, maxIterations, log, model, appContext = appContext, accountState = accountState)
             .also { session = it }
         return s.runStep(stepText, initialLayout, criterion)
     }
