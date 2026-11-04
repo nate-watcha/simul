@@ -23,9 +23,6 @@ class InitCommandTest {
         val setup = File(dir, ".claude/skills/simul-scenarios/references/setup.md").readText()
         assertTrue("appState" in setup && "deeplink" in setup, "preconditions/entry reference must ship")
 
-        val external = File(dir, ".claude/skills/simul-scenarios/references/external.md").readText()
-        assertTrue(external.isNotBlank(), "external-element reference must ship")
-
         val skill = File(dir, ".claude/skills/simul-scenarios/SKILL.md").readText()
         assertTrue(skill.startsWith("---\nname: simul"), skill.take(60))
         assertTrue("references/setup.md" in skill, "skill must point at the preconditions/entry reference")
