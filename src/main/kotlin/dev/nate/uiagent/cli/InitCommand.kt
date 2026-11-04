@@ -5,8 +5,8 @@ import java.io.File
 /**
  * `simul init [--app <package>]` — scaffold the `.simul/` convention in a target app repo: the
  * config template, the scenarios dir, and the Claude Code skill (SKILL.md — the scenario-authoring
- * guide — plus `references/setup.md` (preconditions/entry) and `references/external.md`
- * (external-element catalogue)) so agent sessions in that repo write scenarios by the book.
+ * guide — plus `references/setup.md` (preconditions and entry)) so agent sessions in that repo
+ * write scenarios by the book.
  * Never overwrites existing files — rerunning after a simul upgrade refreshes only what is
  * missing (delete a doc to refresh it).
  */
@@ -33,7 +33,6 @@ internal fun initCommand(args: List<String>, cwd: File): Int {
         File(cwd, ".simul/config.yaml") to config,
         File(cwd, ".claude/skills/simul-scenarios/SKILL.md") to resource("SKILL.md"),
         File(cwd, ".claude/skills/simul-scenarios/references/setup.md") to resource("setup.md"),
-        File(cwd, ".claude/skills/simul-scenarios/references/external.md") to resource("external.md"),
     )
     File(cwd, ".simul/scenarios").mkdirs()
     for ((file, content) in files) {
