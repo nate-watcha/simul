@@ -48,6 +48,8 @@ class AdbDevice(
     private val androidBin: String = "android",
     private val onCommand: (List<String>) -> Unit = {},
     private val retryDelayMs: Long = 1000L,
+    /** A dump's idle wait ran out and the dump is asked again: how long the refused attempt took ([DeviceMeter.idleRefused]). */
+    private val onIdleRefused: (Long) -> Unit = {},
     private val run: (List<String>) -> String = { runProcess(it) },
 ) : Device {
 
@@ -101,10 +103,12 @@ class AdbDevice(
 
     private fun layoutDump(argv: List<String>): String {
         onCommand(argv)
+        val t0 = System.currentTimeMillis()
         return try {
             run(argv)
         } catch (ex: ProcessFailure) {
             if (NO_IDLE_MARKER !in ex.stderr || "--no-idle" in argv) throw ex
+            onIdleRefused(System.currentTimeMillis() - t0)
             restless = true
             val noIdle = argv + "--no-idle"
             onCommand(noIdle)

@@ -25,6 +25,13 @@ interface DeviceOps {
      */
     fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?, locale: String? = null): String?
 
+    /**
+     * How the last [setup] spent its time, phase by phase in order (`restore`, `locale`, `launch`,
+     * `fully drawn wait`) — setup is paid once per scenario and per phase of a nightly (8s × 78 runs
+     * of a 71-minute batch), and its one number could not say which part to look at.
+     */
+    val setupPhases: List<Pair<String, Long>> get() = emptyList()
+
     /** Capture a PNG screenshot into [dest]; false if capture failed (non-fatal). */
     fun screenshot(dest: File): Boolean
 
@@ -80,7 +87,19 @@ class AdbOps(
     private val statesDir: File? = null,
 ) : DeviceOps {
 
+    override var setupPhases: List<Pair<String, Long>> = emptyList()
+        private set
+
     override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?, locale: String?): String? {
+        val phases = mutableListOf<Pair<String, Long>>()
+        var mark = System.currentTimeMillis()
+        fun phase(name: String) {
+            val now = System.currentTimeMillis()
+            if (now - mark > 0) phases += name to now - mark
+            mark = now
+            setupPhases = phases.toList()
+        }
+        setupPhases = emptyList()
         if ((clearData || appState != null) && app != null) {
             runCatching { runProcess(listOf(adbBin, "shell", "am", "force-stop", app)) }
             runProcess(listOf(adbBin, "shell", "pm", "clear", app))
@@ -103,8 +122,10 @@ class AdbOps(
             runProcess(listOf(adbBin, "shell", "run-as", app, "sh", "-c", "'tar xf /data/local/tmp/simul-state.tar'"))
             runCatching { runProcess(listOf(adbBin, "shell", "rm", "/data/local/tmp/simul-state.tar")) }
         }
+        phase("restore")
         // after the clear (which wipes it), before the launch (so the first frame is already in it)
         if (locale != null && app != null) setAppLocales(app, locale)
+        phase("locale")
         fun start() {
             if (launch && app != null) {
                 // cold start: kill, then fire the launcher intent; give the splash a head start
@@ -127,8 +148,9 @@ class AdbOps(
             }
         }
         start()
+        phase("launch")
         if (app == null || !(launch || deeplink != null)) return null
-        return awaitFullyDrawn(app, ::start)
+        return awaitFullyDrawn(app, ::start).also { phase("fully drawn wait") }
     }
 
     /**

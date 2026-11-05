@@ -62,6 +62,7 @@ internal abstract class DeviceTool<A>(
 
     final override suspend fun execute(args: A): String {
         val t0 = System.currentTimeMillis()
+        val cost0 = ctx.controller.meter.cost
         val criterion = ctx.gate.pendingCriterion
         var note = ""
         val result = if (criterion != null && isVerdict) {
@@ -77,7 +78,9 @@ internal abstract class DeviceTool<A>(
             }
             r
         }
-        ctx.log.tool(describe(args) + " " + secs(System.currentTimeMillis() - t0) + resultFlag(result) + note)
+        // a tool's time is its observations and the recorder's screenshots, rarely the gesture
+        val cost = (ctx.controller.meter.cost - cost0).brief().takeIf { it.isNotEmpty() }?.joinToString(", ", " [", "]") ?: ""
+        ctx.log.tool(describe(args) + " " + secs(System.currentTimeMillis() - t0) + cost + resultFlag(result) + note)
         return result
     }
 

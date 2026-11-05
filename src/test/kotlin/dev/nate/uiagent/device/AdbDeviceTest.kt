@@ -29,7 +29,8 @@ class AdbDeviceTest {
         // The settle loop re-dumps one screen up to 8 times; each paid the CLI's 3s idle wait
         // before its re-request — 33s per landing on the pedia home (stone run 41992964956).
         val calls = mutableListOf<List<String>>()
-        val device = AdbDevice(onCommand = calls::add, retryDelayMs = 0) { argv ->
+        var refused = 0
+        val device = AdbDevice(onCommand = calls::add, retryDelayMs = 0, onIdleRefused = { refused++ }) { argv ->
             when {
                 argv.first() == "adb" -> ""
                 "--no-idle" in argv -> dump
@@ -43,6 +44,7 @@ class AdbDeviceTest {
         device.tap(5, 5)
         device.observe()
         assertEquals(listOf(idle, noIdle, noIdle, listOf("adb", "shell", "input", "tap", "5", "5"), idle, noIdle), calls)
+        assertEquals(2, refused, "each refused idle wait is reported as lost time")
     }
 
     @Test

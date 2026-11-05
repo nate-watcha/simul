@@ -60,9 +60,9 @@ data class LlmStats(
 }
 
 /**
- * Live per-turn log line: `turn N: llm 1.2s [9.1k→45 tok] → tap(보관함) 0.3s, report(PASSED) 0.1s`.
+ * Live per-turn log line: `turn N: llm 1.2s [9.1k→45 tok] → tap(보관함) 5.2s [observe 3.4s/2 dumps, screenshots 1.3s/2], report(PASSED) 0.0s`.
  * LLM timing comes from Koog's EventHandler, token counts from the response's usage metadata,
- * tool parts from the tools themselves; a line is flushed when the next LLM call starts, or at
+ * tool parts — with what each call cost on the device — from the tools themselves; a line is flushed when the next LLM call starts, or at
  * the end of the step. The same hooks accumulate the step's [LlmStats].
  */
 internal class TurnLog(private val sink: (String) -> Unit) {

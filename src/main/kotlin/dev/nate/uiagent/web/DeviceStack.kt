@@ -6,6 +6,7 @@ import dev.nate.uiagent.device.ActionListener
 import dev.nate.uiagent.device.AdbDevice
 import dev.nate.uiagent.device.Device
 import dev.nate.uiagent.device.DeviceController
+import dev.nate.uiagent.device.DeviceMeter
 
 /**
  * The live device as the harness sees it: `android layout` + `adb shell input` ([AdbDevice]),
@@ -22,10 +23,14 @@ class DeviceStack(
     device: Device? = null,
 ) : AutoCloseable {
     private val cdp = CdpClient()
+    private val meter = DeviceMeter()
 
     val controller: DeviceController = DeviceController(
         device = device ?: WebAwareDevice(
-            AdbDevice(onCommand = { argv -> trace.event("exec") { it["argv"] = argv.joinToString(" ") } }),
+            AdbDevice(
+                onCommand = { argv -> trace.event("exec") { it["argv"] = argv.joinToString(" ") } },
+                onIdleRefused = meter::idleRefused,
+            ),
             cdp,
             app,
         ),
@@ -33,6 +38,7 @@ class DeviceStack(
         maxScrollRounds = scrollLimit,
         listener = listener,
         app = app,
+        meter = meter,
     )
 
     override fun close() = cdp.close()

@@ -81,6 +81,8 @@ internal fun adhocCommand(argv: Array<String>, cwd: File): Int {
         val controller = stack.controller
         if (dumpLayout) {
             println(controller.fullLayout())
+            // what an observation costs on this machine and screen — stderr, the layout alone is the output
+            controller.meter.cost.observed()?.let { System.err.println(it) }
             return 0
         }
         if (positional.isEmpty()) return err("missing COMMAND")
@@ -108,6 +110,7 @@ internal fun adhocCommand(argv: Array<String>, cwd: File): Int {
         }
         println("${if (verdict.passed) "PASSED" else "FAILED"}: ${verdict.reason}  (${elapsed}ms)")
         verdict.llm?.let { println(it.summary(totalMs = elapsed)) }
+        controller.meter.cost.parts().takeIf { it.isNotEmpty() }?.let { println("device ${it.joinToString(" · ")}") }
         return if (verdict.passed) 0 else 1
     }
 }

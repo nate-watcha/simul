@@ -39,6 +39,22 @@ class DeviceControllerTest {
     }
 
     @Test
+    fun `a settle that never finds two equal frames is counted - every poll's dump and the loop that ran out`() {
+        // stone run 41992964956: the pedia home changed on every poll, each first observation cost
+        // 8 dumps, and the log had nothing but a 33s gap to show for it
+        val restless = FakeDevice(*(1..9).map { layout(el("배너 $it")) }.toTypedArray())
+        val c = controller(restless)
+        c.fullLayout()
+        assertEquals(8, c.meter.cost.dumps)
+        assertEquals(1, c.meter.cost.unsettled)
+
+        val still = controller(FakeDevice(layout(el("홈"))))
+        still.fullLayout()
+        assertEquals(2, still.meter.cost.dumps)
+        assertEquals(0, still.meter.cost.unsettled)
+    }
+
+    @Test
     fun `a tap on another package's window releases the automation client first - in-app taps do not`() {
         // Google Play's purchase sheet ignores "Subscribe" while the layout server's UiAutomation
         // is connected (실측 2026-10-19); taps inside the app keep the server warm.

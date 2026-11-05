@@ -135,6 +135,29 @@ class RunnerTest {
     }
 
     @Test
+    fun `the result accounts for the device time of its steps and the log says what the first observation cost`() {
+        val dev = FakeDevice(screenA, screenA, screenB, screenB)
+        val listener = SwitchableListener()
+        val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
+        val log = mutableListOf<String>()
+        val executor = ScriptedExecutor { text ->
+            if (text.startsWith("Tap")) controller.tap("웹툰")
+            ScenarioSession.Verdict(true, "ok")
+        }
+        val runner = ScenarioRunner(controller, listener, FakeOps(), executor, tempDir(), app = "com.example", log = log::add)
+
+        val result = runner.run(scenario, trace = null, mode = RunMode.LLM)
+
+        assertEquals(4, result.device.dumps, "first observation (2) + the tap's settle (2)")
+        assertEquals(1, result.device.gestures)
+        assertTrue(log.any { it.trim().startsWith("first observation") && "2 dumps" in it }, log.joinToString("\n"))
+        assertTrue(log.any { "step 1: PASSED" in it && "observe" in it && "4 dumps" in it }, log.joinToString("\n"))
+        // one line for the whole run: every measured part, and the remainder so the parts add up
+        val line = timeLine(10_000, listOf(result.copy(setupMs = 2_000, wallMs = 9_000, durationMs = 8_000)))
+        assertTrue(line.startsWith("time 10.0s = setup 20% 2.0s") && "4 dumps" in line && "wrap-up 10% 1.0s" in line && "other" in line, line)
+    }
+
+    @Test
     fun `llm mode records a trace when all steps pass`() {
         val dev = FakeDevice(screenA, screenA, screenB, screenB)
         val h = Harness(dev) { c, text ->

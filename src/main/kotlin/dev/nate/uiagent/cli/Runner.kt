@@ -8,6 +8,7 @@ import dev.nate.uiagent.Point
 import dev.nate.uiagent.agent.LlmStats
 import dev.nate.uiagent.secs
 import dev.nate.uiagent.device.DeviceController
+import dev.nate.uiagent.device.DeviceCost
 import java.io.File
 
 enum class RunMode { LLM, REPLAY, AUTO }
@@ -63,6 +64,12 @@ data class ScenarioRunResult(
     val reportDir: File? = null,
     /** Screen recording of the run (`replay.mp4`), set by the CLI when `--video` was given. */
     val video: VideoInfo? = null,
+    /** How much of [durationMs] was setup (state restore, launch, the wait for the app's fully-drawn signal). */
+    val setupMs: Long = 0,
+    /** What the steps cost on the device: observations, pauses, gestures, screenshots ([timeLine]). */
+    val device: DeviceCost = DeviceCost(),
+    /** The scenario's whole wall time, [durationMs] plus what the CLI did around it (stopping the recording, logcat, result.json, the trace). */
+    val wallMs: Long = 0,
 ) {
     val passed get() = status == StepStatus.PASSED
 
@@ -131,6 +138,8 @@ class ScenarioRunner(
         pinned: MutableList<SettingChange>, localeReplaced: (String) -> Unit,
     ): ScenarioRunResult {
         val t0 = System.currentTimeMillis()
+        val cost0 = controller.meter.cost
+        var setupMs = 0L
 
         // A broken setup (bad deeplink, adb hiccup) fails THIS scenario — it must never kill
         // the process and take the rest of a --all batch with it.
@@ -155,7 +164,8 @@ class ScenarioRunner(
                 log("  setup: $what")
                 val s = System.currentTimeMillis()
                 val drawn = ops.setup(app, appState = it.appState, clearData = it.clearData, launch = it.launch, deeplink = it.deeplink, locale = wantLocale)
-                log("  setup: done (${secs(System.currentTimeMillis() - s)}${drawn?.let { d -> ", app fully drawn $d" } ?: ""})")
+                val phases = ops.setupPhases.takeIf { p -> p.isNotEmpty() }?.joinToString(" · ", " = ") { (name, ms) -> "$name ${secs(ms)}" } ?: ""
+                log("  setup: done (${secs(System.currentTimeMillis() - s)}$phases${drawn?.let { d -> ", app fully drawn $d" } ?: ""})")
                 if (drawn == null && app != null && (it.launch || it.deeplink != null)) {
                     // The first observation may then catch a splash (an ad interstitial was
                     // grounded as the scroll container, 실측) — the fix is in the app's entry screen.
@@ -163,6 +173,7 @@ class ScenarioRunner(
                         "the destination activity should call reportFullyDrawn() on its first frame (only the first call per launch counts)")
                 }
             }
+            setupMs = System.currentTimeMillis() - t0
             onSetupDone()
         } catch (ex: Exception) {
             val why = "setup failed: ${ex.message?.lineSequence()?.firstOrNull() ?: ex.toString()}"
@@ -206,6 +217,7 @@ class ScenarioRunner(
             }
             log("  step $n/${scenario.steps.size}: $text")
             val s0 = System.currentTimeMillis()
+            val stepCost0 = controller.meter.cost
             val report = try {
                 when (mode) {
                     RunMode.LLM -> runLlmStep(n, text)
@@ -228,7 +240,7 @@ class ScenarioRunner(
                 done = done.copy(screen = screenLabels(controller.currentElements))
             }
             reports += done
-            log("  step $n: ${renderResult(done)}")
+            log("  step $n: ${renderResult(done, controller.meter.cost - stepCost0)}")
             if (done.status == StepStatus.FAILED) failedAt = n
             else {
                 if (done.mode == "replay" && n in coordDirtySteps) coordDirty = true
@@ -248,12 +260,18 @@ class ScenarioRunner(
         return ScenarioRunResult(
             scenario.name, status, reports, updatedTrace,
             System.currentTimeMillis() - t0, startedAtMs = t0,
+            setupMs = setupMs, device = controller.meter.cost - cost0,
         )
     }
 
-    /** One step's result line, e.g. `PASSED (replay, 7.2s)` or `FAILED (llm, 41s) — reason`. */
-    private fun renderResult(s: StepReport): String =
-        "${s.status}${s.mode?.let { " ($it, ${secs(s.durationMs)}${llmShare(s)})" } ?: ""}${s.reason?.let { " — $it" } ?: ""}"
+    /**
+     * One step's result line with where its time went, e.g. `PASSED (replay, 7.2s, observe 5.9s/4 dumps)`
+     * or `FAILED (llm, 41s, llm 5.4s/2 calls, observe 33.1s/10 dumps (idle wait refused 8× 24.3s, 1 settle ran out), screenshots 1.9s/3) — reason`.
+     */
+    private fun renderResult(s: StepReport, cost: DeviceCost): String {
+        val device = cost.brief().joinToString("") { ", $it" }
+        return "${s.status}${s.mode?.let { " ($it, ${secs(s.durationMs)}${llmShare(s)}$device)" } ?: ""}${s.reason?.let { " — $it" } ?: ""}"
+    }
 
     /** `, llm 12.3s/3 calls` — how much of an llm step was the model (the rest is device time). */
     private fun llmShare(s: StepReport): String =
@@ -272,7 +290,7 @@ class ScenarioRunner(
         listener.delegate = recorder
         // The session carries the screen state across steps via each action's diff, so a fresh
         // full observation (and its ~1k prompt tokens) is only needed at conversation start.
-        val initial = if (controller.currentElements.isEmpty()) controller.fullLayout() else null
+        val initial = if (controller.currentElements.isEmpty()) firstObservation() else null
         val before = controller.currentElements
         val verdict = llm.runStep(spec.command, initial, spec.criterion)
         listener.delegate = null
@@ -321,10 +339,7 @@ class ScenarioRunner(
         val replay = try {
             // Re-observe only when there is no grounding yet (scenario start). Between steps
             // the previous action already observed — an observation costs seconds on-device.
-            if (controller.currentElements.isEmpty()) {
-                log("  observing initial screen (~1s/dump)…")
-                controller.fullLayout()
-            }
+            if (controller.currentElements.isEmpty()) firstObservation()
             replayer.replayStep(ts)
         } finally {
             controller.fastObserve = false
@@ -353,13 +368,27 @@ class ScenarioRunner(
         return ts.copy(actions = actions)
     }
 
+    /**
+     * The scenario's first look at the screen, with its own log line: nothing else runs before the
+     * first model call, so a landing screen that will not settle shows here and nowhere else — 33s
+     * of a 45s step, visible only as a gap between two timestamps (stone run 41992964956).
+     */
+    private fun firstObservation(): String {
+        val before = controller.meter.cost
+        val t0 = System.currentTimeMillis()
+        return controller.fullLayout().also {
+            val cost = controller.meter.cost - before
+            log("    first observation ${secs(System.currentTimeMillis() - t0)}${cost.observed()?.let { o -> " — $o" } ?: ""}")
+        }
+    }
+
     /** `01`, `02`, … — step numbers as file names sort. */
     private fun nn(n: Int) = n.toString().padStart(2, '0')
 
     private fun shoot(name: String): String? {
         if (!takeScreenshots) return null
         val rel = if (name.startsWith("steps/")) "$name.png" else "screenshots/$name.png"
-        return if (ops.screenshot(File(reportDir, rel))) rel else null
+        return controller.meter.timed(controller.meter::shot) { if (ops.screenshot(File(reportDir, rel))) rel else null }
     }
 
     private fun saveLayout(n: Int): String? {

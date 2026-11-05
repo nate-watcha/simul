@@ -24,8 +24,18 @@ class DeviceController(
     private val listener: ActionListener? = null,
     /** Package of the app under test; null = unknown (every screen then counts as the app's). */
     private val app: String? = null,
+    /** Where the device time of this controller's run is accounted (see [DeviceCost]). */
+    val meter: DeviceMeter = DeviceMeter(),
 ) {
     private var grounding: LogicalLayout? = null
+
+    /** One observation, timed: [fast] is the dump without the CLI's idle wait ([Device.observeFast]). */
+    private fun dump(fast: Boolean = false): LogicalLayout =
+        meter.timed(meter::dump) { if (fast) device.observeFast() else device.observe() }
+
+    private fun pause(ms: Long) = meter.timed(meter::waited) { device.sleep(ms) }
+
+    private fun gesture(act: () -> Unit) = meter.timed(meter::gesture, act)
 
     /**
      * Single-dump observations: skip the "two identical consecutive observations" settle
@@ -72,19 +82,29 @@ class DeviceController(
      * auto-changing content (carousels) and get suppressed from future diffs.
      */
     private fun stabilize(): LogicalLayout {
-        if (fastObserve) return device.observeFast()
-        var prev = device.observe()
-        repeat(maxSettlePolls) {
-            device.sleep(settleIntervalMs)
-            val next = device.observe()
-            if (signature(next.elements) == signature(prev.elements)) return next
+        if (fastObserve) return dump(fast = true)
+        val t0 = System.currentTimeMillis()
+        var prev = dump()
+        repeat(maxSettlePolls) { poll ->
+            pause(settleIntervalMs)
+            val next = dump()
+            if (signature(next.elements) == signature(prev.elements)) return next.also { settled(poll + 2, t0, true) }
             val churn = computeDiff(prev.elements, next.elements)
             (churn.added + churn.removed + churn.changed).forEach { e ->
                 churnCounts.merge(diffKey(e), 1, Int::plus)
             }
             prev = next
         }
+        // the frame handed on is one of a screen still changing — and the loop cost every poll it had
+        meter.unsettled()
+        settled(maxSettlePolls + 1, t0, false)
         return prev
+    }
+
+    private fun settled(dumps: Int, t0: Long, settled: Boolean) = trace.event("settle") {
+        it["dumps"] = dumps.toString()
+        it["ms"] = (System.currentTimeMillis() - t0).toString()
+        it["settled"] = settled.toString()
     }
 
     /** Settle after an action, diff against the previous grounding, advance the grounding. */
@@ -196,8 +216,10 @@ class DeviceController(
      */
     private fun userTap(e: LogicalElement) {
         val pkgs = grounding?.packages
-        if (app != null && pkgs != null && pkgs.isNotEmpty() && app !in pkgs) device.releaseAutomation()
-        device.tap(e.center.x, e.center.y)
+        gesture {
+            if (app != null && pkgs != null && pkgs.isNotEmpty() && app !in pkgs) device.releaseAutomation()
+            device.tap(e.center.x, e.center.y)
+        }
     }
 
     /**
@@ -238,9 +260,9 @@ class DeviceController(
                     return@traced "ERROR: '${handleOf(r.element)}' is not focusable; cannot type into it."
                 lastResolved = r.element
                 userTap(r.element)
-                device.sleep(300)
+                pause(300)
                 try {
-                    device.inputText(text, r.element.resourceId.takeIf { r.element.origin == Origin.NATIVE })
+                    gesture { device.inputText(text, r.element.resourceId.takeIf { r.element.origin == Origin.NATIVE }) }
                 } catch (ex: ProcessFailure) {
                     val why = ex.stderr.trim().lineSequence().firstOrNull { it.isNotBlank() } ?: "input failed"
                     return@traced "ERROR: could not type into '${handleOf(r.element)}': $why"
@@ -268,7 +290,7 @@ class DeviceController(
                     return "ERROR: '${handleOf(r.element)}' is not scrollable."
                 val all = grounding?.elements ?: emptyList()
                 val c = SwipeGeometry.swipeCoords(r.element, direction, all)
-                device.swipe(c[0], c[1], c[2], c[3], SwipeGeometry.SWIPE_DURATION_MS)
+                gesture { device.swipe(c[0], c[1], c[2], c[3], SwipeGeometry.SWIPE_DURATION_MS) }
                 null
             }
         }
@@ -303,15 +325,15 @@ class DeviceController(
         }
 
     fun back(): String = traced("back") {
-        device.keyBack()
+        gesture { device.keyBack() }
         "Pressed back.\n" + settleAndDiff("back")
     }
 
     fun waitForChange(): String = traced("waitForChange") {
         val before = grounding ?: return@traced fullLayout()
         for (i in 1..maxSettlePolls) {
-            device.sleep(settleIntervalMs)
-            val now = device.observe()
+            pause(settleIntervalMs)
+            val now = dump()
             if (signature(now.elements) != signature(before.elements)) {
                 val settled = stabilize()
                 grounding = settled
@@ -339,9 +361,9 @@ class DeviceController(
         var polls = 0
         var met = false
         while (polls < maxSettlePolls && !met) {
-            device.sleep(settleIntervalMs)
+            pause(settleIntervalMs)
             polls++
-            val now = if (fastObserve) device.observeFast() else device.observe()
+            val now = dump(fast = fastObserve)
             grounding = now
             met = condition(now.elements)
         }

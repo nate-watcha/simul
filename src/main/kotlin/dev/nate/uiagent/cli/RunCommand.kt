@@ -2,8 +2,11 @@ package dev.nate.uiagent.cli
 
 import dev.nate.uiagent.Trace
 import dev.nate.uiagent.device.AdbOps
+import dev.nate.uiagent.device.DeviceCost
 import dev.nate.uiagent.device.DeviceOps
+import dev.nate.uiagent.humanDuration
 import dev.nate.uiagent.runProcess
+import dev.nate.uiagent.secs
 import dev.nate.uiagent.web.DeviceStack
 import java.io.File
 import java.text.SimpleDateFormat
@@ -107,6 +110,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     var anyFailed = false
     var anyRan = false
     val outcomes = mutableListOf<ScenarioOutcome>()
+    val results = mutableListOf<ScenarioRunResult>()
     val batchStart = System.currentTimeMillis()
     val startedAt = RunSummaryJson.stamp(batchStart)
 
@@ -125,11 +129,14 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
             }
             val r = batch.run(md, scenario, mode, llm, video)
             outcomes += r.outcome
+            r.result?.let { results += it }
             if (r.outcome.status != "SKIPPED") anyRan = true
             if (r.outcome.status == "FAILED" || r.outcome.status == "CRASH") anyFailed = true
             if (thenReplay && r.outcome.passed) {
-                val replayed = batch.run(md, scenario, RunMode.REPLAY, llm, video).outcome
+                val replay = batch.run(md, scenario, RunMode.REPLAY, llm, video)
+                val replayed = replay.outcome
                 outcomes += replayed
+                replay.result?.let { results += it }
                 if (!replayed.passed) anyFailed = true
             }
         }
@@ -137,6 +144,8 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
 
     if (!anyRan && !dryRun) println("warning: no scenario was executed (all skipped)")
     if (outcomes.size > 1) recap(outcomes).forEach(::println)
+    // where the batch's time went, summed over its scenarios — the line to read before any single run's
+    if (results.size > 1) println(timeLine(System.currentTimeMillis() - batchStart, results, ::humanDuration))
     if (!dryRun && (summaryPath != null || runsDir != null)) {
         val ended = System.currentTimeMillis()
         val summary = RunSummary(
@@ -187,6 +196,26 @@ internal fun recap(outcomes: List<ScenarioOutcome>): List<String> = buildList {
     }
 }
 
+/**
+ * Where a stretch of wall time went, each part with its share:
+ * `time 106.0s = setup 7% 7.6s · llm 26% 27.5s · observe 39% 41.0s/38 dumps (idle wait refused 2× 6.1s,
+ * 1 settle ran out) · waits 6% 6.2s · gestures 2% 2.1s/9 · screenshots 12% 12.3s/24 · wrap-up 2% 2.1s · other 7% 7.2s`.
+ * `wrap-up` is what follows a scenario's last step (stopping the recording, the logcat dump,
+ * result.json, the trace); `other` is the rest of [wallMs] — the runner's own work between the
+ * measured parts and, for a batch, whatever ran between scenarios.
+ */
+internal fun timeLine(wallMs: Long, runs: List<ScenarioRunResult>, time: (Long) -> String = ::secs): String {
+    val share = { ms: Long -> if (wallMs > 0) "${ms * 100 / wallMs}% " else "" }
+    fun part(name: String, ms: Long) = if (ms > 0) "$name ${share(ms)}${time(ms)}" else null
+    val setup = runs.sumOf { it.setupMs }
+    val llm = runs.sumOf { it.llm?.durationMs ?: 0 }
+    val device = runs.fold(DeviceCost()) { sum, r -> sum + r.device }
+    val wrapUp = runs.sumOf { (it.wallMs - it.durationMs).coerceAtLeast(0) }
+    val parts = listOfNotNull(part("setup", setup), part("llm", llm)) + device.parts(time, share) +
+        listOfNotNull(part("wrap-up", wrapUp), part("other", wallMs - setup - llm - device.totalMs - wrapUp))
+    return "time ${time(wallMs)} = ${parts.joinToString(" · ")}"
+}
+
 internal fun executeScenario(
     project: SimulProject,
     md: File,
@@ -200,6 +229,7 @@ internal fun executeScenario(
     video: Boolean = false,
     runsDir: File? = null,
 ): ScenarioRunResult {
+    val t0 = System.currentTimeMillis()
     val reportDir = if (runsDir != null) ReportDirs.inRuns(runsDir, project, md, scenario)
                     else ReportDirs.create(project.reportsDir, scenario.name)
 
@@ -264,7 +294,9 @@ internal fun executeScenario(
             log("  trace recorded: ${traceFile.path}")
         }
     }
-    return full
+    val timed = full.copy(wallMs = System.currentTimeMillis() - t0)
+    log("  ${timeLine(timed.wallMs, listOf(timed))}")
+    return timed
 }
 
 /**
