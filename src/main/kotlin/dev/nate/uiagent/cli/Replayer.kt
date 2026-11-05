@@ -19,7 +19,8 @@ import dev.nate.uiagent.device.syntheticHandle
  * or a screen still loading. Replay knows what it is waiting for — the action's target, the
  * step's evidence — so a miss polls with [DeviceController.waitUntil] for exactly that and
  * continues on the first frame that has it; only a miss that outlasts the poll budget is
- * Broken. No "two identical frames" settle anywhere on the replay path.
+ * Broken. No "two identical frames" settle of the screen anywhere on the replay path — the one
+ * thing that must hold still is the element about to be tapped ([steady]).
  */
 class Replayer(
     private val controller: DeviceController,
@@ -103,7 +104,7 @@ class Replayer(
         return when (action.tool) {
             "tap", "type" -> {
                 val target = action.target ?: return Broken(index, "trace action has no target")
-                val grounded = ground(target)
+                val grounded = ground(target)?.let { steady(target, it) }
                     ?: return Broken(index, "cannot re-ground target (resourceId=${target.resourceId}, label=${target.label})")
                 if (grounded.usedCoords) coordUpdates[index] = grounded.element.center
                 val handle = grounded.handle
@@ -127,6 +128,30 @@ class Replayer(
             "waitForChange" -> guard(controller.waitForChange())
             else -> Broken(index, "unknown tool '${action.tool}' in trace")
         }
+    }
+
+    /**
+     * The grounding to tap: [first] when the target sits where it was recorded, otherwise the first
+     * re-grounding that finds it there or where the poll before left it. A fast observation taken
+     * while a screen slides in grounds the target at the coordinates of that instant, and the tap
+     * goes to where the element no longer is — "프로필 수정" grounded at x=-22 on a profile screen
+     * still 192px short of its place, the tap landed off-screen and the step broke on the evidence
+     * of a screen that never opened (stone edit-link-save 2026-11-05, 5 of 9 replay failures that
+     * day). A target at its recorded place costs nothing; one that has legitimately moved (content
+     * above it grew, a scroll stopped elsewhere) costs one observation. A target still moving when
+     * the poll budget runs out is tapped where it was last seen, as before.
+     */
+    private fun steady(t: TraceTarget, first: Grounded): Grounded? {
+        val recorded = t.lastCoords ?: return first
+        if (first.element.center == recorded) return first
+        var last: Grounded? = first
+        controller.waitUntil {
+            val now = ground(t)
+            val still = now != null && (now.element.center == recorded || now.element.center == last?.element?.center)
+            last = now
+            still
+        }
+        return last
     }
 
     // ------------------------------------------------------------------ grounding

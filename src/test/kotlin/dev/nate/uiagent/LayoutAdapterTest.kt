@@ -63,6 +63,21 @@ class LayoutAdapterTest {
     }
 
     @Test
+    fun `a selected tab is not a duplicate of a clickable elsewhere that shares its label`() {
+        // stone owner-home-layout 2026-11-05: the in-page "홈" tab (selected, so not clickable)
+        // vanished because the bottom nav has a clickable "홈"
+        val tabs = """
+        [
+          {"text":"홈","interactions":["focusable"],"state":["selected"],"center":"[78,956]","bounds":"[30,910][126,1002]","resource-id":"mywatcha_tab_home"},
+          {"content-desc":"홈","interactions":["clickable","focusable"],"center":"[72,1176]","bounds":"[0,1120][144,1232]","resource-id":"home"}
+        ]
+        """.trimIndent()
+        val layout = LayoutAdapter.adapt(tabs)
+        assertEquals(listOf("mywatcha_tab_home", "home"), layout.elements.map { it.resourceId })
+        assertEquals(listOf("selected"), layout.elements.first().state)
+    }
+
+    @Test
     fun `ids are sequential from zero in document order and a flat dump has no nesting`() {
         val layout = LayoutAdapter.adapt(fixture)
         assertEquals(layout.elements.indices.toList(), layout.elements.map { it.id })

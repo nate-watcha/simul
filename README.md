@@ -11,7 +11,7 @@
 
 앱 레포가 `.simul/` 규약(config.yaml + scenarios/*.md)을 갖추면 CLI로 실행한다.
 시나리오 작성법·워크플로·트러블슈팅은 init이 설치하는
-**`.claude/skills/simul-scenarios/references/scenarios.md`** 참조. 내부 구조·리포트 형식·설계 불변은 `CLAUDE.md`.
+**`.claude/skills/simul-scenarios/SKILL.md`**(+ `references/setup.md`) 참조. 내부 구조·리포트 형식·설계 불변은 `CLAUDE.md`.
 
 ```bash
 ./gradlew installDist            # → build/install/simul/bin/simul

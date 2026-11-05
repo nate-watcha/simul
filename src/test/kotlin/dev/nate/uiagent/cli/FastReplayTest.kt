@@ -71,6 +71,26 @@ class FastReplayTest {
     }
 
     @Test
+    fun `a target caught mid-slide is tapped where it comes to rest, not where the frame had it`() {
+        // stone edit-link-save 2026-11-05: the screen was still sliding in, the target grounded at
+        // x=-22 and the tap went off-screen
+        fun at(x: Int) = layout(el("프로필 수정", interactions = listOf("clickable"), center = Point(x, 826), id = 0))
+        val dev = FakeDevice(at(-22), at(169), at(169))
+        val c = fastController(dev)
+        c.fullLayout()
+        val step = TraceStep(
+            "\"프로필 수정\"을 누른다",
+            listOf(TraceAction("tap", target = TraceTarget(null, "프로필 수정", Point(169, 826)))),
+            evidence = emptyList(),
+        )
+        val r = Replayer(c).replayStep(step)
+
+        assertNull(r.broken)
+        assertEquals(listOf("tap 169 826"), dev.gestures)
+        assertEquals(3, dev.observeCount) // initial + one poll that finds it at its recorded place + post-tap
+    }
+
+    @Test
     fun `grounding failure on the fast frame waits for the target`() {
         // scenario start observes a mid-transition frame where the target is not yet present
         val midTransition = layout(el("로딩중", id = 5, center = Point(1, 1)))

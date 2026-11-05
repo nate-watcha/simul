@@ -105,27 +105,30 @@ class AdbOps(
         }
         // after the clear (which wipes it), before the launch (so the first frame is already in it)
         if (locale != null && app != null) setAppLocales(app, locale)
-        if (launch && app != null) {
-            // cold start: kill, then fire the launcher intent; give the splash a head start
-            // before the runner's wait-for-stable takes over
-            runCatching { runProcess(listOf(adbBin, "shell", "am", "force-stop", app)) }
-            runProcess(listOf(adbBin, "shell", "monkey", "-p", app, "-c", "android.intent.category.LAUNCHER", "1"))
-            Thread.sleep(3000)
+        fun start() {
+            if (launch && app != null) {
+                // cold start: kill, then fire the launcher intent; give the splash a head start
+                // before the runner's wait-for-stable takes over
+                runCatching { runProcess(listOf(adbBin, "shell", "am", "force-stop", app)) }
+                runProcess(listOf(adbBin, "shell", "monkey", "-p", app, "-c", "android.intent.category.LAUNCHER", "1"))
+                Thread.sleep(3000)
+            }
+            deeplink?.let { link ->
+                // Pin the package: with both prod and dev builds installed, an unpinned VIEW
+                // intent opens the system app chooser instead of the app under test.
+                val out = runProcess(
+                    listOf(adbBin, "shell", "am", "start", "-W", "-a", "android.intent.action.VIEW", "-d", link) +
+                        listOfNotNull(app)
+                )
+                // `am start -W` exits 0 even when nothing handled the URI — the app can't process
+                // this deeplink. Surface it as a precise setup failure instead of letting the test
+                // fail later at the Verify step with a confusing "landmark not found".
+                deeplinkError(out)?.let { throw RuntimeException("deeplink not handled by app: $link — $it") }
+            }
         }
-        deeplink?.let { link ->
-            // Pin the package: with both prod and dev builds installed, an unpinned VIEW
-            // intent opens the system app chooser instead of the app under test.
-            val out = runProcess(
-                listOf(adbBin, "shell", "am", "start", "-W", "-a", "android.intent.action.VIEW", "-d", link) +
-                    listOfNotNull(app)
-            )
-            // `am start -W` exits 0 even when nothing handled the URI — the app can't process
-            // this deeplink. Surface it as a precise setup failure instead of letting the test
-            // fail later at the Verify step with a confusing "landmark not found".
-            deeplinkError(out)?.let { throw RuntimeException("deeplink not handled by app: $link — $it") }
-        }
+        start()
         if (app == null || !(launch || deeplink != null)) return null
-        return awaitFullyDrawn(app)
+        return awaitFullyDrawn(app, ::start)
     }
 
     /**
@@ -135,13 +138,24 @@ class AdbOps(
      * a network round trip (measured: +3.6s after setup, splash timeout 5s). Only the app knows
      * which activity is the destination, so that activity reports it and this waits for that.
      * The runner cleared logcat before setup, so `-d` covers exactly this launch.
+     *
+     * The same log shows the one launch that has to be repeated ([killedWithOldTask]): [relaunch]
+     * runs once when the process just started was taken down with the previous scenario's task.
      */
-    private fun awaitFullyDrawn(app: String): String? {
-        val deadline = System.currentTimeMillis() + FULLY_DRAWN_TIMEOUT_MS
+    private fun awaitFullyDrawn(app: String, relaunch: () -> Unit): String? {
+        var deadline = System.currentTimeMillis() + FULLY_DRAWN_TIMEOUT_MS
+        var relaunched = false
         while (true) {
             val out = runCatching {
                 runProcess(listOf(adbBin, "logcat", "-d", "-v", "brief", "ActivityTaskManager:I", "ActivityManager:I", "*:S"))
             }.getOrDefault("")
+            if (!relaunched && killedWithOldTask(out, app)) {
+                relaunched = true
+                System.err.println("setup: the launch was killed with the previous scenario's task — launching again")
+                relaunch()
+                deadline = System.currentTimeMillis() + FULLY_DRAWN_TIMEOUT_MS
+                continue
+            }
             fullyDrawn(out, app)?.let { return it }
             if (System.currentTimeMillis() >= deadline) return null
             Thread.sleep(FULLY_DRAWN_POLL_MS)
@@ -256,6 +270,21 @@ class AdbOps(
          */
         fun fullyDrawn(logcat: String, app: String): String? =
             Regex("Fully drawn ${Regex.escape(app)}/\\S+: (\\+\\S+)").find(logcat)?.groupValues?.get(1)
+
+        /**
+         * Was [app]'s process killed by the removal of an old task after its last launch? A scenario
+         * that ends on another package's activity inside the app's task (the system share sheet, a
+         * custom tab) leaves that task alive past `am force-stop`; it is removed a moment later and
+         * the removal kills the package's processes — the one the next scenario's setup started 5ms
+         * earlier included (`Killing <pid>:<app>/… : remove-package-task`). The run then observed
+         * the launcher: 0 elements, step 1 FAILED (stone owner-profile-stats 2026-11-05, right after
+         * owner-profile-share). Only this system kill counts — a crash on launch is the app's.
+         */
+        fun killedWithOldTask(logcat: String, app: String): Boolean {
+            val lines = logcat.lines()
+            val launch = lines.indexOfLast { "START u0" in it && "cmp=$app/" in it }
+            return launch >= 0 && lines.drop(launch).any { "Killing" in it && ":$app/" in it && "remove-package-task" in it }
+        }
 
         /**
          * The list in `Locales for <app> for user 0 are [ko-KR,en-US]`; null for `[]` (follows the

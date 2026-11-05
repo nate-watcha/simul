@@ -206,11 +206,17 @@ object LayoutAdapter {
 
         // Pass C: dedupe interactives sharing a label — keep the clickable one(s); a dropped
         // node's children move up to its parent (toolbar FrameLayout > ImageView duplicates).
+        // Only a node lying over a clickable of the same label is its duplicate: two controls
+        // elsewhere on the screen that happen to share a word are two controls. The selected
+        // in-page "홈" tab (selected = not clickable) was dropped for the bottom nav's "홈", and
+        // with it the only carrier of the selected state the scenario asserted (stone
+        // owner-home-layout 2026-11-05).
         val dropped = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Node, Boolean>())
         interactives.filter { it.label != null }.groupBy { it.label }.forEach { (_, group) ->
-            if (group.size > 1 && group.any { "clickable" in it.raw.interactions }) {
-                group.filter { "clickable" !in it.raw.interactions }.forEach { dropped.add(it) }
-            }
+            val clickables = group.filter { "clickable" in it.raw.interactions }
+            group.filter { "clickable" !in it.raw.interactions }
+                .filter { n -> clickables.any { overlaps(it.raw, n.raw) } }
+                .forEach { dropped.add(it) }
         }
         fun dedupe(n: Node) {
             val out = mutableListOf<Node>()
@@ -243,6 +249,14 @@ object LayoutAdapter {
         }
         emit(root, null)
         return out
+    }
+
+    /** Do two nodes occupy the same place? Bounds when both have them, else centers within the label window. */
+    private fun overlaps(a: RawNode, b: RawNode): Boolean {
+        val ba = a.bounds
+        val bb = b.bounds
+        return if (ba != null && bb != null) ba.x0 < bb.x1 && bb.x0 < ba.x1 && ba.y0 < bb.y1 && bb.y0 < ba.y1
+        else abs(a.center.x - b.center.x) <= MAX_DX && abs(a.center.y - b.center.y) <= MAX_DY
     }
 
     // ---------------------------------------------------------------- geometry parsing

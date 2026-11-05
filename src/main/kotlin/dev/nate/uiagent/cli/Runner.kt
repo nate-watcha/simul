@@ -277,7 +277,8 @@ class ScenarioRunner(
         val verdict = llm.runStep(spec.command, initial, spec.criterion)
         listener.delegate = null
         val after = controller.currentElements
-        val ev = extractEvidence(text, before, after, controller.volatileKeys)
+        val ev = extractEvidence(text, before, after, controller.volatileKeys,
+            scrolled = recorder.actions.any { it.tool == "scroll" || it.tool == "scrollToFind" })
         var status = if (verdict.passed) StepStatus.PASSED else StepStatus.FAILED
         var reason = verdict.reason
         val anchors = spec.criterion?.takeUnless { isNegated(it) }?.let(::quotedLabels) ?: emptyList()

@@ -10,11 +10,18 @@ import java.text.SimpleDateFormat
 import java.util.Date
 
 /**
- * `simul run <scenario.md>... | --tag <tag> | --state <name> | --all [--mode replay|llm|auto]
+ * `simul run <scenario.md>... | --tag <tag> | --state <name> | --all [--mode replay|llm|both|auto]
  *            [--dry-run] [--url U] [--video] [--runs <dir>] [--summary <file.json> [--label <phase>]]`
  *
  * CI invariant: CI only replays. The default mode is auto — replay when a trace exists, SKIP with
  * a warning when it doesn't; the LLM interprets full scenarios only under an explicit `--mode llm`.
+ *
+ * `--mode both` is the authoring loop: record with the LLM and, when the recording passed, replay
+ * that trace on the spot — scenario by scenario, no video, no HTML. A trace the model could record
+ * but the replayer cannot follow then shows up at the scenario it belongs to, while it is being
+ * written, instead of after the whole set is recorded (stone 2026-11-05: 39 scenarios recorded,
+ * then 45 minutes on three that would not replay). `simul report <scenario.md>` is the same pair
+ * with the screen recording and the pages — the thing to show a person, not the loop.
  *
  * `--runs <dir>` lays the run out the way the report reads it (README "나이틀리 운영"): one
  * directory per scenario and state, `<dir>/<feature>/<name>.<state>/`, each with its
@@ -33,6 +40,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     var runsPath: String? = null
     var label: String? = null
     var video = false
+    var thenReplay = false
     val tags = mutableListOf<String>()
     val paths = mutableListOf<String>()
 
@@ -42,8 +50,9 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
             "--mode" -> mode = when (args.getOrNull(++i)) {
                 "replay" -> RunMode.REPLAY
                 "llm" -> RunMode.LLM
+                "both" -> RunMode.LLM.also { thenReplay = true }
                 "auto" -> RunMode.AUTO
-                else -> return err("invalid --mode (use replay|llm|auto)")
+                else -> return err("invalid --mode (use replay|llm|both|auto)")
             }
             "--dry-run" -> dryRun = true
             "--all" -> all = true
@@ -58,6 +67,9 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
         }
         i++
     }
+
+    // one summary / one runs directory holds one phase; the nightly records and replays as two runs
+    if (thenReplay && (summaryPath != null || runsPath != null)) return err("--mode both takes no --summary/--runs")
 
     val project = SimulProject.find(cwd)
         ?: return err("no .simul/ directory found from $cwd upwards — run inside an app repo with the .simul convention")
@@ -115,10 +127,16 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
             outcomes += r.outcome
             if (r.outcome.status != "SKIPPED") anyRan = true
             if (r.outcome.status == "FAILED" || r.outcome.status == "CRASH") anyFailed = true
+            if (thenReplay && r.outcome.passed) {
+                val replayed = batch.run(md, scenario, RunMode.REPLAY, llm, video).outcome
+                outcomes += replayed
+                if (!replayed.passed) anyFailed = true
+            }
         }
     }
 
     if (!anyRan && !dryRun) println("warning: no scenario was executed (all skipped)")
+    if (outcomes.size > 1) recap(outcomes).forEach(::println)
     if (!dryRun && (summaryPath != null || runsDir != null)) {
         val ended = System.currentTimeMillis()
         val summary = RunSummary(
@@ -151,6 +169,22 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
         }
     }
     return if (anyFailed) 1 else 0
+}
+
+/**
+ * The closing lines of a run of several scenarios: the count, then every scenario that did not pass
+ * with the step it stopped at, why, and where its report is — what one otherwise digs out of each
+ * result.json after the live log has scrolled away.
+ */
+internal fun recap(outcomes: List<ScenarioOutcome>): List<String> = buildList {
+    add("")
+    add("── ${outcomes.count { it.passed }}/${outcomes.size} passed ──")
+    for (o in outcomes.filterNot { it.passed }) {
+        val where = o.failedStep?.let { " step ${it.index}: ${it.text}" } ?: ""
+        val why = (o.failedStep?.reason ?: o.reason)?.let { " — $it" } ?: ""
+        add("${o.status} ${o.path}${o.mode?.let { " [$it]" } ?: ""}$where$why")
+        o.reportDir?.let { add("  $it") }
+    }
 }
 
 internal fun executeScenario(

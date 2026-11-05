@@ -36,7 +36,11 @@ private val STABLE_STATES = setOf("selected", "checked")
  *    assertion.
  * 2. resourceIds of newly appeared nodes — a view id names the view, not its content, so the
  *    set {btn_play, tv_title, …} is a stable structural signature of the destination screen
- *    (recycled cells keep their ids whatever they display).
+ *    (recycled cells keep their ids whatever they display). Not on a step that [scrolled]: what a
+ *    scroll brings into view depends on where the fling stopped, and that differs by tens of px
+ *    between runs — a header clipped to 54px at the top edge when recorded was scrolled past on
+ *    three replays out of three (stone owner-topbar-scroll 2026-11-05; the same scrollToFind left
+ *    its target at y=578…624 across runs). The quoted scroll target is that step's evidence.
  * 3. Stable states (selected/checked) gained during the step, keyed by resourceId when the
  *    element has one — "tab_library=selected" is the real proof of a tab switch.
  *
@@ -47,6 +51,8 @@ fun extractEvidence(
     before: List<LogicalElement>,
     after: List<LogicalElement>,
     volatileKeys: Set<String>,
+    /** Did the step move a scroll container (scroll/scrollToFind among its actions)? */
+    scrolled: Boolean = false,
 ): Evidence {
     // Compare state ownership directly — computeDiff's `changed` picks an arbitrary element
     // among same-key duplicates, which can hide the state carrier.
@@ -69,7 +75,7 @@ fun extractEvidence(
         .filterNot { it.ref in volatileKeys }
         .take(2)
 
-    val newIds = computeDiff(before, after, volatileKeys).added
+    val newIds = if (scrolled) emptyList() else computeDiff(before, after, volatileKeys).added
         .mapNotNull { it.resourceId }
         .distinct()
         .take(3)

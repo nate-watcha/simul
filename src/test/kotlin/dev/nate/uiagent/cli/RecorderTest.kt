@@ -89,6 +89,20 @@ class RecorderTest {
         assertEquals(listOf("detailHeader"), ev.appeared)
     }
 
+    @Test
+    fun `a scroll step harvests no resourceIds — what scrolled into view depends on where the fling stopped`() {
+        // stone owner-topbar-scroll 2026-11-05: the header clipped at the top edge when recorded
+        // was scrolled past on replay, and the step broke on an id nobody had asked for
+        val before = listOf(el("탭", id = 0))
+        val after = listOf(
+            el("탭", id = 0),
+            el("취향분석", resourceId = "taste_analysis_header", id = 1, center = Point(360, 27)),
+            el("컬렉션", resourceId = "collections_header", id = 2, center = Point(360, 670)),
+        )
+        val ev = extractEvidence("아래로 스크롤해 \"collections_header\"를 찾는다", before, after, emptySet(), scrolled = true)
+        assertEquals(listOf("collections_header"), ev.appeared)
+    }
+
     // ------------------------------------------------------------ state evidence
 
     @Test

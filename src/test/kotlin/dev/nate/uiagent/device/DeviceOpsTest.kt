@@ -3,6 +3,7 @@ package dev.nate.uiagent.device
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -21,6 +22,19 @@ class DeviceOpsTest {
             "I/ActivityTaskManager(  672): Fully drawn com.frograms.wplay/.MainNavActivity: +3s812ms\n"
         assertEquals("+3s812ms", AdbOps.fullyDrawn(log, "com.frograms.wplay"))
         assertNull(AdbOps.fullyDrawn(log.lines().first { ".dev/" in it }, "com.frograms.wplay"), "a package that merely extends ours is not ours")
+    }
+
+    @Test
+    fun `a launch killed with the previous scenario's task is told apart from the force-stop before it`() {
+        // stone owner-profile-stats 2026-11-05: the share sheet kept the old task alive past force-stop
+        val stop = "I/ActivityManager(  831): Killing 30328:com.x.dev/u0a237 (adj 101): stop com.x.dev due to from pid 30898\n"
+        val start = "I/ActivityTaskManager(  831): START u0 {act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] flg=0x10200000 cmp=com.x.dev/.InitActivity} with LAUNCH_MULTIPLE from uid 2000\n" +
+            "I/ActivityManager(  831): Start proc 30956:com.x.dev/u0a237 for next-top-activity {com.x.dev/.InitActivity}\n"
+        val kill = "I/ActivityManager(  831): Killing 30956:com.x.dev/u0a237 (adj -10000): remove-package-task\n"
+        assertTrue(AdbOps.killedWithOldTask(stop + start + kill, "com.x.dev"))
+        assertFalse(AdbOps.killedWithOldTask(stop + start, "com.x.dev"))
+        assertFalse(AdbOps.killedWithOldTask(stop + start + kill + start, "com.x.dev"), "the launch after the kill is a fresh one")
+        assertFalse(AdbOps.killedWithOldTask(stop + start + kill, "com.x"), "a package that merely prefixes ours is not ours")
     }
 
     @Test
