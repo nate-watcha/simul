@@ -128,11 +128,14 @@ class AdbOps(
         phase("locale")
         fun start() {
             if (launch && app != null) {
-                // cold start: kill, then fire the launcher intent; give the splash a head start
-                // before the runner's wait-for-stable takes over
+                // cold start: kill, then fire the launcher intent. What follows is the wait for the
+                // app's own fully-drawn signal ([awaitFullyDrawn]), so nothing is slept here: the
+                // fixed 3s head start that predates that wait was paid on top of it by every
+                // launcher scenario (52 setups of stone run 41992964956, the app drawn in 1.4s).
+                // Only a deeplink fired onto the app still starting keeps it — untested without.
                 runCatching { runProcess(listOf(adbBin, "shell", "am", "force-stop", app)) }
                 runProcess(listOf(adbBin, "shell", "monkey", "-p", app, "-c", "android.intent.category.LAUNCHER", "1"))
-                Thread.sleep(3000)
+                if (deeplink != null) Thread.sleep(3000)
             }
             deeplink?.let { link ->
                 // Pin the package: with both prod and dev builds installed, an unpinned VIEW

@@ -158,7 +158,7 @@ class ScenarioRunner(
                 val what = listOfNotNull(
                     it.appState?.let { s -> "restore app state '$s' (pm clear + snapshot)" },
                     if (it.clearData && it.appState == null) "clear app data (guest)" else null,
-                    if (it.launch) "cold start (force-stop + launch + splash wait)" else null,
+                    if (it.launch) "cold start (force-stop + launch)" else null,
                     it.deeplink?.let { d -> "deeplink $d" },
                 ).joinToString(" + ").ifEmpty { "none" }
                 log("  setup: $what")
