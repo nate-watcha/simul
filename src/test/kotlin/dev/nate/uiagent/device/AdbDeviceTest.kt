@@ -25,6 +25,27 @@ class AdbDeviceTest {
     }
 
     @Test
+    fun `a screen that refused the idle wait is dumped with --no-idle until the next gesture`() {
+        // The settle loop re-dumps one screen up to 8 times; each paid the CLI's 3s idle wait
+        // before its re-request — 33s per landing on the pedia home (stone run 41992964956).
+        val calls = mutableListOf<List<String>>()
+        val device = AdbDevice(onCommand = calls::add, retryDelayMs = 0) { argv ->
+            when {
+                argv.first() == "adb" -> ""
+                "--no-idle" in argv -> dump
+                else -> throw failure(argv, "Could not obtain idle state")
+            }
+        }
+        val idle = listOf("android", "layout")
+        val noIdle = idle + "--no-idle"
+        device.observe()
+        device.observe()
+        device.tap(5, 5)
+        device.observe()
+        assertEquals(listOf(idle, noIdle, noIdle, listOf("adb", "shell", "input", "tap", "5", "5"), idle, noIdle), calls)
+    }
+
+    @Test
     fun `releaseAutomation force-stops the layout server and a tap alone is just the touch`() {
         // Google Play drops its purchase-button tap while the resident `android layout` server
         // holds a UiAutomation connection (kloud billing-subscribe-declined, 2026-10-19).

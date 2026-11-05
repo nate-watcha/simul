@@ -58,11 +58,19 @@ class AdbDevice(
      *  - NO_IDLE ("Could not obtain idle state"): the CLI (≥ 1.0.16251017) waits up to 3s for a
      *    1s quiet window before dumping, and a screen that keeps producing layout events (video,
      *    spinner, carousel) never grants one. The harness has its own settle loop
-     *    (DeviceController.stabilize) so the dump is simply re-requested with `--no-idle`.
+     *    (DeviceController.stabilize) so the dump is simply re-requested with `--no-idle` — and
+     *    the screen is remembered as [restless]: until the next gesture every dump asks for
+     *    `--no-idle` up front. The settle loop re-dumps the same screen up to 8 times, and each
+     *    one paid the 3s wait again before its re-request: the pedia home took 33s to observe
+     *    (8 × 3.8s against 1.6s elsewhere) in 26 of 39 recordings, 13 of the batch's 55 minutes
+     *    (stone run 41992964956, 2026-11-05).
      * After the retries a persistent failure propagates with the CLI's stderr — the step then
      * FAILs with the real reason instead of grounding against an empty screen.
      */
-    override fun observe(): LogicalLayout = observe(noIdle = false)
+    override fun observe(): LogicalLayout = observe(noIdle = restless)
+
+    /** The screen in front refused the idle wait; a gesture may bring another, so it clears this. */
+    private var restless = false
 
     /** `android layout --no-idle` from the first attempt — replay's observation (see [Device.observeFast]). */
     override fun observeFast(): LogicalLayout = observe(noIdle = true)
@@ -97,6 +105,7 @@ class AdbDevice(
             run(argv)
         } catch (ex: ProcessFailure) {
             if (NO_IDLE_MARKER !in ex.stderr || "--no-idle" in argv) throw ex
+            restless = true
             val noIdle = argv + "--no-idle"
             onCommand(noIdle)
             run(noIdle)
@@ -116,7 +125,10 @@ class AdbDevice(
         run(argv)
     }
 
-    private fun input(vararg args: String) = shell("input", *args)
+    private fun input(vararg args: String) {
+        restless = false
+        shell("input", *args)
+    }
 
     override fun tap(x: Int, y: Int) = input("tap", "$x", "$y")
 
@@ -147,6 +159,7 @@ class AdbDevice(
     override fun inputText(text: String, resourceId: String?) {
         val selector = resourceId?.let { "id=/^${regexEscape(it)}$/" } ?: "focused=true"
         val argv = androidArgs("input") + listOf("text", "--match", "first", text, selector)
+        restless = false
         onCommand(argv)
         run(argv)
     }
