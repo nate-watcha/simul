@@ -1,5 +1,6 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.ProcessTimeout
 import dev.nate.uiagent.Spawned
 
 import java.io.File
@@ -34,8 +35,12 @@ private class FakeShell {
         return FakeSegment().also { segments += it }
     }
 
-    fun run(argv: List<String>, @Suppress("UNUSED_PARAMETER") timeout: Long): String {
+    /** adb no longer answers: every command runs into its time limit. */
+    var deviceGone = false
+
+    fun run(argv: List<String>, timeout: Long): String {
         ran += argv
+        if (deviceGone && argv[0] == "adb") throw ProcessTimeout(argv, timeout)
         when {
             argv[0] == "adb" && argv[1] == "shell" && argv[2].startsWith("kill -2") ->
                 segments.lastOrNull()?.takeIf { it.done.count > 0 }?.finish(0)
@@ -87,6 +92,22 @@ class VideoTest {
         assertTrue(shell.ran.any { it == listOf("adb", "pull", remote, dest.path) }, "pulled")
         assertTrue(shell.ran.any { it == listOf("adb", "shell", "rm", "-f", remote) }, "remote removed")
         assertEquals("mp4:$remote", dest.readText())
+        dir.deleteRecursively()
+    }
+
+    @Test
+    fun `a device that stopped answering is not signalled fifteen times nor pulled from`() {
+        val shell = FakeShell().apply { deviceGone = true }
+        val rec = recorder(shell)
+        rec.start()
+        waitForSegments(shell, 1)
+        val dir = kotlin.io.path.createTempDirectory("simul-video").toFile()
+
+        val r = rec.stop(File(dir, "run.mp4"))
+
+        assertTrue(r.files.isEmpty())
+        assertTrue(rec.problem!!.contains("stopped answering"), rec.problem)
+        assertEquals(2, shell.ran.size, "two unanswered signals, then nothing more: ${shell.ran}")
         dir.deleteRecursively()
     }
 

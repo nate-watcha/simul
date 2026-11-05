@@ -5,6 +5,7 @@ import dev.nate.uiagent.device.DeviceSettings
 import dev.nate.uiagent.device.AdbOps
 import dev.nate.uiagent.device.DeviceOps
 import dev.nate.uiagent.Point
+import dev.nate.uiagent.ProcessError
 import dev.nate.uiagent.agent.LlmStats
 import dev.nate.uiagent.secs
 import dev.nate.uiagent.device.DeviceController
@@ -223,6 +224,12 @@ class ScenarioRunner(
                     RunMode.LLM -> runLlmStep(n, text)
                     else -> runReplayStep(n, text, trace?.steps?.getOrNull(i))
                 }
+            } catch (ex: ProcessError) {
+                // The device did not do what the step needed (a dump that fails after its retries, a
+                // command past its time limit). That ends the step, not the scenario's record: the
+                // steps before it, this screen, the logcat and the recording still make a result.
+                StepReport(n, text, StepStatus.FAILED, if (mode == RunMode.LLM) "llm" else "replay", emptyList(), emptyList(),
+                    "device command failed: ${ex.brief}", 0, emptyList())
             } finally {
                 listener.delegate = null
             }

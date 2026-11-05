@@ -15,6 +15,12 @@ class BatchResult(val outcome: ScenarioOutcome, val result: ScenarioRunResult?)
  * [close] puts both back exactly as they were (a developer's own `wm` override included), whatever
  * happened in between. [run] turns the three non-results — no trace to replay, a harness crash, a
  * scenario SKIPPED by `auto` mode — into outcome rows, so one broken scenario never ends the batch.
+ *
+ * A device that stops answering does end it, for every scenario still to come ([deviceDown]): the
+ * batch asks [DeviceOps.unresponsive] at its start and after each scenario that did not pass, and
+ * once the device is gone the rest become CRASH rows without touching it. Running them would have
+ * each one sit out the time limit of every adb command and then fail looking like an app
+ * regression — stone run 42039775943 lost its emulator's display at the 12th of 39 recordings.
  */
 class BatchSession(
     private val project: SimulProject,
@@ -22,11 +28,35 @@ class BatchSession(
     private val log: (String) -> Unit,
     /** `--runs <dir>`: lay report dirs out for the report builder (see ReportDirs.inRuns); null = stamped dirs under .simul/reports. */
     private val runsDir: File? = null,
+    private val pause: (Long) -> Unit = Thread::sleep,
 ) : AutoCloseable {
     private var displayBefore: String? = null
     private val pinned = mutableListOf<SettingChange>()
 
+    /** Why the device is no longer usable for this batch; null while it answers. */
+    var deviceDown: String? = null
+        private set
+
+    /**
+     * Ask the device whether it still answers. A second look after a pause, when [recheck]: an adb
+     * reconnect heals by itself, a hung emulator does not.
+     */
+    private fun checkDevice(recheck: Boolean) {
+        if (deviceDown != null) return
+        var why = ops.unresponsive() ?: return
+        if (recheck) {
+            log("device: $why — looking again in ${RECHECK_MS / 1000}s")
+            pause(RECHECK_MS)
+            why = ops.unresponsive() ?: return log("device: answering again")
+        }
+        deviceDown = "device not responding: $why"
+        log("device: not responding — $why. The scenarios that follow are not run.")
+    }
+
     fun pin() {
+        // nothing to pin on a device that is not there; every scenario then reports that, not a stack trace
+        checkDevice(recheck = false)
+        if (deviceDown != null) return
         // Never touch a physical device's screen, and read the current value BEFORE forcing it.
         val display = project.config.display
         if (display != null) {
@@ -67,6 +97,10 @@ class BatchSession(
             log("SKIPPED ${scenario.name}: $why")
             return BatchResult(outcomeWithout(project, md, scenario, "SKIPPED", "no trace"), null)
         }
+        deviceDown?.let { why ->
+            log("CRASH ${scenario.name}: not run — $why")
+            return BatchResult(outcomeWithout(project, md, scenario, "CRASH", "not run — $why"), null)
+        }
         if (scenario.precondition == null) {
             log("note: ${scenario.name} declares no appState/clearData — runs against the device's current state")
         }
@@ -79,17 +113,27 @@ class BatchSession(
             val what = "${t.javaClass.simpleName}: ${t.message ?: ""}".trim()
             log("CRASH ${scenario.name}: $what")
             log("  stack trace → ${crash.relativeTo(project.appRoot)}")
+            checkDevice(recheck = true)
             return BatchResult(outcomeWithout(project, md, scenario, "CRASH", what, crashLog = crash), null)
         }
+        // a scenario that did not pass may be the device's doing — and then so would every one after it
+        if (!result.passed) checkDevice(recheck = true)
         return BatchResult(outcomeOf(project, md, scenario, result), result)
     }
 
     override fun close() {
         if (pinned.isNotEmpty()) DeviceSettings.restore(ops, pinned) { log("device: $it") }
+        // best effort, like the settings above: a throw here would take the batch's summary with it
         displayBefore?.let { before ->
             val prior = DisplayProfile.parse(before)
-            if (prior != null) ops.setDisplay(prior) else ops.resetDisplay()
-            log("display: restored to ${if (prior != null) before else "device default"}")
+            val to = if (prior != null) before else "device default"
+            runCatching { if (prior != null) ops.setDisplay(prior) else ops.resetDisplay() }
+                .onSuccess { log("display: restored to $to") }
+                .onFailure { e -> log("warning: could not restore the display to $to: ${e.message?.lineSequence()?.firstOrNull()}") }
         }
+    }
+
+    private companion object {
+        const val RECHECK_MS = 10_000L
     }
 }

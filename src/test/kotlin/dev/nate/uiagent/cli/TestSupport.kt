@@ -22,6 +22,9 @@ internal class FakeOps(private val versionName: String? = "5.4.0") : DeviceOps {
         return fullyDrawn
     }
     override fun screenshot(dest: File): Boolean = false
+    /** What the device probe answers; null = the device is fine. */
+    var down: String? = null
+    override fun unresponsive(): String? = down
     override fun logcatClear() {}
     override fun logcatDump(dest: File): Boolean = false
     override fun appVersionName(app: String?): String? = versionName

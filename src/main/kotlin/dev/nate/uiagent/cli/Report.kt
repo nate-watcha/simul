@@ -115,10 +115,16 @@ private fun replayAndReport(cwd: File, scenarios: List<String>): Int {
     println("── record: $what with the LLM ──")
     // the recording lands under record/ in the same layout as the replay, screen recording included, so a failed
     // recording's page plays its own timeline (every step the agent did, the frame after each action) and not just the frame it stopped on
-    val recordRc = runCommand(scope + listOf("--mode", "llm", "--video", "--summary", File(dir, "record.json").path, "--label", "record", "--runs", File(dir, Site.RECORD_DIR).path), cwd)
+    // a phase that dies (not: fails) must not take the other one and the pages with it
+    fun phase(name: String, args: List<String>): Int = runCatching { runCommand(scope + args, cwd) }.getOrElse { e ->
+        System.err.println("error: the $name run died: $e")
+        e.printStackTrace()
+        1
+    }
+    val recordRc = phase("record", listOf("--mode", "llm", "--video", "--summary", File(dir, "record.json").path, "--label", "record", "--runs", File(dir, Site.RECORD_DIR).path))
     println()
     println("── replay: what was just recorded, no LLM ──")
-    val replayRc = runCommand(scope + listOf("--mode", "replay", "--video", "--runs", dir.path), cwd)
+    val replayRc = phase("replay", listOf("--mode", "replay", "--video", "--runs", dir.path))
     val html = File(dir, "index.html")
     if (!html.isFile) return if (replayRc == 0) err("no report written under ${dir.relativeToOrSelf(cwd)}") else replayRc
     println()

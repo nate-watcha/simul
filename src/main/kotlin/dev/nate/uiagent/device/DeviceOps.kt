@@ -1,5 +1,7 @@
 package dev.nate.uiagent.device
 
+import dev.nate.uiagent.ProcessError
+import dev.nate.uiagent.ProcessTimeout
 import dev.nate.uiagent.runProcess
 import dev.nate.uiagent.runToFile
 import java.io.File
@@ -34,6 +36,15 @@ interface DeviceOps {
 
     /** Capture a PNG screenshot into [dest]; false if capture failed (non-fatal). */
     fun screenshot(dest: File): Boolean
+
+    /**
+     * Is the device still answering? null when it is, else what does not come back — asked by the
+     * batch at its start and after a scenario that did not pass ([dev.nate.uiagent.cli.BatchSession]).
+     * Two things are looked at, because one was alive while the other was not: the emulator of stone
+     * run 42039775943 kept answering `adb shell` (am start, logcat) while nothing was drawn any more —
+     * the app never reported fully drawn, a layout dump took 39s, a screencap never returned.
+     */
+    fun unresponsive(): String? = null
 
     /**
      * Clear the device log, so the next [logcatDump] covers exactly one scenario — and turn on Firebase
@@ -188,7 +199,24 @@ class AdbOps(
     }
 
 
-    override fun screenshot(dest: File): Boolean = runToFile(listOf(adbBin, "exec-out", "screencap", "-p"), dest) == null
+    override fun screenshot(dest: File): Boolean =
+        runToFile(listOf(adbBin, "exec-out", "screencap", "-p"), dest, SCREENCAP_TIMEOUT_MS) == null
+
+    override fun unresponsive(): String? {
+        try {
+            if (runProcess(listOf(adbBin, "shell", "echo", "ok"), PROBE_TIMEOUT_MS).trim() != "ok") return "adb shell does not answer"
+        } catch (e: Exception) {
+            return "adb shell does not answer (${(e as? ProcessError)?.brief ?: e.message})"
+        }
+        // Only a capture that never returns counts: one that fails says nothing about the display.
+        try {
+            runProcess(listOf(adbBin, "shell", "screencap -p > /dev/null"), SCREENCAP_TIMEOUT_MS)
+        } catch (e: ProcessTimeout) {
+            return "a screencap does not return within ${e.timeoutMs / 1000}s — the display has stopped"
+        } catch (_: Exception) {
+        }
+        return null
+    }
 
     override fun logcatClear() {
         // `Log.isLoggable` reads the property live — the already-running Play services process picks it up (measured)
@@ -278,7 +306,7 @@ class AdbOps(
         runCatching { runProcess(listOf(adbBin, "shell", "am", "force-stop", app)) }
         val err = runToFile(
             listOf(adbBin, "exec-out", "run-as", app, "tar", "cf", "-", "--exclude=./cache", "--exclude=./code_cache", "."),
-            dest,
+            dest, timeoutMs = 120_000,
         ) ?: return true
         System.err.println("state save failed (run-as needs a debuggable build): ${err.take(200)}")
         return false
@@ -288,6 +316,9 @@ class AdbOps(
         /** How long setup waits for the app to report fully drawn — above kloud's splash-ad timeout (5s) plus a load. */
         const val FULLY_DRAWN_TIMEOUT_MS = 15_000L
         private const val FULLY_DRAWN_POLL_MS = 500L
+        /** A screencap takes 0.4s, ~3s on a software-rendered emulator that is also recording. */
+        private const val SCREENCAP_TIMEOUT_MS = 20_000L
+        private const val PROBE_TIMEOUT_MS = 10_000L
 
         /**
          * The `+Ns` the system logs when [app]'s activity calls `reportFullyDrawn()`

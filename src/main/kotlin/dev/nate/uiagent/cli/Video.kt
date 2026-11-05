@@ -1,5 +1,6 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.ProcessTimeout
 import dev.nate.uiagent.Spawned
 import dev.nate.uiagent.runProcess
 import dev.nate.uiagent.spawnProcess
@@ -83,14 +84,21 @@ class ScreenRecorder(
         // The recorder may be between two segments, so keep signalling until the thread is
         // done; each attempt is cheap and the loop above exits right after the segment does.
         var tries = 0
-        while (t.isAlive && tries++ < 15) {
-            runCatching { run(listOf(adbBin, "shell", "kill -2 \$(pidof screenrecord)"), 5_000) }
+        var unanswered = 0
+        while (t.isAlive && tries++ < 15 && unanswered < 2) {
+            val sent = runCatching { run(listOf(adbBin, "shell", "kill -2 \$(pidof screenrecord)"), 5_000) }
+            if (sent.exceptionOrNull() is ProcessTimeout) unanswered++ else unanswered = 0
             t.join(1000)
         }
         val stoppedAt = clock()
         if (t.isAlive) {
             current?.destroy()
             t.join(3000)
+        }
+        // adb itself is gone: every further signal, pull and rm would only sit out its time limit
+        if (unanswered >= 2) {
+            problem = "the device stopped answering — the recording was left on it"
+            return Recording(emptyList(), spawnedAt, null)
         }
 
         dest.parentFile?.mkdirs()

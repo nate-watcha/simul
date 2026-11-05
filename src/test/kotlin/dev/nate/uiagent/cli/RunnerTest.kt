@@ -10,6 +10,9 @@ import dev.nate.uiagent.el
 import dev.nate.uiagent.tempDir
 import dev.nate.uiagent.Point
 import dev.nate.uiagent.agent.LlmStats
+import dev.nate.uiagent.LogicalLayout
+import dev.nate.uiagent.ProcessTimeout
+import dev.nate.uiagent.device.Device
 import dev.nate.uiagent.device.DeviceController
 import java.io.File
 import kotlin.test.Test
@@ -363,6 +366,22 @@ class RunnerTest {
         assertTrue(result.steps.all { it.status == StepStatus.SKIPPED })
         assertTrue(result.steps[0].reason!!.startsWith("setup failed: adb shell am start failed"))
         assertTrue(logged.any { "setup failed" in it })
+    }
+
+    @Test
+    fun `a device command that fails ends the step as FAILED and the scenario still has a result`() {
+        val dev = object : Device by FakeDevice(screenA) {
+            override fun observe(): LogicalLayout = throw ProcessTimeout(listOf("android", "layout"), 20_000)
+            override fun observeFast(): LogicalLayout = observe()
+        }
+        val listener = SwitchableListener()
+        val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
+        val runner = ScenarioRunner(controller, listener, FakeOps(), neverCalledExecutor, tempDir(), "com.example")
+
+        val result = runner.run(scenario, goodTrace, RunMode.REPLAY) // must not throw: a CRASH leaves no result.json
+
+        assertEquals(listOf(StepStatus.FAILED, StepStatus.SKIPPED), result.steps.map { it.status })
+        assertEquals("device command failed: no answer within 20s: android layout", result.steps[0].reason)
     }
 
 }
