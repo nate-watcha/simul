@@ -45,7 +45,7 @@ SKIPPED다.
 
 ```markdown
 ---
-name: search-query
+name: 검색어로 좁히기
 tags: [search]
 setup:
   appState: member-basic
@@ -59,7 +59,9 @@ setup:
 3. "작품" 탭이 selected 상태인지 확인한다
 ```
 
-- `name`, `tags`가 리포트와 `simul list`에 쓰인다. `title`, `owner`는 선택.
+- `name`은 무슨 테스트인지 단어 몇 개로 적는다(`진입 화면`, `팔로우 취소`). 기능은 그룹 디렉토리가 이미 말하니 되풀이하지 않고, 그 화면에서
+  무엇을 테스트하는지만 적는다. 리포트와 로그에 이 이름으로 나온다. `/`, `@`, `#`는 쓰지 않는다.
+- `tags`는 `simul list`에 쓰인다. `title`, `owner`는 선택.
 - `setup`이 진입이다. `appState`(또는 `clearData: true`)로 전제 상태를, `deeplink` 또는 `launch: true`로 시작 화면을 정한다. 모든
   시나리오가 전제 상태를 선언한다. 스냅샷 만들기, 딥링크·런치 선택은 [setup.md](references/setup.md). 기기 설정·앱 언어·계정 설명처럼
   시나리오에 맞춰 환경을 조절하는 방법은 [config.md](references/config.md).
@@ -127,7 +129,7 @@ setup:
 
 ```markdown
 ---
-name: edit-profile
+name: 이름과 소개 저장
 setup:
   appState: member
   deeplink: example://profile
