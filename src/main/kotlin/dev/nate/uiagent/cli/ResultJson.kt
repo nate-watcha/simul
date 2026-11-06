@@ -35,6 +35,11 @@ import java.io.File
  *                      `video_ms`, so a page can seek the player to it
  * ```
  *
+ * A scenario with `## title` sections lists them under `sections` — title, prose, the condition it
+ * declares (`when`), PASSED/FAILED/SKIPPED and, for a section whose condition did not hold, why — each
+ * owning the steps `from`..`to` of the one flat `steps` list (numbered through the whole scenario, so
+ * `steps/NN.png` and `video_ms` mean what they always did).
+ *
  * Times: `started_at_ms` is the scenario's epoch start; a step's `started_ms` counts from it,
  * as does an action's `at_ms`; `video_ms` is the same moment as an offset into replay.mp4.
  * Written once by the CLI after the recording is stopped (the runner only produces the
@@ -118,6 +123,20 @@ object ResultJson {
             } ?: JsonNull)
             r.llm?.let { put("llm", llmJson(it)) }
             events[0]?.let { put("setup_events", eventsJson(it)) }
+            // the scenario's `## title` sections in the order they ran (file order) — absent without them
+            if (r.sections.isNotEmpty()) put("sections", buildJsonArray {
+                r.sections.forEach { sec ->
+                    add(buildJsonObject {
+                        put("title", sec.title)
+                        put("description", fillValues(sec.description, r.values))
+                        put("when", sec.condition?.let(::JsonPrimitive) ?: JsonNull)
+                        put("status", sec.status.name)
+                        put("reason", sec.reason?.let(::JsonPrimitive) ?: JsonNull)
+                        put("from", sec.steps.first)
+                        put("to", sec.steps.last)
+                    })
+                }
+            })
             put("steps", buildJsonArray {
                 r.steps.forEach { s ->
                     val spec = StepSpec.parse(s.text)
@@ -189,6 +208,8 @@ object ResultJson {
         val steps: List<Step>,
         /** The app's Firebase Analytics events during setup (its launch), before the first step. */
         val setupEvents: List<Event> = emptyList(),
+        /** The scenario's `## title` sections in the order they ran; empty for a scenario without them. */
+        val sections: List<Section> = emptyList(),
     ) {
         /** `coupon.member` / `coupon` — the directory a run of this scenario gets under a runs root (see ReportDirs). */
         val key: String get() = name + (state?.let { ".$it" } ?: "")
@@ -197,6 +218,15 @@ object ResultJson {
         val passed get() = status == "PASSED"
         val failed get() = status == "FAILED"
         val failedStepOf: Step? get() = failedStep?.let { n -> steps.firstOrNull { it.n == n } }
+        fun sectionOf(n: Int): Section? = sections.firstOrNull { n in it.from..it.to }
+        /** Sections that did not run because the screen they entered did not show their condition. */
+        val skippedSections: List<Section> get() = sections.filter { it.conditionNotMet }
+    }
+
+    /** One `## title` section of a run: [status] PASSED | FAILED | SKIPPED, owning the steps [from]..[to]. */
+    data class Section(val title: String, val description: String, val condition: String?, val status: String, val reason: String?, val from: Int, val to: Int) {
+        /** SKIPPED for its condition — as opposed to not reached because an earlier section failed. */
+        val conditionNotMet get() = status == "SKIPPED" && reason != null
     }
 
     data class Video(val file: String, val durationMs: Long?)
@@ -289,6 +319,11 @@ object ResultJson {
                 )
             } ?: emptyList(),
             setupEvents = events(o, "setup_events"),
+            sections = o.arr("sections")?.mapNotNull { el ->
+                val sec = el as? JsonObject ?: return@mapNotNull null
+                Section(sec.str("title") ?: return@mapNotNull null, sec.str("description") ?: "", sec.str("when"),
+                    sec.str("status") ?: "SKIPPED", sec.str("reason"), sec.int("from") ?: 0, sec.int("to") ?: 0)
+            } ?: emptyList(),
         )
     }
 

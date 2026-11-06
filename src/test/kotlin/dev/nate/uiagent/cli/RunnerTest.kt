@@ -87,6 +87,105 @@ class RunnerTest {
         assertEquals(1, h.executor.calls, "replay never consults the model")
     }
 
+    // ------------------------------------------------------------------ sections
+
+    /** An app whose follow button toggles a state that outlives the app's restart — the server's. */
+    private class FollowApp(following: Boolean?) {
+        private fun screen(following: Boolean?) = when (following) {
+            null -> layout(el("프로필", center = Point(360, 300)))
+            else -> layout(el(if (following) "팔로우 취소" else "팔로우", resourceId = "my_follow_button",
+                interactions = listOf("clickable"), center = Point(360, 1094)))
+        }
+        private val shown = StaticDevice(screen(following))
+        var following: Boolean? = following
+            set(value) { field = value; shown.layout = screen(value) }
+        val device = object : Device by shown {
+            override fun tap(x: Int, y: Int) { this@FollowApp.following = this@FollowApp.following?.not() }
+        }
+    }
+
+    private val follow = Scenario(
+        name = "follow", tags = emptyList(), setup = Scenario.Setup(deeplink = "app://users/1", launch = false),
+        steps = listOf("\"팔로우 취소\"를 누른다", "\"팔로우\"가 보이는지 확인한다", "\"팔로우\"를 누른다", "\"팔로우 취소\"가 보이는지 확인한다"),
+        sections = listOf(
+            Scenario.Section("팔로우 취소", "팔로우를 취소할 수 있다.", 0, 2, Scenario.Condition(id = "my_follow_button", label = "팔로우 취소")),
+            Scenario.Section("팔로우 추가", "", 2, 2),
+        ),
+    )
+
+    /** Taps what a "누른다" step quotes; any step passes when what it quotes is (or was, for a tap) on screen. */
+    private fun followHarness(app: FollowApp) = Harness(app.device) { c, command ->
+        val label = quotedLabels(command).first()
+        val there = c.currentElements.any { it.matchesExact(label) }
+        if (there && "누른다" in command) c.tap(label)
+        ScenarioSession.Verdict(there, if (there) "ok" else "\"$label\" is not on screen")
+    }
+
+    @Test
+    fun `sections run in file order, each from a fresh setup and conversation, and replay the same way`() {
+        val app = FollowApp(following = true)
+        val h = followHarness(app)
+
+        val recorded = h.runner.run(follow, trace = null, mode = RunMode.LLM)
+
+        assertEquals(StepStatus.PASSED, recorded.status, recorded.steps.firstOrNull { it.reason != null }?.reason)
+        assertEquals(listOf(StepStatus.PASSED, StepStatus.PASSED), recorded.sections.map { it.status })
+        assertEquals(listOf(1..2, 3..4), recorded.sections.map { it.steps })
+        assertEquals(2, h.ops.setups.size, "the second section starts the app over")
+        assertEquals(1, h.executor.sessions, "and the model's conversation with it")
+        assertEquals(true, app.following, "both directions ran, so the account is where it started")
+        assertEquals(listOf("팔로우 취소", "팔로우 취소", "팔로우 추가", "팔로우 추가"), recorded.updatedTrace!!.steps.map { it.section })
+
+        val replayed = h.runner.run(follow, trace = recorded.updatedTrace, mode = RunMode.REPLAY)
+
+        assertEquals(StepStatus.PASSED, replayed.status, replayed.steps.firstOrNull { it.reason != null }?.reason)
+        assertEquals(4, h.executor.calls, "replay never consults the model")
+        assertEquals(4, h.ops.setups.size)
+    }
+
+    @Test
+    fun `a section whose condition the entry screen does not show is skipped, and keeps its recorded steps`() {
+        val earlier = followHarness(FollowApp(following = true)).runner.run(follow, trace = null, mode = RunMode.LLM).updatedTrace!!
+        val app = FollowApp(following = false) // the last run stopped halfway: unfollowed, not followed back
+        val h = followHarness(app)
+
+        val recorded = h.runner.run(follow, trace = earlier, mode = RunMode.LLM)
+
+        assertEquals(StepStatus.PASSED, recorded.status, "skipping a section is not a failure")
+        assertEquals(listOf(StepStatus.SKIPPED, StepStatus.PASSED), recorded.sections.map { it.status })
+        assertTrue("my_follow_button \"팔로우 취소\"" in recorded.sections[0].reason!!, recorded.sections[0].reason)
+        assertEquals(listOf(StepStatus.SKIPPED, StepStatus.SKIPPED, StepStatus.PASSED, StepStatus.PASSED), recorded.steps.map { it.status })
+        assertEquals(true, app.following, "the section that ran put the account back")
+        assertEquals(earlier.steps.take(2), recorded.updatedTrace!!.steps.take(2), "the skipped section's steps are still the earlier recording's")
+        assertEquals(4, recorded.updatedTrace!!.steps.size)
+        // the report reads the skip, and why, from result.json
+        val read = ResultJson.read(writeResult(recorded, "llm", h.ops, h.reportDir))!!
+        assertEquals(listOf("팔로우 취소"), read.skippedSections.map { it.title })
+        assertEquals("my_follow_button \"팔로우 취소\"", read.skippedSections.single().condition)
+        assertEquals("팔로우 추가", read.sectionOf(3)?.title)
+
+        // the same decision without a model: skipped again when the account is flipped again
+        app.following = false
+        val replayed = h.runner.run(follow, trace = recorded.updatedTrace, mode = RunMode.REPLAY)
+        assertEquals(listOf(StepStatus.SKIPPED, StepStatus.PASSED), replayed.sections.map { it.status })
+        assertEquals(2, h.executor.calls, "replay never consults the model")
+    }
+
+    @Test
+    fun `a scenario none of whose sections ran FAILED`() {
+        val bothConditional = follow.copy(sections = listOf(follow.sections[0],
+            follow.sections[1].copy(condition = Scenario.Condition(id = "my_follow_button", label = "팔로우"))))
+        val h = followHarness(FollowApp(following = null)) // the button is gone
+
+        val result = h.runner.run(bothConditional, trace = null, mode = RunMode.LLM)
+
+        assertEquals(StepStatus.FAILED, result.status)
+        assertEquals(StepStatus.FAILED, result.steps[0].status)
+        assertTrue("no section ran" in result.steps[0].reason!!, result.steps[0].reason)
+        assertEquals(listOf("프로필"), result.steps[0].screen, "with what the screen had instead")
+        assertEquals(0, h.executor.calls)
+    }
+
     // ------------------------------------------------------------------ device settings
 
     @Test

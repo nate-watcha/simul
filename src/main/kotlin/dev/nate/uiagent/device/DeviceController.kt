@@ -56,6 +56,14 @@ class DeviceController(
     var verdict: Verdict? = null
         private set
 
+    /**
+     * Drop the grounding: the app was started over (a scenario's next section), so the last observation
+     * is of a screen that is gone and the next step has to look first.
+     */
+    fun forget() {
+        grounding = null
+    }
+
     /** Clear the verdict so the same controller can execute another isolated step. */
     fun resetVerdict() {
         verdict = null

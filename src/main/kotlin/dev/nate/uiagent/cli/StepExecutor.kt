@@ -19,10 +19,16 @@ interface StepExecutor {
      * delivered to the model only after its first tool result (see [ScenarioSession.runStep]).
      */
     fun runStep(stepText: String, initialLayout: String?, criterion: String? = null): ScenarioSession.Verdict
+
+    /**
+     * The next step starts a conversation of its own: a scenario's section begins from a fresh setup,
+     * and what the model saw of the screens before it no longer describes the app.
+     */
+    fun newSession() {}
 }
 
 /**
- * All steps of one scenario share ONE LLM conversation ([ScenarioSession], Koog ChatMemory):
+ * All steps of one scenario — of one section, when it has sections ([newSession]) — share ONE LLM conversation ([ScenarioSession], Koog ChatMemory):
  * the model keeps its own action/diff history across steps, and because the transcript is
  * append-only the llama.cpp prefix cache re-evaluates only each step's new tokens (command +
  * new results) instead of re-reading a full layout every step. Verdicts remain per step via
@@ -44,10 +50,14 @@ class SessionStepExecutor(
 ) : StepExecutor {
 
     private var session: ScenarioSession? = null
+    /** One client for the scenario, however many conversations its sections open. */
+    private val client by lazy(executor)
 
     override fun runStep(stepText: String, initialLayout: String?, criterion: String?): ScenarioSession.Verdict {
-        val s = session ?: ScenarioSession(executor(), controller, maxIterations, log, model, appContext = appContext, accountState = accountState)
+        val s = session ?: ScenarioSession(client, controller, maxIterations, log, model, appContext = appContext, accountState = accountState)
             .also { session = it }
         return s.runStep(stepText, initialLayout, criterion)
     }
+
+    override fun newSession() { session = null }
 }

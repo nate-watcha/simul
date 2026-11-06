@@ -130,7 +130,12 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
                 println("${scenario.name} (${scenarioPath(project, md, scenario)})")
                 println("  mode: $planned  trace: ${TraceState.of(md, trace).name.lowercase()}  tags: ${scenario.tags}" +
                     (scenario.state?.let { "  state: $it" } ?: ""))
-                scenario.steps.forEachIndexed { idx, s -> println("  ${idx + 1}. $s") }
+                scenario.steps.forEachIndexed { idx, s ->
+                    scenario.sections.firstOrNull { it.first == idx }?.let { sec ->
+                        println("  ## ${sec.title}" + (sec.condition?.let { " — when the entry screen shows ${it.describe()}" } ?: ""))
+                    }
+                    println("  ${idx + 1}. $s")
+                }
                 continue
             }
             val r = batch.run(md, scenario, mode, llm, video)

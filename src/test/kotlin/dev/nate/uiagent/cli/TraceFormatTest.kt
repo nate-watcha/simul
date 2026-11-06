@@ -105,4 +105,11 @@ class TraceAndroidCliStampTest {
         assertNull(legacy.display)
         assertEquals(false, TraceJson.render(TraceFile("s", "v", null, emptyList())).contains("display"))
     }
+
+    @Test
+    fun `a step's section round-trips and stays optional`() {
+        val t = TraceFile("s", "v", null, listOf(TraceStep("t", emptyList(), listOf("a"), section = "팔로우 취소")))
+        assertEquals("팔로우 취소", TraceJson.parse(TraceJson.render(t)).steps.single().section)
+        assertEquals(false, TraceJson.render(TraceFile("s", "v", null, listOf(TraceStep("t", emptyList(), listOf("a"))))).contains("section"))
+    }
 }

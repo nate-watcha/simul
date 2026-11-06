@@ -61,7 +61,11 @@ internal class FakeOps(private val versionName: String? = "5.4.0") : DeviceOps {
 /** Step executor driven by a lambda (which may drive the controller to simulate agent actions). */
 internal class ScriptedExecutor(private val behavior: (String) -> ScenarioSession.Verdict) : StepExecutor {
     var calls = 0
+    /** Conversations started over ([StepExecutor.newSession]) — one per section after the first. */
+    var sessions = 0
     val criteria = mutableListOf<String?>()
+
+    override fun newSession() { sessions++ }
 
     override fun runStep(stepText: String, initialLayout: String?, criterion: String?): ScenarioSession.Verdict {
         calls++

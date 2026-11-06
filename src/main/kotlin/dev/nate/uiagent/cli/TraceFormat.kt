@@ -48,6 +48,12 @@ data class TraceStep(
      * so it is the strongest replay proof for navigation/toggle steps.
      */
     val stateEvidence: List<StateEvidence> = emptyList(),
+    /**
+     * The `## title` section of the scenario this step belongs to; null — and omitted from JSON — for a
+     * scenario without sections. Steps are found by section and position in it, so a section that a
+     * recording skipped (its condition did not hold) keeps the steps an earlier recording left.
+     */
+    val section: String? = null,
 )
 
 /** [ref] is the element's resourceId when it has one, else its label. */
@@ -100,6 +106,7 @@ object TraceJson {
     }
 
     private fun stepJson(s: TraceStep): JsonObject = buildJsonObject {
+        s.section?.let { put("section", it) }
         put("text", s.text)
         put("actions", buildJsonArray { s.actions.forEach { add(actionJson(it)) } })
         put("evidence", buildJsonObject {
@@ -159,6 +166,7 @@ object TraceJson {
                 val se = el as? JsonObject ?: return@mapNotNull null
                 StateEvidence(se.str("ref") ?: return@mapNotNull null, se.str("state") ?: return@mapNotNull null)
             } ?: emptyList(),
+            section = o.str("section"),
         )
     }
 
