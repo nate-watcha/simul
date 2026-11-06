@@ -50,6 +50,12 @@ simul report $V/record.json $V/run.json --check >/dev/null                  # �
 돌려줄 피드백이 그 페이지(와 같은 디렉토리의 `replay.mp4`·스텝 스크린샷)다. `record.json`/`run.json`도 같이 남으므로 `--format slack`으로
 Slack 메시지 블록을 뽑을 수 있다.
 
+피쳐 브랜치가 바꾼 시나리오만 그 브랜치의 빌드에서 확인하는 리포트는 trace 파일을 준다: `simul report auth/login.trace.json mypage/edit@member.trace.json`은
+녹화 없이(LLM 0회) 그 trace들을 커밋된 그대로 재생하고 같은 구조의 `.simul/reports/<stamp>/`(`record.json`·`record/` 없음)를 쓴 뒤 마지막 줄에
+`index.html`을 찍는다. trace 하나가 런 하나다(`<name>@<state>.trace.json`은 그 상태만). 어떤 trace가 기준 브랜치와 다른지는 워크플로가 고른다 —
+`git diff --name-only --no-renames --diff-filter=AM origin/develop...HEAD -- '.simul/scenarios/*.trace.json'`(세 점: 갈라진 뒤 develop에서 바뀐 trace는 빼야
+하므로 merge-base가 보이는 깊이로 체크아웃한다). 판정·Slack 블록은 `simul report <stamp>/run.json --format md|slack [--check]`.
+
 **러너 요구사항** (self-hosted — 호스티드 러너엔 에뮬레이터도 LLM도 없다)
 
 - PATH에 `simul`(이 레포 `./gradlew installDist` + `scripts/simul`), `adb`·`emulator`·`android`(CLI), `ffprobe`/`ffmpeg`(녹화

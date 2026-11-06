@@ -65,6 +65,8 @@ private fun printUsage() {
           simul report <stamp>/record.json <stamp>/run.json --format md|junit [--check]   # job summary / trace PR body / gate
           simul report <scenario.md>...       the same record → replay → HTML for those scenarios only; prints their pages
                                               (<stamp>/<feature>/<name>.<state>.html) — the try-out of a newly written scenario
+          simul report <trace.json>...        replay → HTML of those committed traces as they are, no recording and no LLM —
+                                              the report of the scenarios a feature branch changed
         """.trimIndent()
     )
 }

@@ -139,6 +139,24 @@ class CliProjectTest {
     }
 
     @Test
+    fun `a trace file names the one run it is the trace of`() {
+        val root = statefulProject()
+        val dir = File(root, ".simul/scenarios")
+        listOf("billing/play-from-detail@nosub", "billing/play-from-detail", "billing/gone", "subscription/browse-greenbook")
+            .forEach { File(dir, "$it.trace.json").writeText("{}") }
+
+        val text = captureStdout {
+            assertEquals(0, cliMain(arrayOf("run", ".simul/scenarios/billing/play-from-detail@nosub.trace.json", "subscription/browse-greenbook.trace.json", "--dry-run"), root))
+        }
+        assertTrue("play-from-detail@nosub (billing/play-from-detail.md@nosub)" in text && "browse-greenbook (subscription/browse-greenbook.md)" in text, text)
+        assertTrue("play-from-detail@member" !in text && "play-from-detail@guest" !in text, "the other states are not this trace's\n$text")
+
+        assertEquals(2, cliMain(arrayOf("run", "billing/play-from-detail.trace.json", "--dry-run"), root), "a stateless trace beside a `states:` scenario is nobody's")
+        assertEquals(2, cliMain(arrayOf("run", "billing/gone.trace.json", "--dry-run"), root), "a trace whose scenario is gone")
+        assertEquals(2, reportCommand(listOf("billing/play-from-detail@nosub.trace.json", "billing/play-from-detail.md"), root), "record or replay-only, not both in one report")
+    }
+
+    @Test
     fun `a broken scenario file fails the batch with its reason instead of crashing`() {
         val root = statefulProject()
         File(root, ".simul/scenarios/bad.md").writeText("---\nname: bad\n---\n1. Tap \"a\"\n   :: member → \"b\"\n")

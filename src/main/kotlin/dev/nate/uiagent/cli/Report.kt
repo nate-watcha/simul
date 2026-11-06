@@ -9,7 +9,7 @@ import kotlinx.serialization.json.put
 import java.io.File
 
 /**
- * `simul report` has two inputs:
+ * `simul report` by what it is given:
  *
  * `simul report`
  *   The nightly in one command, and it takes nothing: re-record every scenario with the LLM
@@ -24,6 +24,12 @@ import java.io.File
  *   just wrote (the Slack request flow runs this on the runner and sends the result back). Same
  *   directory layout; what it prints at the end is the scenario's own page (`<feature>/<name>.<state>.html`,
  *   one per state), which is the feedback to hand over — `index.html` is still written beside it.
+ *
+ * `simul report <scenario.trace.json>...`
+ *   Replay → HTML of the named committed traces, no recording and no LLM — the report of what a feature
+ *   branch changed: its workflow passes the traces that differ from the base branch, and each is replayed
+ *   as its author recorded it against the build being handed out. One trace is one run (`<name>@<state>.trace.json`
+ *   is that state only). Same directory layout without `record.json`/`record/`; the last line is `index.html`.
  *
  * `simul report --runs <dir> [--out <dir>] [--title <app name>] [--check]`
  *   The same pages from an existing `simul run --runs` directory (in place by default; with `--out`
@@ -43,10 +49,14 @@ import java.io.File
  */
 internal fun reportCommand(args: List<String>, cwd: File): Int {
     if (args.isEmpty()) return replayAndReport(cwd, emptyList())
-    // Scenario files, nothing else: the try-out form. (`--out x.md` below is a summary report's output, not a scenario.)
+    // Scenario files or committed traces, nothing else: the scoped forms. (`--out x.md` below is a summary report's output, not a scenario.)
     if (args.none { it.startsWith("--") } && args.any { it.endsWith(".md") }) {
-        if (!args.all { it.endsWith(".md") }) return err("`simul report <scenario.md>...` takes scenario files only (no summary.json)")
+        if (!args.all { it.endsWith(".md") }) return err("`simul report <scenario.md>...` takes scenario files only (no summary.json, no trace — traces alone are replayed without recording)")
         return replayAndReport(cwd, args)
+    }
+    if (args.none { it.startsWith("--") } && args.any { it.endsWith(SimulProject.TRACE_SUFFIX) }) {
+        if (!args.all { it.endsWith(SimulProject.TRACE_SUFFIX) }) return err("`simul report <trace.json>...` takes trace files only (no summary.json)")
+        return replayAndReport(cwd, args, record = false)
     }
     var format: String? = null
     var title = "simul report"
@@ -104,15 +114,15 @@ internal fun reportCommand(args: List<String>, cwd: File): Int {
 /**
  * `simul report` alone: record every scenario with the LLM, replay the recordings into the same stamped
  * directory, write its HTML. With [scenarios] (md paths, as `simul run` resolves them) the same for those only,
- * and the last line names their pages instead of the index.
+ * and the last line names their pages instead of the index. Without [record] the [scenarios] are committed traces
+ * and the recording is skipped: those traces are replayed as they are, and the index is the report.
  */
-private fun replayAndReport(cwd: File, scenarios: List<String>): Int {
+private fun replayAndReport(cwd: File, scenarios: List<String>, record: Boolean = true): Int {
     val project = SimulProject.find(cwd) ?: return err("no .simul/ directory found from $cwd upwards")
     val dir = File(project.reportsDir, java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmm")))
     dir.mkdirs()
     val scope = scenarios.ifEmpty { listOf("--all") }
     val what = if (scenarios.isEmpty()) "every scenario" else scenarios.joinToString(", ")
-    println("── record: $what with the LLM ──")
     // the recording lands under record/ in the same layout as the replay, screen recording included, so a failed
     // recording's page plays its own timeline (every step the agent did, the frame after each action) and not just the frame it stopped on
     // a phase that dies (not: fails) must not take the other one and the pages with it
@@ -121,14 +131,17 @@ private fun replayAndReport(cwd: File, scenarios: List<String>): Int {
         e.printStackTrace()
         1
     }
-    val recordRc = phase("record", listOf("--mode", "llm", "--video", "--summary", File(dir, "record.json").path, "--label", "record", "--runs", File(dir, Site.RECORD_DIR).path))
-    println()
-    println("── replay: what was just recorded, no LLM ──")
+    val recordRc = if (!record) 0 else {
+        println("── record: $what with the LLM ──")
+        phase("record", listOf("--mode", "llm", "--video", "--summary", File(dir, "record.json").path, "--label", "record", "--runs", File(dir, Site.RECORD_DIR).path))
+            .also { println() }
+    }
+    println(if (record) "── replay: what was just recorded, no LLM ──" else "── replay: $what as committed, no LLM ──")
     val replayRc = phase("replay", listOf("--mode", "replay", "--video", "--runs", dir.path))
     val html = File(dir, "index.html")
     if (!html.isFile) return if (replayRc == 0) err("no report written under ${dir.relativeToOrSelf(cwd)}") else replayRc
     println()
-    val pages = if (scenarios.isEmpty()) listOf(html)
+    val pages = if (scenarios.isEmpty() || !record) listOf(html)
                 else Site.load(dir).results.map { SitePages.pageFile(dir, it) }.filter { it.isFile }.ifEmpty { listOf(html) }
     pages.forEach { println("open ${it.relativeToOrSelf(cwd).path}") }
     return if (recordRc != 0 || replayRc != 0) 1 else 0

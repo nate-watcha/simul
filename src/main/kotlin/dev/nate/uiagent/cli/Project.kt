@@ -30,9 +30,15 @@ class SimulProject(val appRoot: File) {
      * that declares `states:`, one per state: `<name>@<state>.trace.json`.
      */
     fun traceFileFor(md: File, state: String? = null): File =
-        File(md.parentFile, md.nameWithoutExtension + (state?.let { "@$it" } ?: "") + ".trace.json")
+        File(md.parentFile, md.nameWithoutExtension + (state?.let { "@$it" } ?: "") + TRACE_SUFFIX)
 
     fun traceFileFor(md: File, scenario: Scenario): File = traceFileFor(md, scenario.state)
+
+    /** [traceFileFor] inverted: the scenario file a trace sits next to, and the state it is the trace of (null = stateless). */
+    fun scenarioOfTrace(trace: File): Pair<File, String?> {
+        val base = trace.name.removeSuffix(TRACE_SUFFIX)
+        return File(trace.absoluteFile.parentFile, base.substringBefore('@') + ".md") to base.substringAfter('@', "").ifEmpty { null }
+    }
 
     /**
      * Every runnable scenario — each `states:` scenario expanded to its variants — paired with
@@ -55,6 +61,8 @@ class SimulProject(val appRoot: File) {
     }
 
     companion object {
+        const val TRACE_SUFFIX = ".trace.json"
+
         /** Walk up from [from] looking for a `.simul/` directory. */
         fun find(from: File): SimulProject? {
             var dir: File? = from.absoluteFile

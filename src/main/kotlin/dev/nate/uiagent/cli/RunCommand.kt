@@ -81,12 +81,18 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     // A `states:` scenario is several runs — one variant per state, each with its own trace.
     val targets: List<Pair<File, Scenario>> = when {
         paths.isNotEmpty() -> paths.flatMap { p ->
-            val md = resolvePath(cwd, p).takeIf { it.isFile } ?: File(project.scenariosDir, p).takeIf { it.isFile }
+            val file = resolvePath(cwd, p).takeIf { it.isFile } ?: File(project.scenariosDir, p).takeIf { it.isFile }
                 ?: return err("scenario not found: $p")
+            // a committed trace names one run: its scenario in the state it was recorded in
+            val ofTrace = file.takeIf { it.name.endsWith(SimulProject.TRACE_SUFFIX) }?.let(project::scenarioOfTrace)
+            val md = ofTrace?.first ?: file
+            if (!md.isFile) return err("$p: no scenario beside this trace (${md.name})")
             val variants = try { ScenarioMd.parse(md).variants() } catch (e: IllegalArgumentException) {
                 return err("${md.relativeToOrSelf(cwd)}: ${e.message}")
             }
-            variants.filter { stateFilter == null || it.precondition == stateFilter }.map { md to it }
+            val named = if (ofTrace == null) variants else variants.filter { it.state == ofTrace.second }
+                .ifEmpty { return err("$p: ${md.name} has no such run (its traces: ${variants.joinToString { project.traceFileFor(md, it).name }})") }
+            named.filter { stateFilter == null || it.precondition == stateFilter }.map { md to it }
         }
         all || tags.isNotEmpty() || stateFilter != null -> {
             var broken = false
