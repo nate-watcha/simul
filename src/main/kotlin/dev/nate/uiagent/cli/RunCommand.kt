@@ -285,7 +285,7 @@ internal fun executeScenario(
         file = relPath,
         title = scenario.title ?: scenario.name,
         owner = scenario.owner,
-        description = scenario.description,
+        description = fillValues(scenario.description, result.values),
         traceRecordedAt = traceRecordedAt(traceFile, project.appRoot),
         env = ResultJson.Env(ops.appVersionName(project.config.app), ops.deviceName(), ops.androidCliVersion()),
     ), reportDir)

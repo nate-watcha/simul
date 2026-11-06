@@ -92,6 +92,8 @@ object ResultJson {
             put("file", meta.file)
             put("owner", meta.owner?.let(::JsonPrimitive) ?: JsonNull)
             put("description", meta.description)
+            // the scenario's `values:` as this run picked them — absent when it declares none
+            if (r.values.isNotEmpty()) put("values", buildJsonObject { r.values.forEach { (k, v) -> put(k, v) } })
             put("trace_recorded_at", meta.traceRecordedAt?.let(::JsonPrimitive) ?: JsonNull)
             put("status", if (r.setupFailed) "SKIPPED_SETUP" else r.status.name)
             val failed = r.steps.firstOrNull { it.status == StepStatus.FAILED }

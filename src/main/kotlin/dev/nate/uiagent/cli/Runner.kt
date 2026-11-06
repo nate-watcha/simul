@@ -69,6 +69,8 @@ data class ScenarioRunResult(
     val setupMs: Long = 0,
     /** What the steps cost on the device: observations, pauses, gestures, screenshots ([timeLine]). */
     val device: DeviceCost = DeviceCost(),
+    /** The scenario's `values:` as this run picked them (`name` → value) — the report shows the prose and steps with them. */
+    val values: Map<String, String> = emptyMap(),
     /** The scenario's whole wall time, [durationMs] plus what the CLI did around it (stopping the recording, logcat, result.json, the trace). */
     val wallMs: Long = 0,
 ) {
@@ -108,8 +110,13 @@ class ScenarioRunner(
     private val log: (String) -> Unit = {},
     /** Runs once setup (state restore, cold start, deeplink) is done and the first step is about to run — the CLI starts the screen recording here. */
     private val onSetupDone: () -> Unit = {},
+    /** How a run picks among the candidates of a scenario's `values:` entry that are not on screen. */
+    private val chooseValue: (List<String>) -> String = { it.random() },
 ) {
     private val replayer by lazy { Replayer(controller, log = log) }
+
+    /** This scenario run's picks for its `values:` ([run] starts each scenario with none). */
+    private var picks = ValuePicks(emptyMap())
 
     fun run(scenario: Scenario, trace: TraceFile?, mode: RunMode): ScenarioRunResult {
         require(mode != RunMode.AUTO) { "AUTO must be resolved to LLM/REPLAY (or skip) by the caller" }
@@ -141,6 +148,7 @@ class ScenarioRunner(
         val t0 = System.currentTimeMillis()
         val cost0 = controller.meter.cost
         var setupMs = 0L
+        picks = ValuePicks(scenario.values, log, chooseValue)
 
         // A broken setup (bad deeplink, adb hiccup) fails THIS scenario — it must never kill
         // the process and take the rest of a --all batch with it.
@@ -212,7 +220,7 @@ class ScenarioRunner(
         for ((i, text) in scenario.steps.withIndex()) {
             val n = i + 1
             if (failedAt != null) {
-                reports += StepReport(n, text, StepStatus.SKIPPED, null, emptyList(), emptyList(), null, 0, emptyList())
+                reports += StepReport(n, picks.fill(text), StepStatus.SKIPPED, null, emptyList(), emptyList(), null, 0, emptyList())
                 log("  step $n: SKIPPED")
                 continue
             }
@@ -228,7 +236,7 @@ class ScenarioRunner(
                 // The device did not do what the step needed (a dump that fails after its retries, a
                 // command past its time limit). That ends the step, not the scenario's record: the
                 // steps before it, this screen, the logcat and the recording still make a result.
-                StepReport(n, text, StepStatus.FAILED, if (mode == RunMode.LLM) "llm" else "replay", emptyList(), emptyList(),
+                StepReport(n, picks.fill(text), StepStatus.FAILED, if (mode == RunMode.LLM) "llm" else "replay", emptyList(), emptyList(),
                     "device command failed: ${ex.brief}", 0, emptyList())
             } finally {
                 listener.delegate = null
@@ -251,7 +259,8 @@ class ScenarioRunner(
             if (done.status == StepStatus.FAILED) failedAt = n
             else {
                 if (done.mode == "replay" && n in coordDirtySteps) coordDirty = true
-                newSteps += TraceStep(text, done.actions, done.evidence, done.stateEvidence)
+                // the trace keeps the step as the scenario wrote it — `$name`, not the value this run picked
+                newSteps += picks.template(TraceStep(text, done.actions, done.evidence, done.stateEvidence))
             }
         }
 
@@ -267,7 +276,7 @@ class ScenarioRunner(
         return ScenarioRunResult(
             scenario.name, status, reports, updatedTrace,
             System.currentTimeMillis() - t0, startedAtMs = t0,
-            setupMs = setupMs, device = controller.meter.cost - cost0,
+            setupMs = setupMs, device = controller.meter.cost - cost0, values = picks.picked.toMap(),
         )
     }
 
@@ -289,16 +298,17 @@ class ScenarioRunner(
     /** Steps whose replay used a coordinate fallback — their lastCoords rewrite must be persisted. */
     private val coordDirtySteps = mutableSetOf<Int>()
 
-    private fun runLlmStep(n: Int, text: String): StepReport {
+    private fun runLlmStep(n: Int, written: String): StepReport {
+        // The session carries the screen state across steps via each action's diff, so a fresh
+        // full observation (and its ~1k prompt tokens) is only needed at conversation start.
+        val initial = if (controller.currentElements.isEmpty()) firstObservation() else null
+        val before = controller.currentElements
+        val text = filled(written, before)
         val spec = StepSpec.parse(text)
         // record mode keeps the per-action before/after shots: they are what a reviewer of a
         // fresh trace looks at
         val recorder = StepRecorder(n, ::shoot, anchors = quotedLabels(spec.command))
         listener.delegate = recorder
-        // The session carries the screen state across steps via each action's diff, so a fresh
-        // full observation (and its ~1k prompt tokens) is only needed at conversation start.
-        val initial = if (controller.currentElements.isEmpty()) firstObservation() else null
-        val before = controller.currentElements
         val verdict = llm.runStep(spec.command, initial, spec.criterion)
         listener.delegate = null
         val after = controller.currentElements
@@ -330,15 +340,17 @@ class ScenarioRunner(
      * trace; that divergence is the test result. The fix is a human decision: re-record with
      * --mode llm (screen legitimately changed) or fix the app (regression).
      */
-    private fun runReplayStep(n: Int, text: String, traceStep: TraceStep?): StepReport {
-        val ts = traceStep?.takeIf { it.text == text }
-            ?: return StepReport(n, text, StepStatus.FAILED, "replay", emptyList(), emptyList(),
+    private fun runReplayStep(n: Int, written: String, traceStep: TraceStep?): StepReport {
+        val recorded = traceStep?.takeIf { it.text == written }
+            ?: return StepReport(n, picks.fill(written), StepStatus.FAILED, "replay", emptyList(), emptyList(),
                 "trace missing/stale for this step — record with --mode llm", 0, emptyList())
 
         // replay takes no per-action screenshots: the step-end frame (steps/NN.png) is the
         // report's picture of the step, and the recording has the motion
         val marker = StepRecorder(n)
         listener.delegate = marker
+        var text = written
+        var ts = recorded
         // Single-dump observations for the whole replay attempt: the Replayer retries every
         // failure after a stabilized re-observation, so the verdict stays deterministic while
         // the happy path halves its `android layout` calls.
@@ -347,6 +359,8 @@ class ScenarioRunner(
             // Re-observe only when there is no grounding yet (scenario start). Between steps
             // the previous action already observed — an observation costs seconds on-device.
             if (controller.currentElements.isEmpty()) firstObservation()
+            text = filled(written, controller.currentElements)
+            ts = picks.fill(recorded)
             replayer.replayStep(ts)
         } finally {
             controller.fastObserve = false
@@ -364,6 +378,16 @@ class ScenarioRunner(
         return StepReport(n, text, StepStatus.FAILED, "replay", emptyList(), expected - replay.missing.toSet(),
             "replay broken: ${replay.broken.why}", 0, emptyList(),
             marks = marker.marks.toList(), expectedEvidence = expected)
+    }
+
+    /**
+     * The step as this run performs it: a `$name` of the scenario's `values:` becomes the value picked
+     * for it — picked here, against [screen], when this is the first step to use it ([ValuePicks]).
+     */
+    private fun filled(written: String, screen: List<dev.nate.uiagent.LogicalElement>): String {
+        picks.settle(written, screen)
+        picks.learnQuotes(written)
+        return picks.fill(written)
     }
 
     private fun applyCoordUpdates(ts: TraceStep, updates: Map<Int, Point>): TraceStep {

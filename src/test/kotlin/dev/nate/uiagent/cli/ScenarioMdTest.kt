@@ -193,6 +193,30 @@ class ScenarioMdTest {
     }
 
     @Test
+    fun `values are named candidates the prose and steps refer to as $name`() {
+        val md = """
+            ---
+            name: rename
+            values:
+              name: [노을, 바다, 구름]
+            ---
+            이름을 "${'$'}name"으로 바꾼다.
+
+            1. "이름" 필드에 "${'$'}name"을 입력한다
+            2. "완료"를 누른다 :: 프로필에 "${'$'}name"이 보인다
+        """.trimIndent()
+        val s = ScenarioMd.parse(md)
+        assertEquals(mapOf("name" to listOf("노을", "바다", "구름")), s.values)
+        assertEquals("\"이름\" 필드에 \"\$name\"을 입력한다", s.steps.first(), "a Korean particle right after the name is not part of it")
+
+        // a `$word` that names nothing is a typo once the scenario declares values, and one candidate is no choice
+        assertFailsWith<IllegalArgumentException> { ScenarioMd.parse(md.replace("\"\$name\"이 보인다", "\"\$nmae\"이 보인다")) }
+        assertFailsWith<IllegalArgumentException> { ScenarioMd.parse(md.replace("[노을, 바다, 구름]", "[노을]")) }
+        // without `values:` a dollar sign is just text
+        assertEquals(listOf("Verify the price \"\$price\" is shown"), ScenarioMd.parse("1. Verify the price \"\$price\" is shown").steps)
+    }
+
+    @Test
     fun `description is prose between frontmatter and first step, headings dropped`() {
         val s = ScenarioMd.parse(
             """

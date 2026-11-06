@@ -5,6 +5,7 @@ import dev.nate.uiagent.device.DevicePins
 import dev.nate.uiagent.device.DeviceSetting
 import dev.nate.uiagent.device.DeviceOps
 import dev.nate.uiagent.FakeDevice
+import dev.nate.uiagent.StaticDevice
 import dev.nate.uiagent.layout
 import dev.nate.uiagent.el
 import dev.nate.uiagent.tempDir
@@ -28,7 +29,7 @@ class RunnerTest {
     private val screenA = layout(tabA)
     private val screenB = layout(tabA.copy(state = listOf("selected")), home)
 
-    private class Harness(dev: FakeDevice, behavior: (DeviceController, String) -> ScenarioSession.Verdict) {
+    private class Harness(dev: Device, behavior: (DeviceController, String) -> ScenarioSession.Verdict) {
         val listener = SwitchableListener()
         val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
         val executor = ScriptedExecutor { text -> behavior(controller, text) }
@@ -43,6 +44,48 @@ class RunnerTest {
         setup = Scenario.Setup(deeplink = "app://home", launch = false),
         steps = listOf("Tap the \"웹툰\" tab", "Verify \"웹툰 홈\" is shown"),
     )
+
+    // ------------------------------------------------------------------ values
+
+    @Test
+    fun `a scenario value is picked off what the screen shows, typed, and kept in the trace by its name`() {
+        fun screen(name: String) =
+            layout(el(name, resourceId = "name_field", interactions = listOf("clickable", "focusable"), center = Point(360, 400)))
+        val shown = StaticDevice(screen("노을")) // the name the last run saved
+        val dev = object : Device by shown {
+            override fun inputText(text: String, resourceId: String?) { shown.layout = screen(text) }
+        }
+        val commands = mutableListOf<String>()
+        val h = Harness(dev) { c, command ->
+            commands += command
+            c.type("name_field", quotedLabels(command).last())
+            ScenarioSession.Verdict(true, "ok")
+        }
+        val rename = Scenario(
+            name = "rename", tags = emptyList(), setup = null,
+            steps = listOf("\"name_field\" 필드에 \"\$name\"을 입력한다 :: \"\$name\"이 보인다"),
+            values = mapOf("name" to listOf("노을", "바다")),
+        )
+
+        val recorded = h.runner.run(rename, trace = null, mode = RunMode.LLM)
+
+        assertEquals(StepStatus.PASSED, recorded.status, recorded.steps.first().reason)
+        assertEquals(listOf("\"name_field\" 필드에 \"바다\"을 입력한다"), commands, "the model is given the value, and not the one already on screen")
+        assertEquals(mapOf("name" to "바다"), recorded.values)
+        assertTrue("\"바다\"" in recorded.steps.first().text, "the report reads with the value in place")
+        val step = recorded.updatedTrace!!.steps.single()
+        assertEquals(rename.steps.single(), step.text)
+        assertEquals("\$name", step.actions.single().text, "a trace must not change with the value a run happened to pick")
+        assertTrue("\$name" in step.evidence && "바다" !in step.evidence, step.evidence.toString())
+
+        // the next run finds "바다" saved, so it takes the other candidate — typed and gated on without a model
+        val replayed = h.runner.run(rename, trace = recorded.updatedTrace, mode = RunMode.REPLAY)
+
+        assertEquals(StepStatus.PASSED, replayed.status, replayed.steps.first().reason)
+        assertEquals(mapOf("name" to "노을"), replayed.values)
+        assertEquals("노을", shown.layout.elements.single().label)
+        assertEquals(1, h.executor.calls, "replay never consults the model")
+    }
 
     // ------------------------------------------------------------------ device settings
 

@@ -135,7 +135,7 @@ fun outcomeOf(project: SimulProject, md: File, scenario: Scenario, r: ScenarioRu
         reason = null,
         llm = r.llm,
         video = r.video?.file?.relativeToOrSelf(project.appRoot)?.path,
-        description = scenario.description,
+        description = fillValues(scenario.description, r.values),
     )
 }
 

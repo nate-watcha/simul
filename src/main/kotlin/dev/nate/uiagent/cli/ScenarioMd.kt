@@ -37,6 +37,8 @@ data class Scenario(
     val title: String? = null,
     /** Who answers for this scenario (`owner:`) — the report mentions them on a failure. */
     val owner: String? = null,
+    /** `values:` — a name and the candidates a run picks one of for every `$name` in the prose and steps (see [ValuePicks]). */
+    val values: Map<String, List<String>> = emptyMap(),
 ) {
     /** The app state this scenario requires: appState name, "guest" for clearData, or null
      *  (undeclared — runs against whatever state the device happens to be in). */
@@ -113,6 +115,10 @@ data class Scenario(
         /** State names double as file names (`<name>.tar`, `<md>@<name>.trace.json`). */
         private val STATE_NAME = Regex("[A-Za-z0-9._-]+")
         fun isValidStateName(s: String): Boolean = STATE_NAME.matches(s)
+
+        /** ASCII only, so a Korean particle written right after `$name` ends the name. */
+        private val VALUE_NAME = Regex("[A-Za-z_][A-Za-z0-9_]*")
+        fun isValidValueName(s: String): Boolean = VALUE_NAME.matches(s)
     }
 }
 
@@ -155,6 +161,15 @@ object ScenarioMd {
                 "scenario '$name': `states:` already selects the app state — drop setup.appState/clearData"
             }
         }
+        val values = parseValues(y["values"], name)
+        if (values.isNotEmpty()) {
+            // with `values:` declared a `$word` is a reference — one that names nothing is a typo, not text
+            val written = stepDefs.flatMap { d -> listOf(d.command) + d.criteria.map { it.text } } + description
+            val unknown = written.flatMap(::valueRefs).distinct() - values.keys
+            require(unknown.isEmpty()) {
+                "scenario '$name': ${unknown.joinToString(", ") { "\$$it" }} is not in `values:` (declared: ${values.keys.joinToString(", ")})"
+            }
+        }
         return Scenario(
             name = name,
             tags = MiniYaml.list(y, "tags"),
@@ -165,7 +180,22 @@ object ScenarioMd {
             description = description,
             states = states,
             stepDefs = stepDefs,
+            values = values,
         )
+    }
+
+    /** `values:` — `name: [a, b, …]`, at least two candidates each (one would be the same value every run). */
+    private fun parseValues(raw: Any?, scenario: String): Map<String, List<String>> {
+        if (raw == null) return emptyMap()
+        val map = raw as? Map<*, *> ?: throw IllegalArgumentException("scenario '$scenario': `values:` must be `name: [a, b, …]` entries")
+        return map.entries.associate { (k, v) ->
+            val key = k as String
+            require(Scenario.isValidValueName(key)) { "scenario '$scenario': value name '$key' must be [A-Za-z_][A-Za-z0-9_]*" }
+            val candidates = (v as? List<*>)?.filterIsInstance<String>()?.distinct() ?: emptyList()
+            require(candidates.size >= 2) { "scenario '$scenario': values.$key needs at least two candidates, as `$key: [a, b]`" }
+            require(candidates.none { c -> c.any { it in "\"“”‘’'$" } }) { "scenario '$scenario': values.$key candidates cannot contain quotes or \$" }
+            key to candidates
+        }
     }
 
     fun parse(file: File): Scenario = parse(file.readText(), file)
