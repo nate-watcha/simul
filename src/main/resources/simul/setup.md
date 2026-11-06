@@ -127,22 +127,3 @@ setup:
 - 첫 스텝은 목적지 액티비티가 `reportFullyDrawn()`을 부른 뒤에 시작한다(러너가 logcat의 `Fully drawn`을 기다림 — 스플래시 액티비티
   위에서 관찰하지 않게). 런 로그에 "app did not report fully drawn" 경고가 보이면 그 액티비티에 호출이 빠진 것이다 — 시나리오에 대기
   스텝을 넣지 말고 앱에 호출을 넣는다.
-
-## 도착 확인 시나리오 (`deeplink/` 그룹)
-
-액션 없이 도착 화면의 랜드마크 하나만 Verify한다.
-
-```markdown
----
-name: deeplink-coupons
-tags: [deeplink, member]
-setup:
-  appState: member-basic
-  deeplink: example://settings/coupons
----
-
-1. "등록된 쿠폰" 목록이 보이는지 확인한다
-```
-
-앱이 URI를 못 받으면 하니스가 setup 단계에서 실패시키고, 받았지만 아무 화면도 안 열면 Verify가 잡는다. `:id` 같은 파라미터가 있는 스킴은
-실데이터가 있어야 검증된다.
