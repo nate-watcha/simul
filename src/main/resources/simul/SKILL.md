@@ -61,7 +61,8 @@ setup:
 
 - `name`, `tags`가 리포트와 `simul list`에 쓰인다. `title`, `owner`는 선택.
 - `setup`이 진입이다. `appState`(또는 `clearData: true`)로 전제 상태를, `deeplink` 또는 `launch: true`로 시작 화면을 정한다. 모든
-  시나리오가 전제 상태를 선언한다. 스냅샷 만들기, 딥링크·런치 선택, 기기 설정·앱 언어는 [setup.md](references/setup.md).
+  시나리오가 전제 상태를 선언한다. 스냅샷 만들기, 딥링크·런치 선택은 [setup.md](references/setup.md). 기기 설정·앱 언어·계정 설명처럼
+  시나리오에 맞춰 환경을 조절하는 방법은 [config.md](references/config.md).
 - **번호 리스트만 실행된다.** 설명문은 사람용이고 리포트의 시나리오 페이지에 영상 옆에 그대로 보인다. 그 화면을 모르는 사람이 읽어도 무엇을
   확인하는지 알게 한두 문장.
 

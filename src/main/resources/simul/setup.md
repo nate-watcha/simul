@@ -17,14 +17,11 @@ setup:
 - `clearData: true`는 스냅샷 없이 pm clear만 한다. 게스트(신규 설치) 상태 보장.
 - 모든 시나리오는 `appState:` 또는 `clearData: true`를 선언한다. 없으면 결과가 기기의 현재 상태에 따라 달라진다.
 - 이름과 태그에 전제를 드러낸다: `guest-library-login-prompt`, `tags: [member]`.
-- 상태가 **누구인지는 config.yaml `states:`에 한 줄씩** 적는다(`guest: 로그인하지 않은 사용자`, `member: 로그인한 구독 계정`). 그 줄이
-  시나리오의 모델 세션에 ACCOUNT STATE로 들어가, 비구독자가 감상하기에서 구독 화면을 만나는 것을 모델이 앱 오류로 오판하지 않게 한다. 앱
-  전반의 사실(어떤 앱인지, 누가 어떤 월을 만나는지)은 `context: |`에. 둘 다 **사실만** — "떠야 한다"는 스텝의 `::`에 쓴다.
+- 상태가 어떤 계정인지는 config.yaml `states:`에 한 줄로 짧게 적는다. [config.md](config.md).
 - 스냅샷 복원은 debuggable 빌드(`run-as`) 전제다. 토큰이 Keystore로 암호화된 앱은 복원이 깨지므로 로그인된 AVD 스냅샷으로 대체한다.
 - 스냅샷 tar에는 테스트 계정 토큰이 들어간다. 커밋 여부는 팀 보안 기준으로 정하고, 만료되면 `state save`를 다시 한다.
 - 스냅샷이 되돌리는 것은 **앱 데이터뿐**이다. 팔로우, 차단, 프로필 값 같은 계정의 서버 데이터는 앞 실행이 남긴 그대로다. 그래서 서버 상태를
-  바꾸는 시나리오는 끝 상태가 시작 상태와 같아야 하고(SKILL.md "쓴 뒤 체크"), 상태가 전제하는 서버 데이터(평가 몇 개, 누구를
-  팔로우·차단했는지)는 config.yaml `states:` 줄에 적어 둔다 — 틀어졌을 때 무엇으로 되돌릴지의 기준이 그 줄이다.
+  바꾸는 시나리오는 끝 상태가 시작 상태와 같아야 한다(SKILL.md "쓴 뒤 체크").
 
 ## 여러 상태를 한 파일로: `states:`
 
@@ -45,71 +42,10 @@ setup:
 - 스텝 아래 `:: <state> → 기준` 줄은 그 상태에만 적용되고, 접두 없는 `::`(같은 줄이든 아래 줄이든)는 모든 상태에 적용된다. 한 상태에 접두
   기준이 있으면 그 상태에서는 접두 없는 기준을 대신한다 — "기본 기대"를 접두 없이 쓰고, 다른 상태에만 접두로 덮어쓴다.
 
-## 앱 데이터가 아닌 전제: 에뮬레이터 설정
+## 앱 데이터가 아닌 전제
 
-Google 비밀번호 관리자의 자격 증명 제공자, 자동완성 서비스, 전체화면 "Got it" 안내 같은 것은 기기 설정이라 pm clear로도 스냅샷 복원으로도
-바뀌지 않는다. 이메일 로그인을 한 번 녹화하면 그 뒤 모든 게스트 콜드 런치에 "Use your saved password" 시트가 뜨는 식이다. 이런 전제는
-**시나리오 스텝이 아니라 설정으로 선언**하고 러너가 adb(`settings get/put`)로 맞춘다 — 모델이 설정 앱을 조작하게 하지 않는다(adb가 같은
-결과를 결정론적으로 내고, replay는 LLM 0회여야 한다).
-
-두 층이다. `.simul/config.yaml`의 `device.settings`는 모든 시나리오가 전제하는 기본값이고, 시나리오 `setup.device.settings`는 그
-시나리오만 반대 상태가 필요할 때(저장된 비밀번호 시트 자체를 검증할 때) 덮어쓰는 값이다.
-
-```yaml
-# .simul/config.yaml — 실행 시작에 맞추고 끝나면 이전 값으로 되돌린다
-device:
-  settings:
-    secure.credential_service: ""              # 제공자 없음 → 시트 안 뜸
-    secure.credential_service_primary: ""
-    secure.autofill_service: null              # null = 키 삭제(settings delete)
-    secure.immersive_mode_confirmations: confirmed
-```
-
-```yaml
-# 시나리오 frontmatter — 이 시나리오의 launch 전에 바꾸고, 끝나면 기본값으로 복귀
-setup:
-  appState: guest
-  launch: true
-  device:
-    settings:
-      secure.credential_service: com.google.android.gms/com.google.android.gms.auth.api.credentials.credman.service.PasswordAndPasskeyService
-```
-
-- 키는 `<namespace>.<key>`(`system|secure|global`), 값은 `settings put`에 그대로 들어간다. `""`는 빈 문자열, `null`은 키 삭제다.
-  현재 값을 읽어 다를 때만 쓰고, 바꾼 것만 되돌린다.
-- 에뮬레이터에서만 동작한다. 실기기는 경고 한 줄 뒤 무시한다(display와 같은 규칙).
-- 설정을 켠다고 시트가 뜨는 건 아니다 — 저장된 자격 증명이 Google 계정 데이터로 **AVD 안에** 있어야 한다. 그 전제는 앞 시나리오의 부수효과에
-  기대지 말고 러너 AVD 이미지에 한 번 저장해 둔다.
-- `states:` variant는 같은 `device` 블록을 상속한다.
-
-### 앱 언어
-
-같은 `device` 블록의 `locale`은 **앱의 언어**다(Android 13+ 앱별 언어, `cmd locale set-app-locales <app>`). 시나리오의 따옴표
-라벨은 한 언어로 쓰이므로 러너 AVD나 개발자 에뮬레이터의 시스템 언어와 무관하게 앱을 그 언어로 띄운다. 시스템 언어는 건드리지 않는다(root와
-프레임워크 재시작이 필요하다).
-
-```yaml
-# .simul/config.yaml — 모든 시나리오의 기본 언어
-device:
-  locale: ko-KR           # BCP-47 태그, 또는 선호 목록 `ko-KR,en-US`
-  settings: …
-```
-
-```yaml
-# 시나리오 frontmatter — 이 시나리오만 다른 언어로
-setup:
-  appState: guest
-  launch: true
-  device:
-    locale: en-US
-```
-
-- `settings`와 달리 앱 상태라 **pm clear가 지운다**(실측). 그래서 setup 안에서 pm clear·스냅샷 복원 **뒤**, launch **앞**에 걸고,
-  시나리오가 끝나면 이전 값(보통 "시스템 따름")으로 되돌린다.
-- 앱이 매니페스트에 `localeConfig`를 선언하지 않아도 동작한다(설정 앱의 "앱 언어" 메뉴에만 안 뜬다). 앱이 자체
-  설정값(SharedPreferences)만 읽는 독자 구현이면 효과가 없다 — `AppCompatDelegate.setApplicationLocales`는 API 33+에서 같은 시스템
-  값으로 위임되므로 괜찮다.
-- 앱 하나만 건드리므로 pm clear와 같이 실기기에서도 적용한다(display/settings는 에뮬레이터 전용).
+저장된 비밀번호 시트, 자동완성, 앱 언어처럼 앱 데이터 밖에 있는 전제는 스텝이 아니라 설정으로 선언한다. 그 시나리오만 필요하면 frontmatter의
+`setup.device`에, 모든 시나리오가 전제하면 config.yaml의 `device`에. [config.md](config.md).
 
 ## 진입
 
