@@ -15,7 +15,7 @@ display:
 #   A subscription video app. Guests and non-subscribers may meet a login or subscription
 #   wall on play, library and comments; payment goes to the Google Play sheet.
 #                    # Facts only. Never "tapping play must open the wall": expectations belong
-#                    # to a step's `::` clause — written here they let a regression pass as normal.
+#                    # to the scenario's Verify steps — written here they let a regression pass as normal.
 # states:            # who each `.simul/states/<name>` is — the scenario's own line joins its prompt
 #   guest: not signed in
 #   member: signed in, subscribed
