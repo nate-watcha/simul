@@ -21,7 +21,8 @@ import javax.imageio.ImageIO
  *     actions and their frames, `record/NN.jpg`) with the recording's own mp4, and the replay of the committed
  *     trace is folded under it. A scenario with `## title` sections shows its steps under them — one foldable,
  *     numbered block per section in the order they ran, with its prose and status, the `## 준비` section ahead
- *     of them with what the model found or did; the player's bar is split the same way.
+ *     of them with what the model found or did; each block has a player of its own, playing that section's part
+ *     of the run's one recording.
  *
  * Pages are self-contained apart from their assets beside them: `<name>.<state>/replay.mp4`,
  * `steps/NN.jpg` and `record/NN.jpg` (downscaled screenshots). Built inside the run directory itself
@@ -312,7 +313,6 @@ object SitePages {
         val thumbs = if (rec != null) frames.steps else copyAssets(r, out, opts)
         val video = if (rec != null) recordVideo(rec, out) else replayVideo
         val u = up(r.feature)
-        val executed = t.steps.filter { it.status != "SKIPPED" }
         val sb = StringBuilder()
         head(sb, r.title, u)
         sb.append("<div class=topbar><div class=inner><span class=brand>simul</span><nav class=crumbs><a href=\"${u}index.html\">${esc(app)}</a><span>/</span><span>${esc(r.feature.ifEmpty { "(root)" })}</span><span>/</span><b>${esc(r.name)}</b></nav><span class=right>${esc(run.date)}</span></div></div><main class=detail>")
@@ -354,45 +354,26 @@ object SitePages {
         }
         sb.append("<span class=right><span class=dim>${esc(".simul/scenarios/${r.file}")}</span></span></div></header>")
 
-        // ---- the timeline
-        sb.append("<div class=cols><section class=steps><h2>${if (rec != null) "오늘 녹화 (LLM)" else "STEPS"}</h2>")
-        if (t.steps.isEmpty()) sb.append("<p class=dim>재생 없음 — ${esc(t.reason ?: t.status)}</p>")
-        setupRow(sb, t)
-        timeline(sb, t, filmAt = rec?.failedStep, film = frames.actions)
-        sb.append("</section>")
-
-        // ---- the player: the timeline's mp4, else its step frames
-        sb.append("<aside class=replay><h2>${if (rec != null) "녹화" else "REPLAY"} · ${esc(hm(t.startedAt))}</h2><div class=player>")
-        sb.append("<div class=frame>")
-        if (video != null) sb.append("<video id=v src=\"${attr(video)}\" preload=metadata playsinline></video>")
-        else {
-            val first = executed.firstOrNull()?.let { thumbs[it.n] }
-            sb.append(if (first != null) "<img id=still src=\"${attr(first)}\" alt=\"스텝 화면\">" else "<span class=dim>녹화 없음 (--video)</span>")
+        // ---- the timeline and what plays it: one player beside the steps, or — a scenario with sections — one in every
+        // section's block, so each of its scenarios is read with its own video
+        val heading = if (rec != null) "오늘 녹화 (LLM)" else "STEPS"
+        val hint = if (video != null) "스텝이나 막대를 클릭하면 영상이 그 스텝으로 이동" else "스텝을 클릭하면 그 스텝이 끝난 화면"
+        val download = if (video != null) "<div class=btns><a class=btn href=\"${attr(video)}\" download>mp4 다운로드</a></div>" else ""
+        if (t.sections.isEmpty()) {
+            sb.append("<div class=cols data-scope><section class=steps><h2>$heading</h2>")
+            if (t.steps.isEmpty()) sb.append("<p class=dim>재생 없음 — ${esc(t.reason ?: t.status)}</p>")
+            setupRow(sb, t)
+            timeline(sb, t, filmAt = rec?.failedStep, film = frames.actions)
+            sb.append("</section><aside class=replay><h2>${if (rec != null) "녹화" else "REPLAY"} · ${esc(hm(t.startedAt))}</h2>")
+            player(sb, t, t.steps, video, thumbs, footer = "<div class=dim>$hint</div>$download")
+            sb.append("</aside></div>")
+        } else {
+            sb.append("<section class=\"steps grouped\"><h2>$heading<span class=hint>구간마다 그 구간의 영상 · $hint</span></h2>")
+            setupRow(sb, t)
+            timeline(sb, t, filmAt = rec?.failedStep, film = frames.actions, players = Players(video, thumbs))
+            if (video != null) sb.append("<div class=whole><span class=dim>영상 파일은 하나입니다 — 구간마다 그 구간만 재생합니다.</span><a class=btn href=\"${attr(video)}\" download>전체 mp4 다운로드</a></div>")
+            sb.append("</section>")
         }
-        sb.append("<div class=caption id=cap>${executed.firstOrNull()?.let { "${esc(at(t, it))} · ${esc(it.text)}" } ?: ""}</div></div>")
-        sb.append("<div class=controls>")
-        if (video != null) sb.append("<button type=button id=play aria-label=\"재생\">▶</button>")
-        val total = executed.sumOf { it.durationMs }.coerceAtLeast(1)
-        fun weight(s: ResultJson.Step) = (s.durationMs * 1000 / total).coerceAtLeast(20)
-        fun segment(s: ResultJson.Step) = "<i class=\"${cls(s.status)}\" data-step=${s.n} style=\"flex:${weight(s)}\" title=\"${noOf(t, s)}. ${attr(s.text)}\"></i>"
-        if (t.sections.isEmpty()) sb.append("<span class=segments id=segs>${t.steps.joinToString("") { segment(it) }}</span>")
-        else {
-            // one group per section, named under its part of the bar (as wide as its share of the time; a section that
-            // did not run, as wide as its name); the name goes to the section's first step
-            sb.append("<span class=\"segments grouped\" id=segs>")
-            var order = 0
-            for (sec in t.sections) {
-                val steps = t.steps.filter { it.n in sec.from..sec.to }
-                val first = steps.firstOrNull { it.status != "SKIPPED" }
-                sb.append("<span class=\"grp ${cls(sec.status)}\" style=\"flex:${if (sec.status == "SKIPPED") "0 0 auto" else steps.sumOf { weight(it) }.toString()}\"><span class=bar>${steps.joinToString("") { segment(it) }}</span>")
-                sb.append("<span class=gl${first?.let { " data-step=${it.n}" } ?: ""} title=\"${attr(sec.title)}\">${if (sec.preparation) "" else "${++order} · "}${esc(sec.title)}</span></span>")
-            }
-            sb.append("</span>")
-        }
-        if (video != null) sb.append("<span class=time id=time>0:00 / ${clock(t.video?.durationMs ?: 0)}</span>")
-        sb.append("</div><div class=dim>${if (video != null) "스텝이나 막대를 클릭하면 영상이 그 스텝으로 이동" else "스텝을 클릭하면 그 스텝이 끝난 화면"}</div><div class=btns>")
-        if (video != null) sb.append("<a class=btn href=\"${attr(video)}\" download>mp4 다운로드</a>")
-        sb.append("</div></div></aside></div>")
 
         // ---- under a failed recording: what the replay of the committed trace did, folded
         if (rec != null) {
@@ -414,6 +395,45 @@ object SitePages {
         return file
     }
 
+    /** What the players of a page play: the run's mp4 (null without a recording — then each step's frame, [thumbs]). */
+    private class Players(val video: String?, val thumbs: Map<Int, String>)
+
+    /**
+     * A player for [steps]: the recording with a bar of the steps under it (a click on a step or its part of the bar
+     * seeks there), or without a recording the frame each step ended on. [clip] makes it one section's: it plays only
+     * the part of the run's one mp4 its steps span ([clipOf]) and counts its time from there.
+     */
+    private fun player(sb: StringBuilder, t: ResultJson.Result, steps: List<ResultJson.Step>, video: String?, thumbs: Map<Int, String>, clip: Boolean = false, footer: String = "") {
+        val executed = steps.filter { it.status != "SKIPPED" }
+        val window = if (clip && video != null) clipOf(t, executed) else null
+        sb.append("<div class=player${window?.let { " data-from=${it.first} data-to=${it.second}" } ?: ""}><div class=frame>")
+        if (video != null) sb.append("<video src=\"${attr(video)}\" preload=metadata playsinline></video>")
+        else {
+            val first = executed.firstOrNull()?.let { thumbs[it.n] }
+            sb.append(if (first != null) "<img class=still src=\"${attr(first)}\" alt=\"스텝 화면\">" else "<span class=dim>녹화 없음 (--video)</span>")
+        }
+        sb.append("<div class=caption>${executed.firstOrNull()?.let { "${noOf(t, it)}/${outOf(t, it)} · ${esc(it.text)}" } ?: ""}</div></div>")
+        sb.append("<div class=controls>")
+        if (video != null) sb.append("<button type=button class=play aria-label=\"재생\">▶</button>")
+        val total = executed.sumOf { it.durationMs }.coerceAtLeast(1)
+        sb.append("<span class=segments>")
+        for (s in steps) sb.append("<i class=\"${cls(s.status)}\" data-step=${s.n} style=\"flex:${(s.durationMs * 1000 / total).coerceAtLeast(20)}\" title=\"${noOf(t, s)}. ${attr(s.text)}\"></i>")
+        sb.append("</span>")
+        if (video != null) sb.append("<span class=time>0:00 / ${clock(window?.let { it.second - it.first } ?: t.video?.durationMs ?: 0)}</span>")
+        sb.append("</div>$footer</div>")
+    }
+
+    /**
+     * Where a section's steps lie in the run's one recording, in ms: from just ahead of its first step to a moment
+     * past the end of its last — short of the next section's entry, which stops the app.
+     */
+    private fun clipOf(t: ResultJson.Result, executed: List<ResultJson.Step>): Pair<Long, Long>? {
+        val first = executed.firstOrNull { it.videoMs != null } ?: return null
+        val last = executed.last { it.videoMs != null }
+        val end = last.videoMs!! + last.durationMs + 300
+        return (first.videoMs!! - 300).coerceAtLeast(0) to (t.video?.durationMs?.let { minOf(end, it) } ?: end)
+    }
+
     /** `① 팔로우 취소 ② 팔로우 추가` with a status dot each — a scenario's sections in order, under its line of the full list. */
     private fun sectionLine(r: ResultJson.Result): String = if (r.tests.isEmpty()) "" else
         "<span class=secline>" + r.tests.mapIndexed { i, sec -> "<span><i class=\"dot ${cls(sec.status)}\"></i>${i + 1}. ${esc(sec.title)}</span>" }.joinToString("") + "</span>"
@@ -424,9 +444,12 @@ object SitePages {
      * The `## 준비` section stands ahead of them unnumbered — it tests nothing — with what the model found or
      * did, folded when there was nothing to do. A section an earlier failure kept from running is folded too.
      */
-    private fun timeline(sb: StringBuilder, r: ResultJson.Result, interactive: Boolean = true, filmAt: Int? = null, film: List<Frame> = emptyList()) {
+    private fun timeline(sb: StringBuilder, r: ResultJson.Result, interactive: Boolean = true, filmAt: Int? = null, film: List<Frame> = emptyList(), players: Players? = null) {
         if (r.sections.isEmpty()) { r.steps.forEach { s -> stepRow(sb, r, s, interactive, if (s.n == filmAt) film else emptyList()) }; return }
         var order = 0
+        // With players the sections are cards side by side — video on top, steps under it — so the scenarios of the
+        // file are seen together; a failed one takes the full width (its detail needs it), one that is folded is a bar.
+        if (players != null) sb.append("<div class=secgrid>")
         for (sec in r.sections) {
             val steps = r.steps.filter { it.n in sec.from..sec.to }
             val ran = sec.status != "SKIPPED"
@@ -439,7 +462,8 @@ object SitePages {
             }
             val took = "%.1fs".format(steps.sumOf { it.durationMs } / 1000.0)
             val open = ran && !(sec.preparation && sec.status == "PASSED" && did == 0)
-            sb.append("<details class=\"sec ${cls(sec.status)}${if (sec.preparation) " prep" else ""}\"${if (open) " open" else ""}><summary>")
+            val wide = players != null && (!open || sec.status == "FAILED")
+            sb.append("<details class=\"sec ${cls(sec.status)}${if (sec.preparation) " prep" else ""}${if (wide) " wide" else ""}\"${if (players != null) " data-scope" else ""}${if (open) " open" else ""}><summary>")
             sb.append("<span class=ord>${if (sec.preparation) "⚙" else (++order).toString()}</span><span class=stitle>${esc(sec.title)}</span>${chip(kind, label)}")
             sb.append("<span class=sinfo>" + when {
                 !ran -> "앞에서 실패해 돌지 않음"
@@ -448,9 +472,18 @@ object SitePages {
             } + "</span></summary><div class=sbody>")
             if (sec.description.isNotEmpty()) sb.append("<p class=sdesc>${esc(sec.description)}</p>")
             if (sec.preparation) sb.append("<div class=snote>테스트가 아니라 준비입니다. 지난 실행이 남긴 상태가 무엇이든 아래 구간이 같은 상태에서 시작하도록, 재생에서도 모델이 화면을 보고 필요한 만큼만 조작합니다.</div>")
+            // the section's own player with its steps; a section that did not run has nothing to play
+            val playing = players?.takeIf { ran }
+            if (playing != null) sb.append("<div class=scols><div class=ssteps>")
             for (s in steps) stepRow(sb, r, s, interactive, if (s.n == filmAt) film else emptyList(), prep = sec.preparation)
+            if (playing != null) {
+                sb.append("</div>")
+                player(sb, r, steps, playing.video, playing.thumbs, clip = true)
+                sb.append("</div>")
+            }
             sb.append("</div></details>")
         }
+        if (players != null) sb.append("</div>")
     }
 
     /**
@@ -539,7 +572,6 @@ object SitePages {
                 // what the caption counts: the step's number in its section (the scenario, without sections)
                 put("no", noOf(r, s))
                 put("total", outOf(r, s))
-                r.sectionOf(s.n)?.let { put("sec", it.title) }
                 put("text", s.text)
                 put("status", s.status)
                 s.videoMs?.let { put("videoMs", it) }
@@ -557,24 +589,41 @@ object SitePages {
         sb.append("<style>").append(CSS).append("</style></head><body>")
     }
 
+    /**
+     * One player per `[data-scope]` — the page, or each section of a scenario that has them: the scope's step rows and
+     * its player's bar seek its video, which plays only its own window of the mp4 (`data-from`/`data-to`, ms) and
+     * shows its time from there (the metadata may be in before this runs — a local file's usually is — so the window
+     * is applied either way). Starting one pauses the others.
+     */
     private val JS = """
         (function(){
-          var v=document.getElementById('v'),cap=document.getElementById('cap'),still=document.getElementById('still'),time=document.getElementById('time'),play=document.getElementById('play');
-          var rows=[].slice.call(document.querySelectorAll('.step[data-step]')),segs=[].slice.call(document.querySelectorAll('#segs i[data-step]')),names=[].slice.call(document.querySelectorAll('#segs .gl[data-step]'));
           function byN(n){for(var i=0;i<STEPS.length;i++)if(STEPS[i].n==n)return STEPS[i];return null}
-          function mark(n){rows.forEach(function(r){r.classList.toggle('on',r.dataset.step==n)});segs.forEach(function(s){s.classList.toggle('on',s.dataset.step==n)});var s=byN(n);if(s&&cap)cap.textContent=(s.sec?s.sec+' ':'')+s.no+'/'+s.total+' · '+s.text;if(s&&still&&s.thumb)still.src=s.thumb}
-          function seek(ms){v.currentTime=ms/1000;v.play&&v.play().catch(function(){})}
-          function go(n){var s=byN(n);if(!s)return;mark(n);if(!v||s.videoMs==null)return;if(v.readyState>=1)seek(s.videoMs);else v.addEventListener('loadedmetadata',function(){seek(s.videoMs)},{once:true})}
-          rows.forEach(function(r){r.addEventListener('click',function(e){var x=e.target.closest('a,details,code,pre');if(x&&r.contains(x))return;go(+r.dataset.step)})});
-          segs.concat(names).forEach(function(s){s.addEventListener('click',function(){go(+s.dataset.step)})});
-          if(STEPS.length)mark(STEPS[0].n);
-          if(!v)return;
           function fmt(ms){ms=Math.max(0,ms|0);return Math.floor(ms/60000)+':'+('0'+Math.floor(ms/1000)%60).slice(-2)}
-          v.addEventListener('timeupdate',function(){var t=v.currentTime*1000,cur=null;for(var i=0;i<STEPS.length;i++){if(STEPS[i].videoMs!=null&&STEPS[i].videoMs<=t+50)cur=STEPS[i]}if(cur)mark(cur.n);if(time)time.textContent=fmt(t)+' / '+fmt(v.duration*1000||0)});
-          v.addEventListener('loadedmetadata',function(){if(time)time.textContent='0:00 / '+fmt(v.duration*1000)});
-          v.addEventListener('play',function(){play.textContent='❚❚'});v.addEventListener('pause',function(){play.textContent='▶'});
-          play.addEventListener('click',function(){v.paused?v.play():v.pause()});
-          v.addEventListener('click',function(){v.paused?v.play():v.pause()});
+          var videos=[];
+          [].slice.call(document.querySelectorAll('[data-scope]')).forEach(function(sc){
+            var pl=sc.querySelector('.player');if(!pl)return;
+            var v=pl.querySelector('video'),cap=pl.querySelector('.caption'),still=pl.querySelector('img.still'),time=pl.querySelector('.time'),play=pl.querySelector('.play');
+            var rows=[].slice.call(sc.querySelectorAll('.step[data-step]')),segs=[].slice.call(pl.querySelectorAll('.segments i[data-step]'));
+            var mine=rows.map(function(r){return byN(+r.dataset.step)}).filter(Boolean);
+            var from=pl.dataset.from?+pl.dataset.from:0,to=pl.dataset.to?+pl.dataset.to:null;
+            function mark(n){rows.forEach(function(r){r.classList.toggle('on',r.dataset.step==n)});segs.forEach(function(s){s.classList.toggle('on',s.dataset.step==n)});var s=byN(n);if(s&&cap)cap.textContent=s.no+'/'+s.total+' · '+s.text;if(s&&still&&s.thumb)still.src=s.thumb}
+            function seek(ms){v.currentTime=ms/1000;v.play().catch(function(){})}
+            function go(n){var s=byN(n);if(!s)return;mark(n);if(!v||s.videoMs==null)return;if(v.readyState>=1)seek(s.videoMs);else v.addEventListener('loadedmetadata',function(){seek(s.videoMs)},{once:true})}
+            rows.forEach(function(r){r.addEventListener('click',function(e){var x=e.target.closest('a,details,code,pre');if(x&&r.contains(x))return;go(+r.dataset.step)})});
+            segs.forEach(function(s){s.addEventListener('click',function(){go(+s.dataset.step)})});
+            if(mine.length)mark(mine[0].n);
+            if(!v)return;
+            videos.push(v);
+            function end(){return to!=null?to:(v.duration*1000||0)}
+            function shown(){if(time)time.textContent=fmt(v.currentTime*1000-from)+' / '+fmt(end()-from)}
+            function ready(){if(v.currentTime*1000<from)v.currentTime=from/1000;shown()}
+            if(v.readyState>=1)ready();else v.addEventListener('loadedmetadata',ready,{once:true});
+            v.addEventListener('timeupdate',function(){var t=v.currentTime*1000,cur=null;if(to!=null&&t>=to&&!v.paused)v.pause();for(var i=0;i<mine.length;i++){if(mine[i].videoMs!=null&&mine[i].videoMs<=t+50)cur=mine[i]}if(cur)mark(cur.n);shown()});
+            v.addEventListener('play',function(){play.textContent='❚❚';videos.forEach(function(o){if(o!==v)o.pause()})});
+            v.addEventListener('pause',function(){play.textContent='▶'});
+            function toggle(){if(!v.paused){v.pause();return}var t=v.currentTime*1000;if(t<from-50||t>=end()-100)v.currentTime=from/1000;v.play().catch(function(){})}
+            play.addEventListener('click',toggle);v.addEventListener('click',toggle);
+          });
         })();
     """.trimIndent()
 
@@ -610,7 +659,12 @@ object SitePages {
         main.detail header{display:flex;flex-direction:column;gap:14px}main.detail header .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.desc{margin:0;max-width:760px;color:#3A3A37;line-height:1.7}
         .tabs{display:flex;gap:4px;background:#E8E8E3;padding:3px;border-radius:8px}.tabs a{padding:6px 14px;border-radius:6px;color:var(--dim);font-size:13px;display:flex;align-items:center;gap:6px;text-decoration:none}.tabs a[aria-selected=true]{background:var(--card);color:var(--fg);font-weight:500}
         .cols{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}section.steps{flex:1 1 560px;min-width:0;display:flex;flex-direction:column;gap:10px}aside.replay{flex:0 1 380px;min-width:300px;display:flex;flex-direction:column;gap:10px;position:sticky;top:12px}
-        section.steps h2,aside.replay h2{font-size:13px;color:var(--dim);letter-spacing:.04em;margin-bottom:4px}
+        section.steps h2,aside.replay h2{font-size:13px;color:var(--dim);letter-spacing:.04em;margin-bottom:4px}section.steps h2 .hint{margin-left:12px;font-weight:400;font-size:12px;letter-spacing:0}
+        .secgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(264px,1fr));gap:12px;align-items:start}.secgrid details.sec{margin:0}.secgrid details.sec.wide{grid-column:1/-1}
+        .scols{display:flex;flex-direction:column;gap:10px}.ssteps{min-width:0;display:flex;flex-direction:column;gap:8px}.scols .player{order:-1;padding:10px;gap:8px}.scols .caption{font-size:10.5px;padding:6px 8px;left:8px;right:8px;bottom:8px}.scols .play{width:28px;height:28px}
+        .sec.wide .scols{flex-direction:row;flex-wrap:wrap;gap:14px;align-items:flex-start}.sec.wide .ssteps{flex:1 1 320px;gap:10px}.sec.wide .scols .player{order:0;flex:0 0 260px}
+        .secgrid .sec:not(.wide) .step{padding:10px}.secgrid .sec:not(.wide) .step .line{gap:8px}.secgrid .sec:not(.wide) .sinfo{margin-left:0;flex-basis:100%;text-align:left;order:9}
+        .whole{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:4px}.whole .btn{flex:0 0 auto}
         .step{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;cursor:pointer}.step.on{border-color:var(--fg);box-shadow:0 0 0 1px var(--fg)}.step.skipped{opacity:.55;cursor:default;border-style:dashed;border-color:var(--line2)}.step.failed{border-color:var(--fail);box-shadow:0 0 0 3px var(--failbg)}.step.static{cursor:default}
         .step .line{display:flex;gap:12px}.step .icon{flex-shrink:0;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;background:var(--okbg);color:var(--okfg)}.step.failed .icon{background:var(--fail);color:#fff}.step.skipped .icon{background:#E8E8E3;color:var(--faint)}
         .step .text{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}.step .n{color:var(--faint)}.criterion{color:var(--dim)}.step .meta{font-size:12px;color:var(--dim)}.step.failed .meta{color:var(--failfg);font-weight:500}
@@ -625,9 +679,8 @@ object SitePages {
         .actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.actions code{background:var(--code);padding:6px 10px;border-radius:6px}.actions .btn{flex:0 0 auto}
         .player{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:12px}.frame{position:relative;width:100%;aspect-ratio:9/16;max-height:560px;border-radius:10px;background:#E8E8E3;border:1px solid var(--line2);overflow:hidden;display:flex;align-items:center;justify-content:center}
         .frame video,.frame img{width:100%;height:100%;object-fit:contain;background:#000}.caption{position:absolute;left:10px;right:10px;bottom:10px;background:rgba(27,27,26,.88);color:#fff;padding:8px 10px;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.5;pointer-events:none}
-        .controls{display:flex;align-items:center;gap:10px}#play{width:32px;height:32px;border-radius:50%;border:0;background:var(--fg);color:#fff;cursor:pointer;font-size:11px;flex-shrink:0}
+        .controls{display:flex;align-items:center;gap:10px}.play{width:32px;height:32px;border-radius:50%;border:0;background:var(--fg);color:#fff;cursor:pointer;font-size:11px;flex-shrink:0}
         .segments{flex:1;display:flex;gap:3px}.segments i{height:8px;border-radius:4px;background:var(--line2);cursor:pointer;min-width:6px}.segments i.passed{background:var(--ok)}.segments i.failed{background:var(--fail)}.segments i.skipped{cursor:default}.segments i.on{outline:2px solid var(--fg);outline-offset:1px}
-        .segments.grouped{gap:10px;align-items:flex-start;min-width:0}.grp{display:flex;flex-direction:column;gap:5px;min-width:0}.grp .bar{display:flex;gap:3px}.grp .gl{font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.grp .gl[data-step]{cursor:pointer}.grp.skipped .gl{color:var(--faint)}.grp.failed .gl{color:var(--failfg)}
         .time{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--dim)}
         details.sec{background:#ECECE7;border:1px solid var(--line2);border-radius:12px;padding:2px 12px}details.sec+details.sec{margin-top:4px}details.sec.failed{border-color:var(--fail)}details.sec.prep{background:transparent;border-style:dashed}
         details.sec>summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0}details.sec>summary::-webkit-details-marker{display:none}

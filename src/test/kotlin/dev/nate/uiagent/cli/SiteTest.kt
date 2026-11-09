@@ -118,10 +118,10 @@ class SiteTest {
         assertTrue(page in built.pages)
         val detail = page.readText()
         assertTrue("<h1>쿠폰을 등록한다</h1>" in detail && "FAILED · 2/2" in detail)
-        assertTrue("<video id=v src=\"coupon.member/replay.mp4\"" in detail && File(site, "billing/coupon.member/replay.mp4").isFile)
+        assertTrue("<video src=\"coupon.member/replay.mp4\"" in detail && File(site, "billing/coupon.member/replay.mp4").isFile)
         assertTrue("data-step=1 data-video-ms=2500" in detail && "data-step=2 data-video-ms=3500" in detail, "each step knows where it is in the mp4")
         assertTrue("\"videoMs\":3500" in detail, "the player script gets the same timeline")
-        assertTrue("<span class=segments id=segs><i class=\"passed\" data-step=1" in detail && "<i class=\"failed\" data-step=2" in detail)
+        assertTrue("<span class=segments><i class=\"passed\" data-step=1" in detail && "<i class=\"failed\" data-step=2" in detail)
         assertTrue(":: the &quot;list&quot; item should be shown" in detail, "criterion on its own line")
         assertTrue("+ list<br>+ toast" in detail && "· toast 없음" in detail, "expected vs found")
         assertTrue("CouponRepo: HTTP 422" in detail && "Later: unrelated" !in detail, "logcat ±2s around the failing tap")
@@ -129,7 +129,7 @@ class SiteTest {
         assertTrue("href=\"../index.html\"" in detail)
         assertTrue(File(site, "billing/coupon.member/steps/02.jpg").isFile)
         // a page without a recording shows the step frame instead
-        assertTrue("<img id=still src=\"subscribe.nosub/steps/01.jpg\"" in File(site, "billing/subscribe.nosub.html").readText())
+        assertTrue("<img class=still src=\"subscribe.nosub/steps/01.jpg\"" in File(site, "billing/subscribe.nosub.html").readText())
 
         // the LLM re-recording that preceded the replay: a failed recording is a failure even though the committed trace replays
         val rec = RunSummary("record", "llm", "2026-10-19T01:00:00+09:00", 20 * 60_000L, "0.2.0", "4.21.0", "sdk", listOf(
@@ -231,12 +231,12 @@ class SiteTest {
         assertTrue(File(runs, "2026-10-20/auth/wish-wall/record/02-1.jpg").isFile)
         assertTrue("LoginSheet: not shown" in detail, "logcat from the recording's directory")
         assertTrue("<div class=\"step skipped\" data-step=3" in detail && "<i class=\"skipped\" data-step=3" in detail, "the skipped tail is on the timeline and the bar")
-        assertTrue("<video id=v src=\"../record/auth/wish-wall/replay.mp4\"" in detail && "0:00 / 0:13" in detail, "the player is the recording's own mp4, linked where it lies")
+        assertTrue("<video src=\"../record/auth/wish-wall/replay.mp4\"" in detail && "0:00 / 0:13" in detail, "the player is the recording's own mp4, linked where it lies")
         assertTrue("data-step=2 data-video-ms=4500" in detail && "\"thumb\":\"wish-wall/record/02.jpg\"" in detail, "steps seek into it")
         assertTrue(!File(runs, "2026-10-20/auth/wish-wall/record/replay.mp4").exists(), "built in place: not copied")
         // built elsewhere, the mp4 is copied beside the page
         SitePages.build(File(runs, "2026-10-20"), File(root, "elsewhere"))
-        assertTrue(File(root, "elsewhere/auth/wish-wall/record/replay.mp4").isFile && "<video id=v src=\"wish-wall/record/replay.mp4\"" in File(root, "elsewhere/auth/wish-wall.html").readText())
+        assertTrue(File(root, "elsewhere/auth/wish-wall/record/replay.mp4").isFile && "<video src=\"wish-wall/record/replay.mp4\"" in File(root, "elsewhere/auth/wish-wall.html").readText())
         assertTrue("커밋된 trace가 없어 재생하지 않음" in detail && "<details class=replaysec" !in detail)
 
         // a committed trace that still replays folds under the failed recording — static rows, not the player's
