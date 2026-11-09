@@ -1,6 +1,5 @@
 package dev.nate.uiagent.cli
 
-import dev.nate.uiagent.LogicalElement
 import dev.nate.uiagent.device.GUEST_STATE
 import dev.nate.uiagent.device.DevicePins
 import java.io.File
@@ -21,14 +20,15 @@ import java.io.File
  * The instance the runner receives is always one concrete variant ([state] set, [steps]
  * rendered for it); the parsed template keeps the per-state criteria in [stepDefs].
  *
- * A file may split its steps into sections, one `## title` heading each ([sections]): the runner
- * runs them in file order, each from a fresh setup, and a section the frontmatter gives a condition
- * runs only when the screen it enters shows that ([Condition]) —
+ * A file may hold several scenarios of one subject, one `## title` heading each ([sections]): the runner
+ * runs them in file order, each from the app started over at the scenario's entry. The first heading may be `## 준비`: what it says is
+ * done by the model before the others, in a replay too, so they start from a state that is known
+ * whatever the last run left on the server —
  *
  * ```
- * sections:
- *   팔로우 취소: { id: my_follow_button, label: 팔로우 취소 }
- * ---
+ * ## 준비
+ * 1. 팔로우하고 있지 않으면 "팔로우"를 눌러 팔로우한다
+ *
  * ## 팔로우 취소
  * 팔로우 중인 유저의 팔로우를 취소할 수 있다.
  * 1. "팔로우 취소"를 누른다
@@ -36,10 +36,6 @@ import java.io.File
  * ## 팔로우 추가
  * 1. "팔로우"를 누른다
  * ```
- *
- * That is all the runner knows about them; what to split and which section to make conditional is the
- * author's (a toggle that stays on the server is written as both directions, the first one skipped
- * when the last run left it undone).
  */
 data class Scenario(
     val name: String,
@@ -133,33 +129,11 @@ data class Scenario(
 
     /**
      * One `## title` part of a scenario: its prose and the steps `[first, first + size)` of [Scenario.steps].
-     * With a [condition] it runs only when the screen it enters shows that; without one it always runs.
+     * The [preparation] section (`## 준비`, always the first) is not a test: its steps go to the model in
+     * every mode, are never traced, and bring the app to the state the sections after it start from.
      */
-    data class Section(val title: String, val description: String, val first: Int, val size: Int, val condition: Condition? = null) {
+    data class Section(val title: String, val description: String, val first: Int, val size: Int, val preparation: Boolean = false) {
         val steps: IntRange get() = first until first + size
-    }
-
-    /**
-     * What a section's entry screen has to show for the section to run: one element, named by its
-     * resourceId and/or its label (text or content description, matched exactly), optionally in a
-     * selected/checked state or explicitly out of it. Judged by the runner on the layout alone, so a
-     * recording and a replay decide the same way and replay stays without a model. There is no "absent"
-     * form on purpose: a screen that is still loading lacks everything.
-     */
-    data class Condition(val id: String? = null, val label: String? = null, val selected: Boolean? = null, val checked: Boolean? = null) {
-        fun holds(screen: List<LogicalElement>): Boolean = screen.any { e ->
-            (id == null || e.resourceId.equals(id, ignoreCase = true)) &&
-                (label == null || e.matchesExact(label)) &&
-                (selected == null || ("selected" in e.state) == selected) &&
-                (checked == null || ("checked" in e.state) == checked)
-        }
-
-        /** `my_follow_button "팔로우 취소"` / `like_button selected` / `like_button not checked` */
-        fun describe(): String = listOfNotNull(
-            id, label?.let { "\"$it\"" },
-            selected?.let { if (it) "selected" else "not selected" },
-            checked?.let { if (it) "checked" else "not checked" },
-        ).joinToString(" ")
     }
 
     companion object {
@@ -183,6 +157,9 @@ object ScenarioMd {
     /** `## title` — a section of the scenario (other heading levels are documentation). */
     private val sectionRegex = Regex("""^##\s+(\S.*)$""")
 
+    /** The headings that make a section the scenario's preparation (see [Scenario.Section.preparation]). */
+    private val PREPARATION_TITLES = listOf("준비", "Preparation")
+
     /** A continuation line under a step: `:: criterion` or `:: state → criterion`. */
     private val criterionLineRegex = Regex("""^\s*::\s*(.*)$""")
     private val boundCriterionRegex = Regex("""^([A-Za-z0-9._-]+)\s*(?:→|->)\s*(.*)$""")
@@ -198,7 +175,7 @@ object ScenarioMd {
         val parsed = parseBody(body, name, states)
         val stepDefs = parsed.steps
         val description = parsed.description
-        val sections = withConditions(parsed.sections, y["sections"], name)
+        val sections = parsed.sections
         val setupMap = y["setup"] as? Map<*, *>
         val setup = if (setupMap != null) {
             Scenario.Setup(
@@ -239,31 +216,6 @@ object ScenarioMd {
         )
     }
 
-    /** The frontmatter's `sections:` — `title: { id, label, selected, checked }` — attached to the body's `## title` sections. */
-    private fun withConditions(sections: List<Scenario.Section>, raw: Any?, scenario: String): List<Scenario.Section> {
-        if (raw == null) return sections
-        val map = raw as? Map<*, *> ?: throw IllegalArgumentException("scenario '$scenario': `sections:` must be `title: { id: …, label: … }` entries")
-        val unknown = map.keys.map { it as String } - sections.map { it.title }.toSet()
-        require(unknown.isEmpty()) {
-            "scenario '$scenario': sections: ${unknown.joinToString(", ") { "'$it'" }} has no `## ${unknown.first()}` heading in the body" +
-                (if (sections.isEmpty()) "" else " (headings: ${sections.joinToString(", ") { it.title }})")
-        }
-        return sections.map { sec ->
-            val spec = map[sec.title] ?: return@map sec
-            val keys = spec as? Map<*, *> ?: throw IllegalArgumentException("scenario '$scenario': sections.${sec.title} must be `{ id: …, label: … }`")
-            val bad = keys.keys.map { it as String } - CONDITION_KEYS
-            require(bad.isEmpty()) { "scenario '$scenario': sections.${sec.title}: unknown key ${bad.joinToString(", ")} (use ${CONDITION_KEYS.joinToString(", ")})" }
-            fun flag(key: String): Boolean? = (keys[key] as? String)?.let {
-                it.toBooleanStrictOrNull() ?: throw IllegalArgumentException("scenario '$scenario': sections.${sec.title}.$key must be true or false")
-            }
-            val condition = Scenario.Condition(keys["id"] as? String, keys["label"] as? String, flag("selected"), flag("checked"))
-            require(condition.id != null || condition.label != null) { "scenario '$scenario': sections.${sec.title} needs an `id` or a `label` — the element to look at" }
-            sec.copy(condition = condition)
-        }
-    }
-
-    private val CONDITION_KEYS = setOf("id", "label", "selected", "checked")
-
     /** `values:` — `name: [a, b, …]`, at least two candidates each (one would be the same value every run). */
     private fun parseValues(raw: Any?, scenario: String): Map<String, List<String>> {
         if (raw == null) return emptyMap()
@@ -284,7 +236,7 @@ object ScenarioMd {
 
     /**
      * Numbered lines start a step; `::` lines directly under one attach criteria to it; a `## title`
-     * line starts a section that owns the steps up to the next one. Prose ahead of the first step or
+     * line starts a section that owns the steps up to the next one (`## 준비` the preparation). Prose ahead of the first step or
      * heading is the scenario's description, prose between a heading and its first step that section's
      * (other headings and blank lines dropped).
      */
@@ -322,10 +274,13 @@ object ScenarioMd {
         val sections = opened.mapIndexed { i, o ->
             val size = (opened.getOrNull(i + 1)?.first ?: steps.size) - o.first
             require(size > 0) { "scenario '$name': section '${o.title}' has no steps" }
-            Scenario.Section(o.title, o.prose.joinToString(" "), o.first, size)
+            Scenario.Section(o.title, o.prose.joinToString(" "), o.first, size, preparation = PREPARATION_TITLES.any { it.equals(o.title, ignoreCase = true) })
         }
         val titles = sections.map { it.title }
         require(titles.distinct().size == titles.size) { "scenario '$name': two sections share a title (${titles.joinToString(", ")})" }
+        // the preparation is ahead of what it prepares for — and of something: alone it prepares nothing
+        require(sections.drop(1).none { it.preparation }) { "scenario '$name': `## ${sections.first { it.preparation }.title}` comes first — it is what runs before the other sections" }
+        require(sections.firstOrNull()?.preparation != true || sections.size > 1) { "scenario '$name': `## ${sections[0].title}` needs a section after it to prepare for" }
         return Body(steps, prose.joinToString(" "), sections)
     }
 

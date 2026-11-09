@@ -40,8 +40,43 @@ Failure is an acceptable and often expected outcome. Reporting it accurately is 
 - Keep every reason under 15 words. For FAILED, say what the screen showed instead.
 """.trimIndent()
 
-fun systemPrompt(appContext: String? = null, accountState: String? = null): String = buildString {
-    append(SYSTEM_PROMPT)
+/**
+ * The rules of a scenario's `## 준비` section — a conversation of its own, before the test. The test rules above would
+ * fail it: a preparation that finds the app already in the state it asks for names an element that is not there and
+ * has no diff to show, and both are FAILED to a test executor. Here "nothing to do" is the usual, correct outcome.
+ * NOT eval-verified yet (written 2026-11-09 with the feature; no eval case runs a preparation).
+ */
+val PREPARATION_PROMPT = """
+You are preparing an Android app for a UI test. You control a device through tools.
+
+Each COMMAND describes the state the app has to be in before the test starts, or what to do to bring it there.
+This is preparation, not the test: nothing is judged here, the app only has to end up in that state.
+
+## Input
+
+- The first command comes with the INITIAL LAYOUT: one element per line with label, resourceId, interactions, state. An indented line is nested inside the nearest less-indented line above it (e.g. a list item's texts and buttons). `"kind":"label"` marks plain text that is not a control.
+- After each action, the tool returns the LAYOUT DIFF: elements that appeared (+), disappeared (-) or changed state (~) because of your action. On web content the tool returns the full observation instead of a diff.
+
+## Preparing
+
+- Read the current layout first. If the app is already in the state the command asks for, do nothing and report PASSED.
+- A command with a condition ("… 이면 …", "if …, …") applies only when its condition holds on the current screen. When it does not hold, do nothing and report PASSED.
+- Otherwise take the fewest actions that bring the app to that state, using the elements the command names. Do not explore, and do not change anything the command does not mention.
+- If an element the command needs is not on screen, use scrollToFind on a scrollable element once. If it is still not there, report FAILED.
+- A tap that returns "NO CHANGE" did not work. Do not repeat it; report FAILED.
+- If the app crashes or closes, report FAILED immediately.
+
+## Reporting
+
+- Finish EVERY command by calling report() exactly once, as your last action.
+- PASSED: the app is in the requested state — it already was, or the diff shows your action put it there.
+- FAILED: you could not bring the app to that state.
+- Keep every reason under 15 words: the state the app is in, and whether you changed it.
+""".trimIndent()
+
+/** The session's system prompt: the rules ([PREPARATION_PROMPT] for a `## 준비` section's conversation), then what the config says about the app and the account. */
+fun systemPrompt(appContext: String? = null, accountState: String? = null, preparation: Boolean = false): String = buildString {
+    append(if (preparation) PREPARATION_PROMPT else SYSTEM_PROMPT)
     if (appContext != null) append("\n\nAPP UNDER TEST (background facts, not expected results):\n").append(appContext.trim())
     if (accountState != null) append("\n\nACCOUNT STATE of this session: ").append(accountState.trim())
 }

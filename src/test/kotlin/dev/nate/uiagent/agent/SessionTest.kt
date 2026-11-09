@@ -104,6 +104,21 @@ class SessionTest {
     }
 
     @Test
+    fun `a preparation's conversation runs under its own rules, the test rules untouched`() {
+        val dev = StaticDevice(screen())
+        val llm = FakeExecutor(reportCall())
+        val session = ScenarioSession(llm, controller(dev), accountState = "member", preparation = true)
+        // nothing to do is a pass here: a report with no action before it is dispatched, not deflected
+        val v = session.runStep("팔로우하고 있지 않으면 \"팔로우\"를 눌러 팔로우한다", "[LAYOUT]")
+
+        assertTrue(v.passed, v.reason)
+        assertTrue(dev.gestures.isEmpty())
+        val system = llm.requests[0][0].textContent()
+        assertTrue(system.startsWith(PREPARATION_PROMPT) && system.endsWith("ACCOUNT STATE of this session: member"), system)
+        assertTrue("do nothing and report PASSED" in PREPARATION_PROMPT && "do nothing and report PASSED" !in SYSTEM_PROMPT)
+    }
+
+    @Test
     fun `text reply without tools fails the step but keeps the conversation intact`() {
         val dev = StaticDevice(screen())
         val llm = FakeExecutor(text("I think I am done"), reportCall())

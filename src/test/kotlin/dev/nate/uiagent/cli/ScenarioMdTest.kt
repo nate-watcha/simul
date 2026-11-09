@@ -240,17 +240,19 @@ class ScenarioMdTest {
     }
 
     @Test
-    fun `sections split the steps by their headings and take a condition from the frontmatter`() {
+    fun `sections split the steps by their headings, and the one titled 준비 is the preparation`() {
         val md = """
             ---
             name: 팔로우
             setup:
               deeplink: app://users/1
-            sections:
-              팔로우 취소: { id: my_follow_button, label: 팔로우 취소 }
             ---
 
             팔로우 버튼은 누를 때마다 바뀐다.
+
+            ## 준비
+
+            1. 팔로우하고 있지 않으면 "팔로우"를 눌러 팔로우한다
 
             ## 팔로우 취소
 
@@ -267,20 +269,15 @@ class ScenarioMdTest {
         val s = ScenarioMd.parse(md)
 
         assertEquals("팔로우 버튼은 누를 때마다 바뀐다.", s.description, "a section's prose is its own, not the scenario's")
-        assertEquals(4, s.steps.size, "steps stay one list, numbered through the scenario")
-        assertEquals(listOf("팔로우 취소" to 0..1, "팔로우 추가" to 2..3), s.sections.map { it.title to it.steps })
-        assertEquals("팔로우 중인 유저의 팔로우를 취소할 수 있다.", s.sections[0].description)
-        assertEquals(Scenario.Condition(id = "my_follow_button", label = "팔로우 취소"), s.sections[0].condition)
-        assertNull(s.sections[1].condition, "a section the frontmatter does not name always runs")
+        assertEquals(5, s.steps.size, "steps stay one list, numbered through the scenario")
+        assertEquals(listOf("준비" to 0..0, "팔로우 취소" to 1..2, "팔로우 추가" to 3..4), s.sections.map { it.title to it.steps })
+        assertEquals(listOf(true, false, false), s.sections.map { it.preparation })
+        assertEquals("팔로우 중인 유저의 팔로우를 취소할 수 있다.", s.sections[1].description)
 
-        // the block form says the same, and a state is a condition too
-        val block = ScenarioMd.parse(md.replace("팔로우 취소: { id: my_follow_button, label: 팔로우 취소 }", "팔로우 취소:\n    id: like_button\n    selected: false"))
-        assertEquals(Scenario.Condition(id = "like_button", selected = false), block.sections[0].condition)
-
-        // a condition for a heading that is not there is a typo; steps above the first heading belong to no section
-        assertFailsWith<IllegalArgumentException> { ScenarioMd.parse(md.replace("## 팔로우 취소", "## 언팔로우")) }
+        // the preparation is ahead of what it prepares for, and of something; steps above the first heading belong to no section
+        assertFailsWith<IllegalArgumentException> { ScenarioMd.parse(md.replace("## 준비", "## 먼저").replace("## 팔로우 추가", "## 준비")) }
+        assertFailsWith<IllegalArgumentException> { ScenarioMd.parse("## 준비\n\n1. 팔로우한다") }
         assertFailsWith<IllegalArgumentException> { ScenarioMd.parse(md.replace("팔로우 버튼은 누를 때마다 바뀐다.", "1. 앞에 놓인 스텝")) }
-        assertFailsWith<IllegalArgumentException> { ScenarioMd.parse(md.replace("{ id: my_follow_button, label: 팔로우 취소 }", "{ selected: true }")) }
         assertTrue(ScenarioMd.parse("# 제목\n\n1. 스텝").sections.isEmpty(), "only `##` makes a section")
     }
 }

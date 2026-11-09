@@ -48,18 +48,16 @@ data class StepReport(
 )
 
 /**
- * How one `## title` section of a scenario went: PASSED/FAILED by its steps, SKIPPED when it did not run —
- * with a [reason] when its condition did not hold on the screen it entered, without one when an earlier
- * section had already failed. [steps] are the step numbers it owns.
+ * How one `## title` section of a scenario went: PASSED/FAILED by its steps, SKIPPED when an earlier
+ * section had already failed. [steps] are the step numbers it owns; [preparation] marks the `## 준비`
+ * section, whose steps the model performed whatever the run's mode.
  */
 data class SectionReport(
     val title: String,
     val description: String,
     val status: StepStatus,
-    val reason: String?,
     val steps: IntRange,
-    /** The section's condition as the scenario declares it ([Scenario.Condition.describe]); null when it always runs. */
-    val condition: String? = null,
+    val preparation: Boolean = false,
 )
 
 /** The screen recording of a run: where its t=0 lies on the wall clock, so steps can be seeked to. */
@@ -103,10 +101,11 @@ data class ScenarioRunResult(
  * result. Mode decides how a step runs: llm (record) or replay (pure trace playback — the LLM
  * is never consulted; a broken step is a FAILED result).
  *
- * A scenario with `## title` sections runs them in file order, each from a fresh setup (the app
- * started over, the model's conversation too). A section with a condition runs only when the screen
- * it enters shows it and is SKIPPED otherwise — which is not a failure, unless no section ran at all.
- * Nothing else is decided here: which sections exist and which are conditional is the scenario's.
+ * A scenario with `## title` sections runs them in file order, each from the app started over at the
+ * scenario's entry (stopped and opened again, its data kept; the model's conversation is new too). Its `## 준비` section, when it has one, goes first and
+ * to the model in every mode: a replay cannot tell what state the last run left on the server, so
+ * bringing the app to the state the other sections start from is the one thing a replay asks the
+ * model for. Its steps are never traced; everything after it replays without a model as before.
  *
  * Every executed step leaves what the report needs in [reportDir]: `steps/NN.png` (the screen
  * when the step ended) and `layout/NN.json` (its layout tree); the scenario leaves `logcat.txt`
@@ -190,6 +189,8 @@ class ScenarioRunner(
                 enter(it, wantLocale)
             }
             setupMs = System.currentTimeMillis() - t0
+            // whatever this controller saw before, the app has just been brought to the scenario's entry
+            controller.forget()
             onSetupDone()
         } catch (ex: Exception) {
             val why = "setup failed: ${ex.message?.lineSequence()?.firstOrNull() ?: ex.toString()}"
@@ -200,7 +201,7 @@ class ScenarioRunner(
             }
             return ScenarioRunResult(scenario.name, StepStatus.FAILED, steps, null,
                 System.currentTimeMillis() - t0, startedAtMs = t0, setupFailed = true,
-                sections = scenario.sections.map { SectionReport(it.title, it.description, StepStatus.SKIPPED, null, it.first + 1..it.first + it.size, it.condition?.describe()) })
+                sections = scenario.sections.map { SectionReport(it.title, it.description, StepStatus.SKIPPED, it.first + 1..it.first + it.size, it.preparation) })
         }
 
         // A trace replays coordinates and layouts of the display it was recorded on — if the
@@ -225,58 +226,51 @@ class ScenarioRunner(
         var failedAt: Int? = null
         val modeName = if (mode == RunMode.LLM) "llm" else "replay"
 
-        // A scenario without `##` headings is one unnamed part that always runs, from the setup above.
+        // A scenario without `##` headings is one unnamed part, run from the setup above.
         val sectioned = scenario.sections.isNotEmpty()
         val parts = scenario.sections.ifEmpty { listOf(Scenario.Section("", "", 0, scenario.steps.size)) }
         val sectionReports = mutableListOf<SectionReport>()
         // A trace step is found by its section and its place in it (by its place alone without sections).
         val oldBySection = trace?.steps?.groupBy { it.section }
-        fun oldSteps(part: Scenario.Section): List<TraceStep> = (if (sectioned) oldBySection?.get(part.title) else trace?.steps) ?: emptyList()
-        /** What this run recorded (or replayed) of each part that ran to its end, by the part's index. */
-        val performed = mutableMapOf<Int, List<TraceStep>>()
-        var ran = 0
+        val newSteps = mutableListOf<TraceStep>()
+        /** Did the part before this one touch the device? A preparation that found nothing to do leaves the entry screen as it was. */
+        var touched = true
 
         for ((pi, part) in parts.withIndex()) {
-            fun skipSteps() = part.steps.forEach { i ->
-                reports += StepReport(i + 1, picks.fill(scenario.steps[i]), StepStatus.SKIPPED, null, emptyList(), emptyList(), null, 0, emptyList())
-                log("  step ${i + 1}: SKIPPED")
+            fun close(status: StepStatus) {
+                if (sectioned) sectionReports += SectionReport(part.title, picks.fill(part.description), status, part.first + 1..part.first + part.size, part.preparation)
             }
-            fun close(status: StepStatus, reason: String? = null) {
-                if (sectioned) sectionReports += SectionReport(part.title, picks.fill(part.description), status, reason, part.first + 1..part.first + part.size, part.condition?.describe())
+            if (failedAt != null) {
+                part.steps.forEach { i ->
+                    reports += StepReport(i + 1, picks.fill(scenario.steps[i]), StepStatus.SKIPPED, null, emptyList(), emptyList(), null, 0, emptyList())
+                    log("  step ${i + 1}: SKIPPED")
+                }
+                close(StepStatus.SKIPPED)
+                continue
             }
-            if (failedAt != null) { skipSteps(); close(StepStatus.SKIPPED); continue }
-            if (sectioned) log("  section ${pi + 1}/${parts.size}: ${part.title}")
+            if (sectioned) log("  section ${pi + 1}/${parts.size}: ${part.title}" + if (part.preparation) " (by the model)" else "")
 
-            // Every section after the first starts the app over: what the one before it changed has to be
-            // there on a fresh entry (it was saved, not just drawn), and no section depends on where another ended.
+            // Every section after the first starts the app over — stopped and opened again at the scenario's
+            // entry, its data kept ([enter]): what the one before it changed has to be there in a new process
+            // (it was saved, not just drawn), and no section depends on where another ended. The exception is
+            // a preparation that had nothing to do — the app still shows its entry.
             var entryFailure: String? = null
             if (pi > 0) {
-                llm.newSession()
                 controller.forget()
-                entryLayout = null
-                val s = System.currentTimeMillis()
-                try { scenario.setup?.let { enter(it, wantLocale) } } catch (ex: Exception) {
-                    entryFailure = "setup failed: ${ex.message?.lineSequence()?.firstOrNull() ?: ex.toString()}"
-                }
-                setupMs += System.currentTimeMillis() - s
+                if (touched) {
+                    val s = System.currentTimeMillis()
+                    try { scenario.setup?.let { enter(it, wantLocale, again = true) } } catch (ex: Exception) {
+                        entryFailure = "setup failed: ${ex.message?.lineSequence()?.firstOrNull() ?: ex.toString()}"
+                    }
+                    setupMs += System.currentTimeMillis() - s
+                } else log("  setup: kept — the preparation changed nothing, the app is still on its entry screen")
             }
-            val condition = part.condition
-            if (entryFailure == null && condition != null) {
-                val shown = try { entryShows(condition, mode) } catch (ex: ProcessError) {
-                    entryFailure = "device command failed: ${ex.brief}"; false
-                }
-                if (entryFailure == null && !shown) {
-                    val why = "condition not met — the entry screen has no ${condition.describe()}"
-                    log("  section ${part.title}: SKIPPED — $why")
-                    skipSteps()
-                    close(StepStatus.SKIPPED, why)
-                    continue
-                }
-            }
-            ran++
+            llm.newSession(preparation = part.preparation)
+            // the one part of a replay that needs the model — say so instead of crashing on the missing key
+            if (entryFailure == null && part.preparation) llm.unavailable()?.let { entryFailure = "the preparation needs the model — $it" }
 
-            val newSteps = mutableListOf<TraceStep>()
-            val old = oldSteps(part)
+            val old = (if (sectioned) oldBySection?.get(part.title) else trace?.steps) ?: emptyList()
+            val gestures0 = controller.meter.cost.gestures
             for (i in part.steps) {
                 val text = scenario.steps[i]
                 val n = i + 1
@@ -290,8 +284,9 @@ class ScenarioRunner(
                 val stepCost0 = controller.meter.cost
                 val report = try {
                     when {
-                        // the section never got to its steps: the app did not come up again
-                        entryFailure != null -> StepReport(n, picks.fill(text), StepStatus.FAILED, modeName, emptyList(), emptyList(), entryFailure, 0, emptyList())
+                        // the section never got to its steps: the app did not come up again, or there is no model to prepare it
+                        entryFailure != null -> StepReport(n, picks.fill(text), StepStatus.FAILED, if (part.preparation) "llm" else modeName, emptyList(), emptyList(), entryFailure, 0, emptyList())
+                        part.preparation -> runPreparationStep(n, text, mode)
                         mode == RunMode.LLM -> runLlmStep(n, text)
                         else -> runReplayStep(n, text, old.getOrNull(i - part.first))
                     }
@@ -299,7 +294,7 @@ class ScenarioRunner(
                     // The device did not do what the step needed (a dump that fails after its retries, a
                     // command past its time limit). That ends the step, not the scenario's record: the
                     // steps before it, this screen, the logcat and the recording still make a result.
-                    StepReport(n, picks.fill(text), StepStatus.FAILED, modeName, emptyList(), emptyList(),
+                    StepReport(n, picks.fill(text), StepStatus.FAILED, if (part.preparation) "llm" else modeName, emptyList(), emptyList(),
                         "device command failed: ${ex.brief}", 0, emptyList())
                 } finally {
                     listener.delegate = null
@@ -320,43 +315,23 @@ class ScenarioRunner(
                 reports += done
                 log("  step $n: ${renderResult(done, controller.meter.cost - stepCost0)}")
                 if (done.status == StepStatus.FAILED) failedAt = n
-                else {
+                else if (!part.preparation) {
                     if (done.mode == "replay" && n in coordDirtySteps) coordDirty = true
                     // the trace keeps the step as the scenario wrote it — `$name`, not the value this run picked
                     newSteps += picks.template(TraceStep(text, done.actions, done.evidence, done.stateEvidence, section = part.title.takeIf { sectioned }))
                 }
             }
-            if (failedAt == null) performed[pi] = newSteps
+            touched = !part.preparation || controller.meter.cost.gestures > gestures0
             close(if (failedAt == null) StepStatus.PASSED else StepStatus.FAILED)
-        }
-
-        // Skipping a section is the scenario's doing; skipping all of them tested nothing — and the usual
-        // reason is that the element the conditions look at is gone, which is the app's.
-        if (failedAt == null && ran == 0) {
-            val why = "no section ran — the entry screen met none of their conditions: " +
-                parts.joinToString("; ") { "${it.title} (${it.condition?.describe()})" }
-            log("  $why")
-            val shot = shoot("steps/${nn(1)}")
-            reports[0] = reports[0].copy(status = StepStatus.FAILED, mode = modeName, reason = why, startedMs = System.currentTimeMillis() - t0,
-                screenshots = listOfNotNull(shot), layout = saveLayout(1), screen = screenLabels(controller.currentElements))
-            sectionReports[0] = sectionReports[0].copy(status = StepStatus.FAILED)
-            failedAt = 1
         }
 
         val status = if (failedAt != null) StepStatus.FAILED else StepStatus.PASSED
         val updatedTrace = when {
             status != StepStatus.PASSED -> null
-            mode == RunMode.LLM || coordDirty -> {
-                // In file order whatever ran: a section this run skipped keeps the steps an earlier recording
-                // left for it, as long as they are still the steps the scenario writes.
-                val steps = parts.flatMapIndexed { pi, part ->
-                    performed[pi] ?: oldSteps(part).takeIf { old -> old.map { it.text } == part.steps.map { scenario.steps[it] } }
-                    ?: emptyList<TraceStep>().also { log("  note: section '${part.title}' was skipped and has no recorded steps — record again when its condition holds") }
-                }
+            mode == RunMode.LLM || coordDirty ->
                 TraceFile(scenario.name, AGENT_VERSION, ops.appVersionName(app) ?: trace?.appVersionName,
-                    steps, display = ops.displayProfile() ?: trace?.display,
+                    newSteps, display = ops.displayProfile() ?: trace?.display,
                     androidCli = ops.androidCliVersion() ?: trace?.androidCli)
-            }
             else -> null
         }
         return ScenarioRunResult(
@@ -367,17 +342,26 @@ class ScenarioRunner(
         )
     }
 
-    /** Bring the app to the scenario's entry: state restore, cold start, deeplink — and the wait for its fully-drawn signal. */
-    private fun enter(setup: Scenario.Setup, wantLocale: String?) {
+    /**
+     * Bring the app to the scenario's entry: state restore, cold start, deeplink — and the wait for its
+     * fully-drawn signal. [again] is a section's entry after the first: the account state the scenario
+     * restored is not restored a second time, the app is only stopped and opened again
+     * ([DeviceOps.reopen]) — a restore is what a reinstall does, and what a section follows is a user
+     * who closed the app and came back. (A setup that opens nothing has nothing to reopen and runs as before.)
+     */
+    private fun enter(setup: Scenario.Setup, wantLocale: String?, again: Boolean = false) {
+        val reopen = again && (setup.launch || setup.deeplink != null)
         val what = listOfNotNull(
-            setup.appState?.let { s -> "restore app state '$s' (pm clear + snapshot)" },
-            if (setup.clearData && setup.appState == null) "clear app data (guest)" else null,
-            if (setup.launch) "cold start (force-stop + launch)" else null,
+            if (reopen) "restart the app (force-stop, its data kept)" else null,
+            setup.appState?.takeUnless { reopen }?.let { s -> "restore app state '$s' (pm clear + snapshot)" },
+            if (setup.clearData && setup.appState == null && !reopen) "clear app data (guest)" else null,
+            if (setup.launch) (if (reopen) "launch" else "cold start (force-stop + launch)") else null,
             setup.deeplink?.let { d -> "deeplink $d" },
         ).joinToString(" + ").ifEmpty { "none" }
         log("  setup: $what")
         val s = System.currentTimeMillis()
-        val drawn = ops.setup(app, appState = setup.appState, clearData = setup.clearData, launch = setup.launch, deeplink = setup.deeplink, locale = wantLocale)
+        val drawn = if (reopen) ops.reopen(app, launch = setup.launch, deeplink = setup.deeplink)
+                    else ops.setup(app, appState = setup.appState, clearData = setup.clearData, launch = setup.launch, deeplink = setup.deeplink, locale = wantLocale)
         val phases = ops.setupPhases.takeIf { p -> p.isNotEmpty() }?.joinToString(" · ", " = ") { (name, ms) -> "$name ${secs(ms)}" } ?: ""
         log("  setup: done (${secs(System.currentTimeMillis() - s)}$phases${drawn?.let { d -> ", app fully drawn $d" } ?: ""})")
         if (drawn == null && app != null && (setup.launch || setup.deeplink != null)) {
@@ -385,30 +369,6 @@ class ScenarioRunner(
             // grounded as the scroll container, 실측) — the fix is in the app's entry screen.
             log("  setup: app did not report fully drawn within ${AdbOps.FULLY_DRAWN_TIMEOUT_MS / 1000}s — " +
                 "the destination activity should call reportFullyDrawn() on its first frame (only the first call per launch counts)")
-        }
-    }
-
-    /** The observation [entryShows] took of a section's entry screen, for the model's first step there (it must not look twice). */
-    private var entryLayout: String? = null
-
-    /**
-     * Does the screen the section entered show its condition? The entry may still be loading, so a miss
-     * is polled ([DeviceController.waitUntil]) before it counts — the same way in a recording and in a
-     * replay, on the layout alone.
-     */
-    private fun entryShows(condition: Scenario.Condition, mode: RunMode): Boolean {
-        controller.fastObserve = mode == RunMode.REPLAY
-        try {
-            var layout = firstObservation()
-            if (!condition.holds(controller.currentElements)) {
-                if (!controller.waitUntil(condition::holds)) return false
-                // the model reads a settled screen, not the frame the poll happened to stop on
-                if (mode == RunMode.LLM) layout = firstObservation()
-            }
-            if (mode == RunMode.LLM) entryLayout = layout
-            return true
-        } finally {
-            controller.fastObserve = false
         }
     }
 
@@ -433,7 +393,7 @@ class ScenarioRunner(
     private fun runLlmStep(n: Int, written: String): StepReport {
         // The session carries the screen state across steps via each action's diff, so a fresh
         // full observation (and its ~1k prompt tokens) is only needed at conversation start.
-        val initial = entryLayout?.also { entryLayout = null } ?: if (controller.currentElements.isEmpty()) firstObservation() else null
+        val initial = if (controller.currentElements.isEmpty()) firstObservation() else null
         val before = controller.currentElements
         val text = filled(written, before)
         val spec = StepSpec.parse(text)
@@ -464,6 +424,25 @@ class ScenarioRunner(
         return StepReport(n, text, status, "llm", recorder.actions.toList(), ev.appeared,
             reason, 0, recorder.screenshots.toList(), stateEvidence = ev.states, llm = verdict.llm,
             marks = recorder.marks.toList(), expectedEvidence = anchors)
+    }
+
+    /**
+     * One step of the scenario's `## 준비` section: the model brings the app to the state the sentence
+     * describes — or finds it already there and does nothing — whatever the run's mode. Nothing of it
+     * goes to the trace: what a preparation has to do depends on what the last run left behind, which is
+     * exactly what a trace cannot know. A recording keeps the before/after frame of each action as for
+     * any step of its own; a replay keeps the step-end frame only.
+     */
+    private fun runPreparationStep(n: Int, written: String, mode: RunMode): StepReport {
+        val initial = if (controller.currentElements.isEmpty()) firstObservation() else null
+        val text = filled(written, controller.currentElements)
+        val spec = StepSpec.parse(text)
+        val recorder = if (mode == RunMode.LLM) StepRecorder(n, ::shoot) else StepRecorder(n)
+        listener.delegate = recorder
+        val verdict = llm.runStep(spec.command, initial, spec.criterion)
+        listener.delegate = null
+        return StepReport(n, text, if (verdict.passed) StepStatus.PASSED else StepStatus.FAILED, "llm", recorder.actions.toList(), emptyList(),
+            verdict.reason, 0, recorder.screenshots.toList(), llm = verdict.llm, marks = recorder.marks.toList())
     }
 
     /**

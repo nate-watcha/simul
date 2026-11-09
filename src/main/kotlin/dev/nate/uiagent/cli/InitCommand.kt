@@ -52,7 +52,7 @@ internal fun initCommand(args: List<String>, cwd: File): Int {
           1. .simul/config.yaml 의 app / llm.url 확인
           2. .claude/skills/simul-scenarios/SKILL.md 읽고 첫 시나리오 작성 → .simul/scenarios/<그룹>/<이름>.md
           3. simul run <그룹>/<이름>.md --mode llm   (녹화 후 trace를 md와 함께 커밋)
-          4. CI: `simul run --all` (replay만, LLM 0회) — 나이틀리 3단계·리포트는 simul README 참조
+          4. CI: `simul run --all` (replay만 — 모델은 시나리오의 `## 준비`에만) — 나이틀리 3단계·리포트는 simul README 참조
         """.trimIndent()
     )
     return 0

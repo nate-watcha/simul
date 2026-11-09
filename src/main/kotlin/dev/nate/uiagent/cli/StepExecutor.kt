@@ -22,9 +22,16 @@ interface StepExecutor {
 
     /**
      * The next step starts a conversation of its own: a scenario's section begins from a fresh setup,
-     * and what the model saw of the screens before it no longer describes the app.
+     * and what the model saw of the screens before it no longer describes the app. [preparation] makes
+     * it the conversation of the scenario's `## 준비` section, which prepares the app instead of testing it.
      */
-    fun newSession() {}
+    fun newSession(preparation: Boolean = false) {}
+
+    /**
+     * Why the model cannot be consulted at all (no key in this environment); null when it can. A replay
+     * asks before a `## 준비` section — the one part of it that needs the model.
+     */
+    fun unavailable(): String? = null
 }
 
 /**
@@ -47,17 +54,22 @@ class SessionStepExecutor(
     /** System-prompt background for the session: config `context:` and this scenario's account state (see [dev.nate.uiagent.agent.systemPrompt]). */
     private val appContext: String? = null,
     private val accountState: String? = null,
+    /** Why [executor] cannot be built, without building it ([LlmConfig.keyProblem]). */
+    private val problem: () -> String? = { null },
 ) : StepExecutor {
 
     private var session: ScenarioSession? = null
+    private var preparing = false
     /** One client for the scenario, however many conversations its sections open. */
     private val client by lazy(executor)
 
     override fun runStep(stepText: String, initialLayout: String?, criterion: String?): ScenarioSession.Verdict {
-        val s = session ?: ScenarioSession(client, controller, maxIterations, log, model, appContext = appContext, accountState = accountState)
+        val s = session ?: ScenarioSession(client, controller, maxIterations, log, model, appContext = appContext, accountState = accountState, preparation = preparing)
             .also { session = it }
         return s.runStep(stepText, initialLayout, criterion)
     }
 
-    override fun newSession() { session = null }
+    override fun newSession(preparation: Boolean) { session = null; preparing = preparation }
+
+    override fun unavailable(): String? = problem()
 }

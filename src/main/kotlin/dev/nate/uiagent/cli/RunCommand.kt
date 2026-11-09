@@ -132,7 +132,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
                     (scenario.state?.let { "  state: $it" } ?: ""))
                 scenario.steps.forEachIndexed { idx, s ->
                     scenario.sections.firstOrNull { it.first == idx }?.let { sec ->
-                        println("  ## ${sec.title}" + (sec.condition?.let { " — when the entry screen shows ${it.describe()}" } ?: ""))
+                        println("  ## ${sec.title}" + if (sec.preparation) " — by the model, in every mode" else "")
                     }
                     println("  ${idx + 1}. $s")
                 }
@@ -252,7 +252,8 @@ internal fun executeScenario(
         // turn lines nest under the runner's step line in the live log
         // replay never builds a client — the key stays optional for CI that only replays
         val executor = SessionStepExecutor(stack.controller, { llm.client() }, llm.llmModel(), project.config.maxTurns,
-            log = { log("    $it") }, appContext = project.config.context, accountState = project.config.accountState(scenario))
+            log = { log("    $it") }, appContext = project.config.context, accountState = project.config.accountState(scenario),
+            problem = { llm.keyProblem() })
         // The screen recording starts when setup is done (state restored, app cold-started) and
         // spans the steps — the journey itself, not the pm clear and the splash. It stops in
         // `finally`: a crashed run must not leave screenrecord running on the device for the

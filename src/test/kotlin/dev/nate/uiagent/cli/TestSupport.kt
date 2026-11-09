@@ -21,6 +21,12 @@ internal class FakeOps(private val versionName: String? = "5.4.0") : DeviceOps {
         if (locale != null) setAppLocales(app!!, locale)
         return fullyDrawn
     }
+    /** Every re-entry inside a scenario as `app|launch|deeplink`. */
+    val reopens = mutableListOf<String>()
+    override fun reopen(app: String?, launch: Boolean, deeplink: String?): String? {
+        reopens += "$app|$launch|$deeplink"
+        return fullyDrawn
+    }
     override fun screenshot(dest: File): Boolean = false
     /** What the device probe answers; null = the device is fine. */
     var down: String? = null
@@ -61,11 +67,14 @@ internal class FakeOps(private val versionName: String? = "5.4.0") : DeviceOps {
 /** Step executor driven by a lambda (which may drive the controller to simulate agent actions). */
 internal class ScriptedExecutor(private val behavior: (String) -> ScenarioSession.Verdict) : StepExecutor {
     var calls = 0
-    /** Conversations started over ([StepExecutor.newSession]) — one per section after the first. */
-    var sessions = 0
+    /** Every conversation started ([StepExecutor.newSession]), in order: true for a preparation's. */
+    val sessions = mutableListOf<Boolean>()
     val criteria = mutableListOf<String?>()
+    /** Why the model cannot be consulted; null = it can. */
+    var problem: String? = null
 
-    override fun newSession() { sessions++ }
+    override fun newSession(preparation: Boolean) { sessions += preparation }
+    override fun unavailable(): String? = problem
 
     override fun runStep(stepText: String, initialLayout: String?, criterion: String?): ScenarioSession.Verdict {
         calls++

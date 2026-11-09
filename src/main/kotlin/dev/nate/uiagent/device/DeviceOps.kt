@@ -28,7 +28,16 @@ interface DeviceOps {
     fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?, locale: String? = null): String?
 
     /**
-     * How the last [setup] spent its time, phase by phase in order (`restore`, `locale`, `launch`,
+     * Enter again inside a scenario — what a section after the first starts from: stop the app and bring
+     * it back to the scenario's entry ([launch]/[deeplink] as in [setup]) with its data as it is. The
+     * process is new, so nothing the last section left open survives and what the screen shows was read
+     * again; the account and whatever the app saved are not reset — that is done once, by [setup]. Like a
+     * user who closes the app and opens it again. Returns the fully-drawn time like [setup].
+     */
+    fun reopen(app: String?, launch: Boolean, deeplink: String?): String?
+
+    /**
+     * How the last [setup] (or [reopen]: `stop`, `launch`, `fully drawn wait`) spent its time, phase by phase in order (`restore`, `locale`, `launch`,
      * `fully drawn wait`) — setup is paid once per scenario and per phase of a nightly (8s × 78 runs
      * of a 71-minute batch), and its one number could not say which part to look at.
      */
@@ -102,15 +111,7 @@ class AdbOps(
         private set
 
     override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?, locale: String?): String? {
-        val phases = mutableListOf<Pair<String, Long>>()
-        var mark = System.currentTimeMillis()
-        fun phase(name: String) {
-            val now = System.currentTimeMillis()
-            if (now - mark > 0) phases += name to now - mark
-            mark = now
-            setupPhases = phases.toList()
-        }
-        setupPhases = emptyList()
+        val phase = phaseClock()
         if ((clearData || appState != null) && app != null) {
             runCatching { runProcess(listOf(adbBin, "shell", "am", "force-stop", app)) }
             runProcess(listOf(adbBin, "shell", "pm", "clear", app))
@@ -137,6 +138,34 @@ class AdbOps(
         // after the clear (which wipes it), before the launch (so the first frame is already in it)
         if (locale != null && app != null) setAppLocales(app, locale)
         phase("locale")
+        return open(app, launch, deeplink, phase)
+    }
+
+    override fun reopen(app: String?, launch: Boolean, deeplink: String?): String? {
+        val phase = phaseClock()
+        if (app != null) runCatching { runProcess(listOf(adbBin, "shell", "am", "force-stop", app)) }
+        phase("stop")
+        return open(app, launch, deeplink, phase)
+    }
+
+    /** Starts [setupPhases] over; each call of the result closes the phase that ran since the last one. */
+    private fun phaseClock(): (String) -> Unit {
+        val phases = mutableListOf<Pair<String, Long>>()
+        var mark = System.currentTimeMillis()
+        setupPhases = emptyList()
+        return { name ->
+            val now = System.currentTimeMillis()
+            if (now - mark > 0) phases += name to now - mark
+            mark = now
+            setupPhases = phases.toList()
+        }
+    }
+
+    /** Launch and/or deeplink into [app], then wait for the fully-drawn report of THIS launch. */
+    private fun open(app: String?, launch: Boolean, deeplink: String?, phase: (String) -> Unit): String? {
+        // What the app has reported so far: a scenario's log is cleared once, so on a second entry the
+        // first one's `Fully drawn` line is still there and must not be taken for this launch's.
+        val drawnBefore = if (app != null && (launch || deeplink != null)) runCatching { fullyDrawnAll(launchLog(), app) }.getOrDefault(emptyList()) else emptyList()
         fun start() {
             if (launch && app != null) {
                 // cold start: kill, then fire the launcher intent. What follows is the wait for the
@@ -164,8 +193,12 @@ class AdbOps(
         start()
         phase("launch")
         if (app == null || !(launch || deeplink != null)) return null
-        return awaitFullyDrawn(app, ::start).also { phase("fully drawn wait") }
+        return awaitFullyDrawn(app, ::start, drawnBefore).also { phase("fully drawn wait") }
     }
+
+    /** The activity manager's lines of the device log — launches, kills, `Fully drawn`. */
+    private fun launchLog(): String =
+        runProcess(listOf(adbBin, "logcat", "-d", "-v", "brief", "ActivityTaskManager:I", "ActivityManager:I", "*:S"))
 
     /**
      * Poll the device log for the app's `Fully drawn` line. `am start -W` returns at the first
@@ -173,18 +206,18 @@ class AdbOps(
      * activity showing an ad splash, and the destination screen arrives seconds later, after
      * a network round trip (measured: +3.6s after setup, splash timeout 5s). Only the app knows
      * which activity is the destination, so that activity reports it and this waits for that.
-     * The runner cleared logcat before setup, so `-d` covers exactly this launch.
+     * The runner cleared logcat before the scenario, so `-d` covers its launches; [drawnBefore] is what
+     * the app had already reported when this one was fired (a section's re-entry), and only a report
+     * after that counts.
      *
      * The same log shows the one launch that has to be repeated ([killedWithOldTask]): [relaunch]
      * runs once when the process just started was taken down with the previous scenario's task.
      */
-    private fun awaitFullyDrawn(app: String, relaunch: () -> Unit): String? {
+    private fun awaitFullyDrawn(app: String, relaunch: () -> Unit, drawnBefore: List<String> = emptyList()): String? {
         var deadline = System.currentTimeMillis() + FULLY_DRAWN_TIMEOUT_MS
         var relaunched = false
         while (true) {
-            val out = runCatching {
-                runProcess(listOf(adbBin, "logcat", "-d", "-v", "brief", "ActivityTaskManager:I", "ActivityManager:I", "*:S"))
-            }.getOrDefault("")
+            val out = runCatching { launchLog() }.getOrDefault("")
             if (!relaunched && killedWithOldTask(out, app)) {
                 relaunched = true
                 System.err.println("setup: the launch was killed with the previous scenario's task — launching again")
@@ -192,7 +225,7 @@ class AdbOps(
                 deadline = System.currentTimeMillis() + FULLY_DRAWN_TIMEOUT_MS
                 continue
             }
-            fullyDrawn(out, app)?.let { return it }
+            drawnSince(drawnBefore, fullyDrawnAll(out, app))?.let { return it }
             if (System.currentTimeMillis() >= deadline) return null
             Thread.sleep(FULLY_DRAWN_POLL_MS)
         }
@@ -324,8 +357,18 @@ class AdbOps(
          * The `+Ns` the system logs when [app]'s activity calls `reportFullyDrawn()`
          * (`ActivityTaskManager: Fully drawn com.x/.Main: +3s812ms`); null when no such line.
          */
-        fun fullyDrawn(logcat: String, app: String): String? =
-            Regex("Fully drawn ${Regex.escape(app)}/\\S+: (\\+\\S+)").find(logcat)?.groupValues?.get(1)
+        fun fullyDrawn(logcat: String, app: String): String? = fullyDrawnAll(logcat, app).firstOrNull()
+
+        /** Every `+Ns` [app] has reported as fully drawn in [logcat], in log order — one per launch that got there. */
+        fun fullyDrawnAll(logcat: String, app: String): List<String> =
+            Regex("Fully drawn ${Regex.escape(app)}/\\S+: (\\+\\S+)").findAll(logcat).map { it.groupValues[1] }.toList()
+
+        /**
+         * The report of the launch fired after [before] was read; null while [now] holds nothing newer. A
+         * longer list has a new report; so does one whose last differs (the log may have dropped old lines).
+         */
+        fun drawnSince(before: List<String>, now: List<String>): String? =
+            now.lastOrNull()?.takeIf { now.size > before.size || it != before.lastOrNull() }
 
         /**
          * Was [app]'s process killed by the removal of an old task after its last launch? A scenario

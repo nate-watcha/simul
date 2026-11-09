@@ -58,6 +58,8 @@ class ScenarioSession(
     appContext: String? = null,
     /** Who this scenario runs as (`setup.appState` + its config.yaml `states:` line), appended likewise. */
     accountState: String? = null,
+    /** The conversation of a scenario's `## 준비` section: it brings the app to a state instead of testing it ([PREPARATION_PROMPT]). */
+    preparation: Boolean = false,
 ) {
     /** [llm]: what the step cost in model calls, time and tokens; null for executors that never consult the model. */
     data class Verdict(val passed: Boolean, val reason: String, val llm: LlmStats? = null)
@@ -70,7 +72,7 @@ class ScenarioSession(
     private val agent: GraphAIAgent<String, String> = GraphAIAgent(
         promptExecutor = executor,
         agentConfig = AIAgentConfig(
-            prompt = prompt("simul", params = SimulLlm.PARAMS) { system(systemPrompt(appContext, accountState)) },
+            prompt = prompt("simul", params = SimulLlm.PARAMS) { system(systemPrompt(appContext, accountState, preparation)) },
             model = model,
             // Koog counts graph nodes: start + request + (execute + send) per turn + record + finish.
             maxAgentIterations = maxTurnsPerStep * 2 + 5,

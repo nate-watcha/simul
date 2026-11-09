@@ -108,17 +108,27 @@ class RunnerTest {
         name = "follow", tags = emptyList(), setup = Scenario.Setup(deeplink = "app://users/1", launch = false),
         steps = listOf("\"팔로우 취소\"를 누른다", "\"팔로우\"가 보이는지 확인한다", "\"팔로우\"를 누른다", "\"팔로우 취소\"가 보이는지 확인한다"),
         sections = listOf(
-            Scenario.Section("팔로우 취소", "팔로우를 취소할 수 있다.", 0, 2, Scenario.Condition(id = "my_follow_button", label = "팔로우 취소")),
+            Scenario.Section("팔로우 취소", "팔로우를 취소할 수 있다.", 0, 2),
             Scenario.Section("팔로우 추가", "", 2, 2),
         ),
     )
 
-    /** Taps what a "누른다" step quotes; any step passes when what it quotes is (or was, for a tap) on screen. */
+    /** The same two sections behind a preparation that leaves the account following, whatever it found. */
+    private val prepared = follow.copy(
+        steps = listOf("팔로우하고 있지 않으면 \"팔로우\"를 눌러 팔로우한다") + follow.steps,
+        sections = listOf(Scenario.Section("준비", "", 0, 1, preparation = true)) + follow.sections.map { it.copy(first = it.first + 1) },
+    )
+
+    /**
+     * Taps what a "누른다" step quotes; a step passes when what it quotes is (or was, for a tap) on screen.
+     * The preparation's sentence ("…않으면 …") taps only when there is something to tap and passes either way.
+     */
     private fun followHarness(app: FollowApp) = Harness(app.device) { c, command ->
         val label = quotedLabels(command).first()
         val there = c.currentElements.any { it.matchesExact(label) }
-        if (there && "누른다" in command) c.tap(label)
-        ScenarioSession.Verdict(there, if (there) "ok" else "\"$label\" is not on screen")
+        if (there && ("누른다" in command || "않으면" in command)) c.tap(label)
+        if ("않으면" in command) ScenarioSession.Verdict(true, if (there) "followed" else "already following")
+        else ScenarioSession.Verdict(there, if (there) "ok" else "\"$label\" is not on screen")
     }
 
     @Test
@@ -128,62 +138,71 @@ class RunnerTest {
 
         val recorded = h.runner.run(follow, trace = null, mode = RunMode.LLM)
 
-        assertEquals(StepStatus.PASSED, recorded.status, recorded.steps.firstOrNull { it.reason != null }?.reason)
+        assertEquals(StepStatus.PASSED, recorded.status, recorded.steps.firstOrNull { it.status == StepStatus.FAILED }?.reason)
         assertEquals(listOf(StepStatus.PASSED, StepStatus.PASSED), recorded.sections.map { it.status })
         assertEquals(listOf(1..2, 3..4), recorded.sections.map { it.steps })
-        assertEquals(2, h.ops.setups.size, "the second section starts the app over")
-        assertEquals(1, h.executor.sessions, "and the model's conversation with it")
+        assertEquals(1, h.ops.setups.size, "the account state is restored once, for the scenario")
+        assertEquals(listOf("com.example|false|app://users/1"), h.ops.reopens, "the second section starts the app over, its data kept")
+        assertEquals(listOf(false, false), h.executor.sessions, "and the model's conversation with it")
         assertEquals(true, app.following, "both directions ran, so the account is where it started")
         assertEquals(listOf("팔로우 취소", "팔로우 취소", "팔로우 추가", "팔로우 추가"), recorded.updatedTrace!!.steps.map { it.section })
 
         val replayed = h.runner.run(follow, trace = recorded.updatedTrace, mode = RunMode.REPLAY)
 
-        assertEquals(StepStatus.PASSED, replayed.status, replayed.steps.firstOrNull { it.reason != null }?.reason)
+        assertEquals(StepStatus.PASSED, replayed.status, replayed.steps.firstOrNull { it.status == StepStatus.FAILED }?.reason)
         assertEquals(4, h.executor.calls, "replay never consults the model")
-        assertEquals(4, h.ops.setups.size)
+        assertEquals(2, h.ops.setups.size)
+        assertEquals(2, h.ops.reopens.size)
     }
 
     @Test
-    fun `a section whose condition the entry screen does not show is skipped, and keeps its recorded steps`() {
-        val earlier = followHarness(FollowApp(following = true)).runner.run(follow, trace = null, mode = RunMode.LLM).updatedTrace!!
+    fun `the preparation is the model's in a replay too, and what follows it replays without one`() {
         val app = FollowApp(following = false) // the last run stopped halfway: unfollowed, not followed back
         val h = followHarness(app)
 
-        val recorded = h.runner.run(follow, trace = earlier, mode = RunMode.LLM)
+        val recorded = h.runner.run(prepared, trace = null, mode = RunMode.LLM)
 
-        assertEquals(StepStatus.PASSED, recorded.status, "skipping a section is not a failure")
-        assertEquals(listOf(StepStatus.SKIPPED, StepStatus.PASSED), recorded.sections.map { it.status })
-        assertTrue("my_follow_button \"팔로우 취소\"" in recorded.sections[0].reason!!, recorded.sections[0].reason)
-        assertEquals(listOf(StepStatus.SKIPPED, StepStatus.SKIPPED, StepStatus.PASSED, StepStatus.PASSED), recorded.steps.map { it.status })
-        assertEquals(true, app.following, "the section that ran put the account back")
-        assertEquals(earlier.steps.take(2), recorded.updatedTrace!!.steps.take(2), "the skipped section's steps are still the earlier recording's")
-        assertEquals(4, recorded.updatedTrace!!.steps.size)
-        // the report reads the skip, and why, from result.json
-        val read = ResultJson.read(writeResult(recorded, "llm", h.ops, h.reportDir))!!
-        assertEquals(listOf("팔로우 취소"), read.skippedSections.map { it.title })
-        assertEquals("my_follow_button \"팔로우 취소\"", read.skippedSections.single().condition)
-        assertEquals("팔로우 추가", read.sectionOf(3)?.title)
+        assertEquals(StepStatus.PASSED, recorded.status, recorded.steps.firstOrNull { it.status == StepStatus.FAILED }?.reason)
+        assertEquals(listOf(true, false, false), recorded.sections.map { it.preparation })
+        assertEquals(listOf(true, false, false), h.executor.sessions, "the preparation has a conversation of its own")
+        assertEquals(2, h.ops.reopens.size, "the preparation tapped, so the first section starts the app over as well")
+        assertEquals(follow.steps, recorded.updatedTrace!!.steps.map { it.text }, "a preparation is never traced")
 
-        // the same decision without a model: skipped again when the account is flipped again
+        // flipped again at replay: only the preparation asks the model, and both directions still run
         app.following = false
-        val replayed = h.runner.run(follow, trace = recorded.updatedTrace, mode = RunMode.REPLAY)
-        assertEquals(listOf(StepStatus.SKIPPED, StepStatus.PASSED), replayed.sections.map { it.status })
-        assertEquals(2, h.executor.calls, "replay never consults the model")
+        val replayed = h.runner.run(prepared, trace = recorded.updatedTrace, mode = RunMode.REPLAY)
+
+        assertEquals(StepStatus.PASSED, replayed.status, replayed.steps.firstOrNull { it.status == StepStatus.FAILED }?.reason)
+        assertEquals(listOf("llm", "replay", "replay", "replay", "replay"), replayed.steps.map { it.mode })
+        assertEquals(6, h.executor.calls, "5 of the recording, 1 for the replay's preparation")
+        assertEquals("followed", replayed.steps[0].reason, "the report says what the model found or did")
+        assertEquals(true, app.following)
+
+        // already as it should be: the preparation touches nothing, and the app is not started over for the first section
+        val reopens = h.ops.reopens.size
+        val again = h.runner.run(prepared, trace = recorded.updatedTrace, mode = RunMode.REPLAY)
+        assertEquals(StepStatus.PASSED, again.status)
+        assertTrue(again.steps[0].actions.isEmpty())
+        assertEquals(reopens + 1, h.ops.reopens.size, "only the second section's")
+        // result.json carries the sections for the report
+        val read = ResultJson.read(writeResult(again, "replay", h.ops, h.reportDir))!!
+        assertEquals(listOf("팔로우 취소", "팔로우 추가"), read.tests.map { it.title })
+        assertEquals("준비", read.sectionOf(1)?.title)
     }
 
     @Test
-    fun `a scenario none of whose sections ran FAILED`() {
-        val bothConditional = follow.copy(sections = listOf(follow.sections[0],
-            follow.sections[1].copy(condition = Scenario.Condition(id = "my_follow_button", label = "팔로우"))))
-        val h = followHarness(FollowApp(following = null)) // the button is gone
+    fun `a replay without a model FAILED at the preparation instead of crashing`() {
+        val h = followHarness(FollowApp(following = true))
+        val trace = h.runner.run(prepared, trace = null, mode = RunMode.LLM).updatedTrace!!
+        h.executor.problem = "llm.apiKey references \$SIMUL_LLM_API_KEY but it is not set in the environment"
 
-        val result = h.runner.run(bothConditional, trace = null, mode = RunMode.LLM)
+        val result = h.runner.run(prepared, trace = trace, mode = RunMode.REPLAY)
 
         assertEquals(StepStatus.FAILED, result.status)
         assertEquals(StepStatus.FAILED, result.steps[0].status)
-        assertTrue("no section ran" in result.steps[0].reason!!, result.steps[0].reason)
-        assertEquals(listOf("프로필"), result.steps[0].screen, "with what the screen had instead")
-        assertEquals(0, h.executor.calls)
+        assertTrue("the preparation needs the model" in result.steps[0].reason!!, result.steps[0].reason)
+        assertEquals(listOf(StepStatus.FAILED, StepStatus.SKIPPED, StepStatus.SKIPPED), result.sections.map { it.status })
+        assertEquals(5, h.executor.calls, "nothing was asked of a model that is not there")
     }
 
     // ------------------------------------------------------------------ device settings

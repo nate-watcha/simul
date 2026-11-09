@@ -4,6 +4,7 @@ import dev.nate.uiagent.agent.LlmStats
 import dev.nate.uiagent.agent.llmFromJson
 import dev.nate.uiagent.agent.llmJson
 import dev.nate.uiagent.arr
+import dev.nate.uiagent.bool
 import dev.nate.uiagent.int
 import dev.nate.uiagent.json
 import dev.nate.uiagent.long
@@ -35,10 +36,11 @@ import java.io.File
  *                      `video_ms`, so a page can seek the player to it
  * ```
  *
- * A scenario with `## title` sections lists them under `sections` — title, prose, the condition it
- * declares (`when`), PASSED/FAILED/SKIPPED and, for a section whose condition did not hold, why — each
- * owning the steps `from`..`to` of the one flat `steps` list (numbered through the whole scenario, so
- * `steps/NN.png` and `video_ms` mean what they always did).
+ * A scenario with `## title` sections lists them under `sections` — title, prose, PASSED/FAILED/SKIPPED
+ * (SKIPPED = not reached, an earlier section failed) and `preparation: true` on its `## 준비` section —
+ * each owning the steps `from`..`to` of the one flat `steps` list (numbered through the whole scenario,
+ * so `steps/NN.png` and `video_ms` mean what they always did). A preparation's steps have `mode: "llm"`
+ * in a replay's result too, and their `reason` is what the model said it found or did.
  *
  * Times: `started_at_ms` is the scenario's epoch start; a step's `started_ms` counts from it,
  * as does an action's `at_ms`; `video_ms` is the same moment as an offset into replay.mp4.
@@ -129,9 +131,8 @@ object ResultJson {
                     add(buildJsonObject {
                         put("title", sec.title)
                         put("description", fillValues(sec.description, r.values))
-                        put("when", sec.condition?.let(::JsonPrimitive) ?: JsonNull)
+                        if (sec.preparation) put("preparation", true)
                         put("status", sec.status.name)
-                        put("reason", sec.reason?.let(::JsonPrimitive) ?: JsonNull)
                         put("from", sec.steps.first)
                         put("to", sec.steps.last)
                     })
@@ -219,15 +220,15 @@ object ResultJson {
         val failed get() = status == "FAILED"
         val failedStepOf: Step? get() = failedStep?.let { n -> steps.firstOrNull { it.n == n } }
         fun sectionOf(n: Int): Section? = sections.firstOrNull { n in it.from..it.to }
-        /** Sections that did not run because the screen they entered did not show their condition. */
-        val skippedSections: List<Section> get() = sections.filter { it.conditionNotMet }
+        /** The sections that test something — all but the preparation — in the order they ran. */
+        val tests: List<Section> get() = sections.filterNot { it.preparation }
     }
 
-    /** One `## title` section of a run: [status] PASSED | FAILED | SKIPPED, owning the steps [from]..[to]. */
-    data class Section(val title: String, val description: String, val condition: String?, val status: String, val reason: String?, val from: Int, val to: Int) {
-        /** SKIPPED for its condition — as opposed to not reached because an earlier section failed. */
-        val conditionNotMet get() = status == "SKIPPED" && reason != null
-    }
+    /**
+     * One `## title` section of a run: [status] PASSED | FAILED | SKIPPED (not reached), owning the steps
+     * [from]..[to]. [preparation] is the `## 준비` section: done by the model, a test of nothing.
+     */
+    data class Section(val title: String, val description: String, val preparation: Boolean, val status: String, val from: Int, val to: Int)
 
     data class Video(val file: String, val durationMs: Long?)
 
@@ -321,8 +322,8 @@ object ResultJson {
             setupEvents = events(o, "setup_events"),
             sections = o.arr("sections")?.mapNotNull { el ->
                 val sec = el as? JsonObject ?: return@mapNotNull null
-                Section(sec.str("title") ?: return@mapNotNull null, sec.str("description") ?: "", sec.str("when"),
-                    sec.str("status") ?: "SKIPPED", sec.str("reason"), sec.int("from") ?: 0, sec.int("to") ?: 0)
+                Section(sec.str("title") ?: return@mapNotNull null, sec.str("description") ?: "", sec.bool("preparation") == true,
+                    sec.str("status") ?: "SKIPPED", sec.int("from") ?: 0, sec.int("to") ?: 0)
             } ?: emptyList(),
         )
     }

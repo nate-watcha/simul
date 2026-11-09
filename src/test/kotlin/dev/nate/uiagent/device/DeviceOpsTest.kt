@@ -25,6 +25,18 @@ class DeviceOpsTest {
     }
 
     @Test
+    fun `a second launch in one scenario waits for its own fully drawn report, not the first one's`() {
+        // the log is cleared once per scenario: a section's re-entry still sees the report of the scenario's first launch
+        val first = "I/ActivityTaskManager(  672): Fully drawn com.x/.Main: +1s203ms\n"
+        val second = "I/ActivityTaskManager(  672): Fully drawn com.x/.Main: +987ms\n"
+        val before = AdbOps.fullyDrawnAll(first, "com.x")
+        assertNull(AdbOps.drawnSince(before, AdbOps.fullyDrawnAll(first, "com.x")), "nothing new yet — keep waiting")
+        assertEquals("+987ms", AdbOps.drawnSince(before, AdbOps.fullyDrawnAll(first + second, "com.x")))
+        assertEquals("+987ms", AdbOps.drawnSince(before, AdbOps.fullyDrawnAll(second, "com.x")), "the log dropped the old line")
+        assertEquals("+1s203ms", AdbOps.drawnSince(emptyList(), before), "a scenario's first launch: any report is its own")
+    }
+
+    @Test
     fun `a launch killed with the previous scenario's task is told apart from the force-stop before it`() {
         // stone owner-profile-stats 2026-11-05: the share sheet kept the old task alive past force-stop
         val stop = "I/ActivityManager(  831): Killing 30328:com.x.dev/u0a237 (adj 101): stop com.x.dev due to from pid 30898\n"

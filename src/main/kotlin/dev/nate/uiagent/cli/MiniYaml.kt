@@ -4,7 +4,7 @@ package dev.nate.uiagent.cli
  * Minimal YAML-subset parser for `.simul/config.yaml` and scenario frontmatter — no external
  * dependency (the serialization compiler plugin is deliberately unavailable, see Core.kt).
  *
- * Supported: nested maps by indentation, `key: scalar`, `key: [a, b]` inline lists, `key: { a: 1, b: 2 }` inline maps of scalars, quoted
+ * Supported: nested maps by indentation, `key: scalar`, `key: [a, b]` inline lists, quoted
  * scalars, `key: |` literal text blocks (the more-indented lines below, joined with newlines —
  * blank and full-line `#` lines inside are dropped like everywhere else), full-line `#` comments,
  * blank lines. Nothing else (anchors, folded `>` strings, block lists) — config and frontmatter
@@ -69,13 +69,6 @@ object MiniYaml {
     private fun scalarOrList(raw: String): Any =
         if (raw.startsWith("[") && raw.endsWith("]")) {
             raw.substring(1, raw.length - 1).split(',').map { unquote(it.trim()) }.filter { it.isNotEmpty() }
-        } else if (raw.startsWith("{") && raw.endsWith("}")) {
-            // `{ a: 1, b: 2 }` — scalars only; a value with a comma in it needs the nested block form
-            raw.substring(1, raw.length - 1).split(',').map { it.trim() }.filter { it.isNotEmpty() }.associateTo(linkedMapOf()) { entry ->
-                val colon = entry.indexOf(':')
-                require(colon > 0) { "yaml: expected 'key: value' in '$raw'" }
-                entry.substring(0, colon).trim() to unquote(entry.substring(colon + 1).trim())
-            }
         } else {
             unquote(raw)
         }
