@@ -49,6 +49,11 @@ import java.io.File
  */
 internal fun reportCommand(args: List<String>, cwd: File): Int {
     if (args.isEmpty()) return replayAndReport(cwd, emptyList())
+    // A path git printed with its default core.quotePath (`".simul/…/\353\202\230…/x.trace.json"`, non-ASCII directory names)
+    // is not a file here — say so instead of "summary not found" (stone feature run 42785971560, 2026-11-10).
+    args.firstOrNull { it.length > 1 && it.startsWith('"') && it.endsWith('"') }?.let {
+        return err("$it looks like a path quoted by git (core.quotePath) — list paths with `git -c core.quotePath=false …` and pass them unquoted, one argument each")
+    }
     // Scenario files or committed traces, nothing else: the scoped forms. (`--out x.md` below is a summary report's output, not a scenario.)
     if (args.none { it.startsWith("--") } && args.any { it.endsWith(".md") }) {
         if (!args.all { it.endsWith(".md") }) return err("`simul report <scenario.md>...` takes scenario files only (no summary.json, no trace — traces alone are replayed without recording)")
