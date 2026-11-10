@@ -36,6 +36,10 @@ import java.io.File
  *                      `video_ms`, so a page can seek the player to it
  * ```
  *
+ * `setup` is how the scenario is entered, as its frontmatter says it: `deeplink` or `launch: true`, and the
+ * account state it starts from (`app_state` — the `appState`, a `states:` variant, or `guest` for `clearData`).
+ * The report groups scenarios by screen and shows this as the way in.
+ *
  * A scenario with `## title` sections lists them under `sections` — title, prose, PASSED/FAILED/SKIPPED
  * (SKIPPED = not reached, an earlier section failed) and `preparation: true` on its `## 준비` section —
  * each owning the steps `from`..`to` of the one flat `steps` list (numbered through the whole scenario,
@@ -68,7 +72,15 @@ object ResultJson {
         /** `YYYY-MM-DD` the trace was last recorded (git commit date, else file mtime); null without a trace. */
         val traceRecordedAt: String?,
         val env: Env,
+        /** How the scenario is entered (its `setup:`); null when it declares none. */
+        val setup: Setup? = null,
     )
+
+    /** A scenario's way in: the [deeplink] it opens or a plain [launch], from the account state [appState]. */
+    data class Setup(val deeplink: String?, val launch: Boolean, val appState: String?) {
+        /** `watcha://my`, or `앱 실행` for a plain launch; null when the scenario names neither. */
+        val entry: String? get() = deeplink ?: if (launch) "앱 실행" else null
+    }
 
     fun write(r: ScenarioRunResult, mode: String, meta: Meta, dir: File) {
         dir.mkdirs()
@@ -99,6 +111,13 @@ object ResultJson {
             put("file", meta.file)
             put("owner", meta.owner?.let(::JsonPrimitive) ?: JsonNull)
             put("description", meta.description)
+            meta.setup?.let { s ->
+                put("setup", buildJsonObject {
+                    s.deeplink?.let { put("deeplink", it) }
+                    if (s.launch) put("launch", true)
+                    s.appState?.let { put("app_state", it) }
+                })
+            }
             // the scenario's `values:` as this run picked them — absent when it declares none
             if (r.values.isNotEmpty()) put("values", buildJsonObject { r.values.forEach { (k, v) -> put(k, v) } })
             put("trace_recorded_at", meta.traceRecordedAt?.let(::JsonPrimitive) ?: JsonNull)
@@ -211,6 +230,8 @@ object ResultJson {
         val setupEvents: List<Event> = emptyList(),
         /** The scenario's `## title` sections in the order they ran; empty for a scenario without them. */
         val sections: List<Section> = emptyList(),
+        /** How the scenario is entered; null in results written before `setup` was recorded. */
+        val setup: Setup? = null,
     ) {
         /** `coupon.member` / `coupon` — the directory a run of this scenario gets under a runs root (see ReportDirs). */
         val key: String get() = name + (state?.let { ".$it" } ?: "")
@@ -320,6 +341,7 @@ object ResultJson {
                 )
             } ?: emptyList(),
             setupEvents = events(o, "setup_events"),
+            setup = o.obj("setup")?.let { s -> Setup(s.str("deeplink"), s.bool("launch") == true, s.str("app_state")) },
             sections = o.arr("sections")?.mapNotNull { el ->
                 val sec = el as? JsonObject ?: return@mapNotNull null
                 Section(sec.str("title") ?: return@mapNotNull null, sec.str("description") ?: "", sec.bool("preparation") == true,

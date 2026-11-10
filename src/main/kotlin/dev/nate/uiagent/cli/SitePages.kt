@@ -11,9 +11,14 @@ import javax.imageio.ImageIO
 /**
  * Renders a loaded run (see [Site]) as pages — the HTML report of README "나이틀리 운영":
  *
- *  1. Home: `index.html` — header with status chips, the failure cards (failed step, reason, screenshot),
- *     setup failures, a card per feature, the pass line and the full list.
- *  2. Scenario detail: `<feature>/<name>.<state>.html` — the md prose, the states, the steps (the failed
+ *  1. Home: `index.html` — a checklist: the verdict with every check as a cell, the failures as rows (where it
+ *     is, the step it stopped on, why, its frame), then the run as a table of screens that opens to each screen's
+ *     scenarios and what they confirm. A screen is a group directory; a check is a `## title` section, or the
+ *     scenario itself without sections ([Site.Check]).
+ *  2. Screen: `<feature>/_screen.html` — the screen's spec: the frame it is entered on (`_screen.jpg`, cut from a
+ *     recording) and its ways in (`setup`), then each scenario's prose and its checks as sentences with a verdict,
+ *     opening to their steps.
+ *  3. Scenario detail: `<feature>/<name>.<state>.html` — the md prose, the states, the steps (the failed
  *     one expanded with expected/found evidence and logcat) beside the replay: a `<video>` of replay.mp4
  *     with a step-coloured progress bar; clicking a step or a segment seeks the video to that step's
  *     `video_ms`. Without a recording the frame shows the step's screenshot instead. When tonight's LLM
@@ -34,9 +39,12 @@ object SitePages {
         /** What the pages call the app (`--title`); default the package name from run.json. */
         val appName: String? = null,
         val thumbWidth: Int = 360,
+        /** Cuts a screen's entry frame out of a recording; the pages do without when it is not installed. */
+        val ffmpeg: String = "ffmpeg",
     )
 
-    class Built(val index: File, val pages: List<File>, val rows: List<Site.Row>) {
+    /** [pages] are the scenarios' own pages, one per row; [screens] the page of each screen. */
+    class Built(val index: File, val pages: List<File>, val rows: List<Site.Row>, val screens: List<File> = emptyList()) {
         val failed get() = rows.count { it.kind == Site.Kind.FAILED }
         val recordFailed get() = rows.count { it.recordFailed }
         /** `실패 2 (녹화 실패 1) · 안 돌림 1 · 통과 7` */
@@ -65,8 +73,10 @@ object SitePages {
         out.mkdirs()
         val frames = rows.associate { it.id to (it.recordTimeline?.let { rec -> copyRecordFrames(rec, out, opts) } ?: RecordFrames.NONE) }
         val pages = rows.map { row -> renderDetail(run, row, rows, out, opts, frames.getValue(row.id)) }
+        val screens = Site.screens(rows)
+        val screenPages = screens.map { s -> renderScreen(run, s, screens, out, opts, entryFrame(s, out, opts)) }
         val index = File(out, "index.html").apply { writeText(renderHome(run, rows, opts, frames)) }
-        return Built(index, pages, rows)
+        return Built(index, pages, rows, screenPages)
     }
 
     // ------------------------------------------------------------------ helpers
@@ -105,8 +115,6 @@ object SitePages {
         "SKIPPED_SETUP" -> "SETUP · 안 돌림"
         else -> "안 돌림 · ${r.reason ?: r.status}"
     }
-    /** The section a step is in, ahead of its number: `팔로우 추가 › ` (nothing without sections). */
-    private fun secPrefix(r: ResultJson.Result, s: ResultJson.Step) = r.sectionOf(s.n)?.let { "<span class=dim>${esc(it.title)} ›</span> " } ?: ""
     /** Downscale a PNG screenshot to a JPEG of [width] px; false when unreadable. */
     fun writeJpeg(png: File, dest: File, width: Int): Boolean = runCatching {
         val src = ImageIO.read(png) ?: return false
@@ -173,127 +181,263 @@ object SitePages {
         return RecordFrames(steps, actions)
     }
 
+    // ------------------------------------------------------------------ what the home and the screen pages share
+
+    /** A replay's `replay broken: evidence not on screen: toast` in words; any other reason as it is. */
+    private fun humanReason(reason: String?): String = reason?.let {
+        Regex("^replay broken: evidence not on screen: (.+)$").find(it)?.let { m -> "녹화 때 있던 것이 화면에 없음: ${m.groupValues[1]}" } ?: it
+    } ?: "failed"
+    private fun icon(status: String) = "<i class=\"ic ${cls(status)}\">${when (status) { "PASSED" -> "✓"; "FAILED" -> "✕"; else -> "–" }}</i>"
+    /** One cell per check, a scenario's together — the shape of a screen (or of the run) at a glance. */
+    private fun cells(rows: List<Site.Row>) = "<span class=cells>" + rows.joinToString("") { row ->
+        "<span title=\"${attr(row.result.title)}\">" + row.checks.joinToString("") { "<i class=\"${cls(it.status)}\"></i>" } + "</span>"
+    } + "</span>"
+    private fun screenPageOf(feature: String) = (if (feature.isEmpty()) "" else "$feature/") + "_screen.html"
+    /** A screen's own page under [out]: `<feature>/_screen.html`. */
+    fun screenFile(out: File, feature: String) = File(out, screenPageOf(feature))
+    /** The account state a scenario starts from: its `setup`'s, else its `states:` variant. */
+    private fun stateOf(r: ResultJson.Result) = r.setup?.appState ?: r.state ?: ""
+    private fun entryLine(e: Site.Entry) = "<span class=entry><code class=e>${esc(e.entry)}</code>" +
+        e.states.entries.joinToString("") { (state, n) -> "<span>${esc(state)} $n</span>" } + "</span>"
+    /** `통과 24/25`: the checks of [rows] that passed, of all. */
+    private fun passedOf(rows: List<Site.Row>) = rows.flatMap { it.checks }.let { c -> c.count { it.status == "PASSED" } to c.size }
+    /** Why a failed scenario none of whose checks failed did: its preparation, or a recording that left no steps. */
+    private fun orphanFailure(row: Site.Row): String? {
+        if (row.kind != Site.Kind.FAILED || row.checks.any { it.status == "FAILED" }) return null
+        val t = row.timeline
+        return t.failedStepOf?.let { f -> "${t.sectionOf(f.n)?.title ?: "실패"} — ${noOf(t, f)}. ${f.text} · ${humanReason(f.reason)}" } ?: row.recordFailure ?: t.reason ?: "failed"
+    }
+    /** Why a check is not a pass: the failed step's reason, or why the scenario never ran. */
+    private fun whyNot(row: Site.Row, c: Site.Check): String? = when (c.status) {
+        "FAILED" -> row.timeline.failedStepOf?.takeIf { f -> c.steps.any { it.n == f.n } }?.let { humanReason(it.reason) } ?: row.recordFailure ?: row.timeline.reason
+        "NONE" -> row.result.reason
+        else -> null
+    }
+    /** What a check says: its title and sentence — a scenario without sections is its own prose (its name without any). */
+    private fun checkText(row: Site.Row, c: Site.Check) = (c.title?.let { "<b>${esc(it)}</b> " } ?: "") + esc(c.description.ifEmpty { if (c.title == null) row.result.title else "" })
+
     // ------------------------------------------------------------------ home
 
+    /**
+     * The first page is a checklist: the verdict with every check as a cell, what has to be looked at (each failure with
+     * the step it stopped on and why, each scenario that never ran), then the whole run as a table of screens — a row a
+     * screen, opening to its scenarios and what each confirms. However many scenarios, it is as long as there are screens.
+     */
     fun renderHome(run: Site.Run, rows: List<Site.Row>, opts: Options, frames: Map<String, RecordFrames> = emptyMap()): String {
-        val counts = rows.groupingBy { it.kind }.eachCount()
         val app = opts.appName ?: run.app ?: "app"
         val build = run.results.firstNotNullOfOrNull { it.appVersion } ?: run.summary?.appVersionName
         val failed = rows.filter { it.kind == Site.Kind.FAILED }
         val setup = rows.filter { it.kind == Site.Kind.SETUP }
         val passed = rows.filter { it.kind == Site.Kind.PASSED }
-        val byFeature = rows.groupBy { it.result.feature }
-        val features = byFeature.keys.sortedWith(compareBy({ byFeature.getValue(it).minOf { r -> r.kind.ordinal } }, { it }))
+        val screens = Site.screens(rows)
+        val (ok, total) = passedOf(rows)
+        val wall = run.summary?.durationMs ?: rows.sumOf { it.result.durationMs }
         val sb = StringBuilder()
-        head(sb, "$app nightly ${run.date}", "")
+        head(sb, "$app ${run.date}", "")
         sb.append("<div class=topbar><div class=inner><span class=brand>simul</span><nav class=apps><a class=on href=\"index.html\">${esc(app)}</a></nav></div></div><main>")
 
-        // ---- header
-        sb.append("<header class=home><div><div class=kicker>${esc(run.date)} ${esc(hm(run.summary?.startedAt ?: run.results.firstOrNull()?.startedAt))}</div><h1>${esc(app)}${build?.let { " ${esc(it)}" } ?: ""}</h1></div><div class=chips>")
-        for (k in Site.Kind.entries) {
-            val n = counts[k] ?: 0
-            if (n == 0 && k != Site.Kind.PASSED) continue
-            sb.append("<span class=\"chip big ${k.cls}\">${k.label} $n</span>")
+        // ---- the verdict
+        val (tone, verdict) = when {
+            failed.isNotEmpty() -> "failed" to "실패 ${failed.size}"
+            setup.isNotEmpty() -> "setup" to "안 돌림 ${setup.size}"
+            else -> "passed" to "전부 통과"
         }
+        sb.append("<header class=\"gate $tone\"><div class=kicker>${esc(app)}${build?.let { " ${esc(it)}" } ?: ""} · ${esc(run.date)} ${esc(hm(run.summary?.startedAt ?: run.results.firstOrNull()?.startedAt))}</div>")
+        sb.append("<div class=grow><h1>$verdict</h1><div class=chips>")
+        if (failed.isNotEmpty() && setup.isNotEmpty()) sb.append("<span class=\"chip big setup\">안 돌림 ${setup.size}</span>")
+        sb.append("<span class=\"chip big passed\">통과 ${passed.size}</span>")
         val recFailed = rows.count { it.recordFailed }
         if (recFailed > 0) sb.append("<span class=\"chip big failed\">녹화 실패 $recFailed</span>")
-        sb.append("</div></header>")
+        sb.append("</div></div>")
+        sb.append("<div class=gsum>확인 ${total}개 중 ${ok}개 통과 · 시나리오 ${rows.size} · 화면 ${screens.size} · 총 소요 ${esc(humanDuration(wall))}</div>")
+        sb.append("<div class=gcells>${screens.joinToString("") { cells(it.rows) }}</div></header>")
         run.record?.let { rec ->
             val l = dev.nate.uiagent.agent.LlmStats.sum(rec.scenarios.map { it.llm })
             sb.append("<p class=dim>LLM 녹화 ${esc(hm(rec.startedAt))} · ${esc(humanDuration(rec.durationMs))} · ${rec.scenarios.count { it.status == "PASSED" }}/${rec.scenarios.size} 녹화됨" +
                 (l?.let { " · 모델 ${it.calls} calls ${esc(humanDuration(it.durationMs))}" } ?: "") + " → 그 trace를 LLM 없이 재생한 결과가 아래다.</p>")
         }
 
-        // ---- failures
-        val diffs = failed + setup
-        sb.append("<section><div class=sh><h2>실패</h2><span class=dim>${diffs.size}건</span></div>")
-        if (diffs.isEmpty()) sb.append("<p class=dim>전부 통과 ${passed.size} — ${if (run.record != null) "오늘 녹화되고 " else ""}끝까지 재생됨.</p>")
-        if (failed.isNotEmpty()) {
-            sb.append("<div class=\"cards two\">")
-            for (row in failed) failureCard(sb, row, frames[row.id] ?: RecordFrames.NONE)
-            sb.append("</div>")
-        }
-        if (setup.isNotEmpty()) {
-            sb.append("<div class=\"cards three\">")
-            for (row in setup) setupCard(sb, row)
+        // ---- what has to be looked at
+        val todo = failed + setup
+        sb.append("<section><div class=sh><h2>봐야 할 것</h2><span class=dim>${todo.size}건${if (failed.isNotEmpty()) " · 멈춘 스텝과 이유" else ""}</span></div>")
+        if (todo.isEmpty()) sb.append("<p class=dim>전부 통과 ${passed.size} — ${if (run.record != null) "오늘 녹화되고 " else ""}끝까지 재생됨.</p>")
+        else {
+            sb.append("<div class=todo>")
+            for (row in failed) failureRow(sb, row, frames[row.id] ?: RecordFrames.NONE)
+            for (row in setup) setupRow(sb, row)
             sb.append("</div>")
         }
         sb.append("</section>")
 
-        // ---- per feature
-        sb.append("<section><div class=sh><h2>기능별 상태</h2><span class=dim>${features.size}개 기능 · ${rows.size}개 시나리오</span></div><div class=\"cards four\">")
-        features.forEachIndexed { i, f ->
-            if (i == 8) sb.append("</div><details class=more><summary>나머지 ${features.size - 8}개 기능 펼치기</summary><div class=\"cards four\">")
-            featureCard(sb, f, byFeature.getValue(f))
+        // ---- the whole run, by screen
+        sb.append("<section><div class=sh><h2>전체</h2><span class=dim>화면 ${screens.size} · 시나리오 ${rows.size} · 화면을 누르면 시나리오와 확인이 펼쳐진다</span>")
+        sb.append("<span class=tools><input type=search id=q placeholder=\"화면·시나리오 찾기\" aria-label=\"화면·시나리오 찾기\">")
+        if (failed.isNotEmpty()) sb.append("<button type=button id=onlyfail class=tog aria-pressed=false>실패만</button>")
+        sb.append("</span></div><div class=tw><table class=scr><thead><tr><th>화면</th><th>진입</th><th class=r>시나리오</th><th class=r>확인</th><th>상태</th><th class=r>소요</th></tr></thead>")
+        for (s in screens) {
+            val (p, n) = passedOf(s.rows)
+            val q = (s.name + " " + s.rows.joinToString(" ") { it.result.title + " " + it.result.name }).lowercase()
+            // a run of a few screens (one scenario, a feature branch) is read open
+            sb.append("<tbody class=\"g ${s.kind.cls}${if (screens.size <= 3) " open" else ""}\" data-q=\"${attr(q)}\"><tr class=srow><td><a href=\"${attr(screenPageOf(s.feature))}\">${esc(s.name)}</a></td>")
+            sb.append("<td>${s.entries.firstOrNull()?.let { e -> "<code class=e>${esc(e.entry)}</code>" + if (s.entries.size > 1) " <span class=dim>외 ${s.entries.size - 1}</span>" else "" } ?: "<span class=dim>–</span>"}</td>")
+            sb.append("<td class=r>${s.rows.size}</td><td class=r>${if (p < n) "<b class=\"${if (s.kind == Site.Kind.FAILED) "bad" else "dim"}\">$p/$n</b>" else "$n"}</td>")
+            sb.append("<td>${cells(s.rows)}</td><td class=\"r dim\">${esc(humanDuration(s.durationMs))}</td></tr>")
+            for (row in s.rows.sortedBy { it.kind.ordinal }) scenarioRow(sb, row)
+            sb.append("</tbody>")
         }
-        sb.append("</div>")
-        if (features.size > 8) sb.append("</details>")
-        sb.append("</section>")
-
-        // ---- the pass line + the full list
-        val wall = run.summary?.durationMs ?: rows.sumOf { it.result.durationMs }
-        sb.append("<section class=passline><span class=\"chip passed\">통과 ${passed.size}</span><span class=dim>끝까지 재생됨</span><span class=right>총 소요 ${esc(humanDuration(wall))} · 에뮬레이터 1대 · <a href=\"#all\">전체 목록</a></span></section>")
-        sb.append("<details id=all class=all><summary>전체 목록</summary>")
-        for (f in features) {
-            sb.append("<h3>${esc(f.ifEmpty { "(root)" })}</h3><ul>")
-            for (row in byFeature.getValue(f).sortedBy { it.kind.ordinal }) {
-                sb.append("<li><i class=\"dot ${row.kind.cls}\"></i><a href=\"${attr(pageOf(row.result))}\">${esc(row.result.title)}</a> <span class=dim>${esc(row.result.key)} · ${if (row.recordFailed) "녹화 실패" else row.kind.label}</span>${sectionLine(row.recordTimeline ?: row.result)}</li>")
-            }
-            sb.append("</ul>")
-        }
-        sb.append("</details>")
+        sb.append("</table></div></section>")
+        sb.append("<script>").append(HOME_JS).append("</script>")
         sb.append("</main><footer class=dim>generated by simul $AGENT_VERSION</footer></body></html>\n")
         return sb.toString()
     }
 
     /**
-     * A failed scenario. When tonight's recording failed, the card is about that: the frame the agent stopped on, how far
-     * it got, the step and why — the replay (of yesterday's trace, if any) is one dim line. Otherwise it is the replay's
-     * failed step and frame.
+     * A failed scenario, as a row: the frame it stopped on, where it is (screen › scenario › section), the step and why.
+     * When tonight's recording failed the row is about that — how far the agent got, the step it gave up on — and the
+     * replay (of yesterday's trace, if any) is one dim line.
      */
-    private fun failureCard(sb: StringBuilder, row: Site.Row, frames: RecordFrames) {
+    private fun failureRow(sb: StringBuilder, row: Site.Row, frames: RecordFrames) {
         val r = row.result
         val rec = row.recordTimeline
-        val step = r.failedStepOf
+        val t = row.timeline
+        val step = t.failedStepOf
         val prefix = r.feature.let { f -> if (f.isEmpty()) "" else "$f/" }
         val thumb = rec?.failedStep?.let { frames.steps[it] }?.let { prefix + it }
-            ?: step?.n?.takeIf { rec == null }?.let { "${r.id}/steps/${nn(it)}.jpg" }
-        sb.append("<article class=\"card fail\">")
+            ?: step?.n?.takeIf { rec == null }?.let { "${r.id}/steps/${nn(it)}.jpg" }?.takeIf { step.screenshot != null }
+        sb.append("<article class=frow>")
         if (thumb != null) sb.append("<a class=shot href=\"${attr(pageOf(r))}\"><img src=\"${attr(thumb)}\" alt=\"실패 시점 스크린샷\" loading=lazy></a>")
-        else sb.append("<div class=\"shot empty\">실패 시점<br>스크린샷 없음</div>")
-        sb.append("<div class=body><div class=row>${chip(Site.Kind.FAILED, if (row.recordFailed) "녹화 실패" else "FAILED")}<span class=dim>${esc(r.feature.ifEmpty { "(root)" })}${r.state?.let { " · ${esc(it)}" } ?: ""}</span></div>")
-        sb.append("<div class=title><a href=\"${attr(pageOf(r))}\">${esc(r.title)}</a></div>")
+        else sb.append("<div class=\"shot empty\"></div>")
+        sb.append("<div class=body><div class=path>${chip(Site.Kind.FAILED, if (row.recordFailed) "녹화 실패" else "FAILED")}<a href=\"${attr(screenPageOf(r.feature))}#${attr(r.key)}\">${esc(r.feature.ifEmpty { "(root)" })}</a><span>›</span><a class=title href=\"${attr(pageOf(r))}\">${esc(r.title)}</a>")
+        step?.let { t.sectionOf(it.n) }?.let { sb.append("<span>›</span><span>${esc(it.title)}</span>") }
+        sb.append("</div>")
         val replayLine = if (row.replayed) "커밋 trace 재생 · ${esc(if (r.failed) verdict(r).replace(" · ", " ") else r.status)}" else "재생 없음 · ${esc(r.reason ?: "no trace")}"
         when {
             rec != null -> {
-                val f = rec.failedStepOf
                 sb.append("<div class=progress>${strip(rec.steps)}<span class=dim>${esc(stoppedAt(rec))}</span></div>")
-                if (f != null) sb.append("<div class=mono>${secPrefix(rec, f)}${noOf(rec, f)}. ${esc(f.text)}<br><span class=reason>${esc(f.reason ?: "failed")}</span></div>")
+                if (step != null) sb.append("<div class=mono>${noOf(rec, step)}. ${esc(step.text)}</div><div class=reason>${esc(humanReason(step.reason))}</div>")
                 sb.append("<div class=dim>$replayLine</div>")
             }
-            row.recordFailed -> sb.append("<div class=mono><span class=reason>LLM 녹화: ${esc(row.recordFailure ?: "failed")}</span><br><span class=dim>$replayLine</span></div>")
-            step != null -> sb.append("<div class=mono>${secPrefix(r, step)}${noOf(r, step)}. ${esc(step.text)}<br><span class=reason>${esc(step.reason ?: "failed")}</span></div>")
+            row.recordFailed -> sb.append("<div class=reason>LLM 녹화: ${esc(row.recordFailure ?: "failed")}</div><div class=dim>$replayLine</div>")
+            step != null -> sb.append("<div class=mono>${noOf(r, step)}. ${esc(step.text)}</div><div class=reason>${esc(humanReason(step.reason))}</div>")
         }
-        val t = rec ?: r
         val when_ = if (rec != null) "녹화 ${esc(hm(t.startedAt))} · ${esc(humanDuration(t.durationMs))}"
                     else if (row.replayed || row.record == null) "${esc(hm(r.startedAt))} · ${esc(humanDuration(r.durationMs))}"
                     else "녹화 ${esc(humanDuration(row.record.durationMs))}"
-        sb.append("<div class=foot><span class=dim>$when_</span>${avatar(r.owner)}<a class=more href=\"${attr(pageOf(r))}\">상세</a></div></div></article>")
+        sb.append("</div><div class=side>${r.setup?.entry?.let { "<code class=e>${esc(it)}</code>" } ?: ""}<span>${esc(listOf(stateOf(r), when_).filter { it.isNotEmpty() }.joinToString(" · "))}</span>${avatar(r.owner)}<a class=more href=\"${attr(pageOf(r))}\">스텝·영상 ›</a></div></article>")
     }
 
-    private fun setupCard(sb: StringBuilder, row: Site.Row) {
+    /** A scenario that never ran (its setup failed, or it has no trace): not a verdict on the app. */
+    private fun setupRow(sb: StringBuilder, row: Site.Row) {
         val r = row.result
-        sb.append("<article class=\"card none\"><div class=row>${chip(Site.Kind.SETUP)}<span class=dim>${esc(r.feature.ifEmpty { "(root)" })}${r.state?.let { " · ${esc(it)}" } ?: ""}</span></div>")
-        sb.append("<div class=title><a href=\"${attr(pageOf(r))}\">${esc(r.title)}</a></div><div class=note>${esc(r.reason ?: "setup failed")} — 앱 판정이 아니라 환경 문제입니다.</div></article>")
+        sb.append("<article class=frow><div class=\"shot none\"></div><div class=body><div class=path>${chip(Site.Kind.SETUP)}<a href=\"${attr(screenPageOf(r.feature))}#${attr(r.key)}\">${esc(r.feature.ifEmpty { "(root)" })}</a><span>›</span><a class=title href=\"${attr(pageOf(r))}\">${esc(r.title)}</a></div>")
+        sb.append("<div class=note>${esc(r.reason ?: "setup failed")} — 앱 판정이 아니라 환경 문제입니다.</div></div><div class=side><span>${esc(stateOf(r))}</span></div></article>")
     }
 
-    private fun featureCard(sb: StringBuilder, f: String, rows: List<Site.Row>) {
-        val worst = rows.minBy { it.kind.ordinal }.kind
-        val n = rows.count { it.kind == worst }
-        val label = when (worst) { Site.Kind.FAILED -> "$n 실패"; Site.Kind.SETUP -> "안 돌림 $n"; Site.Kind.PASSED -> "통과" }
-        val states = rows.mapNotNull { it.result.state }.distinct()
-        sb.append("<a class=\"card feature ${worst.cls}\" href=\"#all\"><div class=row><span class=name>${esc(f.ifEmpty { "(root)" })}</span>${chip(worst, label)}</div>")
-        sb.append("<div class=dim>${rows.size} 시나리오${if (states.isNotEmpty()) " · ${esc(states.joinToString(" "))}" else ""}</div></a>")
+    /** One scenario under its screen's row: its name, the state it starts from, what it confirms — each check with its sentence. */
+    private fun scenarioRow(sb: StringBuilder, row: Site.Row) {
+        val r = row.result
+        sb.append("<tr class=\"sub ${row.kind.cls}\"><td><i class=\"dot ${row.kind.cls}\"></i><a href=\"${attr(pageOf(r))}\">${esc(r.title)}</a>")
+        if (row.recordFailed) sb.append(" ${chip(Site.Kind.FAILED, "녹화 실패")}") else if (row.kind == Site.Kind.SETUP) sb.append(" ${chip(Site.Kind.SETUP)}")
+        sb.append("</td><td class=dim>${esc(stateOf(r))}</td><td colspan=3><span class=cl>")
+        orphanFailure(row)?.let { sb.append("<span class=failed>${icon("FAILED")}<span class=reason>${esc(it)}</span></span>") }
+        for (c in row.checks) {
+            sb.append("<span class=\"${cls(c.status)}\">${icon(c.status)}<span>${checkText(row, c)}")
+            whyNot(row, c)?.let { sb.append("<br><span class=reason>${esc(it)}</span>") }
+            sb.append("</span></span>")
+        }
+        sb.append("</span></td><td class=\"r dim\">${esc(humanDuration(row.timeline.durationMs))}</td></tr>")
+    }
+
+    // ------------------------------------------------------------------ screen
+
+    /**
+     * A screen's page reads as its spec: the frame it is entered on and the ways in, then every scenario with its prose
+     * and what it confirms — each check a sentence with its verdict, opening to its steps (the checks of a step list are
+     * the `…확인한다` ones, set apart). Steps and video are a click away, on the scenario's own page.
+     */
+    private fun renderScreen(run: Site.Run, screen: Site.Screen, screens: List<Site.Screen>, out: File, opts: Options, frame: String?): File {
+        val app = opts.appName ?: run.app ?: "app"
+        val u = up(screen.feature)
+        val (p, n) = passedOf(screen.rows)
+        val sb = StringBuilder()
+        head(sb, "${screen.name} · $app", u)
+        sb.append("<div class=topbar><div class=inner><span class=brand>simul</span><nav class=crumbs><a href=\"${u}index.html\">${esc(app)}</a><span>/</span><b>${esc(screen.name)}</b></nav><span class=right>${esc(run.date)}</span></div></div><main class=screen>")
+
+        // ---- the screens of the run
+        sb.append("<nav class=snav aria-label=\"화면\"><input type=search id=q placeholder=\"화면·시나리오 찾기\" aria-label=\"화면·시나리오 찾기\">")
+        for (s in screens) {
+            val (sp, sn) = passedOf(s.rows)
+            val q = (s.name + " " + s.rows.joinToString(" ") { it.result.title }).lowercase()
+            sb.append("<a${if (s.feature == screen.feature) " class=on" else ""} href=\"${attr(u + screenPageOf(s.feature))}\" data-q=\"${attr(q)}\"><i class=\"dot ${s.kind.cls}\"></i><span class=nm>${esc(s.name)}</span><span class=\"c${if (s.kind == Site.Kind.FAILED) " bad" else ""}\">$sp/$sn</span></a>")
+        }
+        sb.append("</nav><div class=doc>")
+
+        // ---- the screen: what it looks like when entered, and how
+        sb.append("<header class=shead>")
+        if (frame != null) sb.append("<img src=\"${attr(frame)}\" alt=\"진입 직후 화면\">")
+        sb.append("<div class=b><span class=eyebrow>화면</span><h1>${esc(screen.name)}</h1>")
+        if (screen.entries.isNotEmpty()) sb.append("<div class=ents>${screen.entries.joinToString("") { entryLine(it) }}</div>")
+        val failedN = screen.rows.count { it.kind == Site.Kind.FAILED }
+        sb.append("<span class=dim>시나리오 ${screen.rows.size} · 확인 $n · ${if (failedN > 0) "<b class=bad>실패 $failedN</b>" else if (p == n) "전부 통과" else "통과 $p"} · ${esc(humanDuration(screen.durationMs))}</span></div></header>")
+
+        for (row in screen.rows) spec(sb, row, u)
+        sb.append("</div><script>").append(SCREEN_JS).append("</script>")
+        sb.append("</main><footer class=dim>generated by simul $AGENT_VERSION</footer></body></html>\n")
+        val file = screenFile(out, screen.feature)
+        file.parentFile?.mkdirs()
+        file.writeText(sb.toString())
+        return file
+    }
+
+    /** One scenario on its screen's page: name, the state it starts from, its prose, its preparation, then its checks. */
+    private fun spec(sb: StringBuilder, row: Site.Row, u: String) {
+        val r = row.result
+        val t = row.timeline
+        val page = attr(u + pageOf(r))
+        sb.append("<section class=\"sp ${row.kind.cls}\" id=\"${attr(r.key)}\"><div class=sph><h2><a href=\"$page\">${esc(r.title)}</a></h2>")
+        if (row.kind == Site.Kind.FAILED) sb.append(chip(Site.Kind.FAILED, if (row.recordFailed) "녹화 실패" else "실패")) else if (row.kind == Site.Kind.SETUP) sb.append(chip(Site.Kind.SETUP))
+        sb.append("<span class=m>${esc(listOf(stateOf(r), humanDuration(t.durationMs)).filter { it.isNotEmpty() }.joinToString(" · "))}</span><a class=more href=\"$page\">스텝·영상 ›</a></div>")
+        if (t.tests.isNotEmpty() && t.description.isNotEmpty()) sb.append("<p class=spd>${esc(t.description)}</p>")
+        t.sections.firstOrNull { it.preparation }?.let { prep ->
+            sb.append("<p class=prep>준비 · ${t.steps.filter { it.n in prep.from..prep.to }.joinToString(" / ") { esc(it.text) }}</p>")
+        }
+        orphanFailure(row)?.let { sb.append("<p class=reason>${esc(it)}</p>") }
+        sb.append("<ul class=ck>")
+        for (c in row.checks) {
+            val head = "${icon(c.status)}<span class=ckt>${checkText(row, c)}${whyNot(row, c)?.takeIf { c.steps.isEmpty() || c.status == "NONE" }?.let { "<br><span class=${if (c.status == "FAILED") "reason" else "dim"}>${esc(it)}</span>" } ?: ""}</span>"
+            if (c.steps.isEmpty()) { sb.append("<li class=\"${cls(c.status)}\"><div class=flat>$head</div></li>"); continue }
+            sb.append("<li class=\"${cls(c.status)}\"><details${if (c.status == "FAILED") " open" else ""}><summary>$head<span class=ckn>${c.steps.size}스텝</span></summary><ol class=st>")
+            for (s in c.steps) {
+                // a step that checks is what the scenario is there to confirm: set apart from the steps that get there
+                val verify = s.status == "PASSED" && (s.text.endsWith("확인한다") || s.text.startsWith("Verify", ignoreCase = true))
+                sb.append("<li class=\"${cls(s.status)}${if (verify) " v" else ""}\">${esc(s.text)}")
+                if (s.status == "FAILED") sb.append("<br><span class=why>${esc(humanReason(s.reason))}</span>")
+                sb.append("</li>")
+            }
+            sb.append("</ol></details></li>")
+        }
+        sb.append("</ul></section>")
+    }
+
+    /**
+     * The frame a screen is entered on — cut from a recording of one of its scenarios at the moment its first step
+     * began (the recording starts when setup is done) — as `<feature>/_screen.jpg`; null without a recording or ffmpeg.
+     */
+    private fun entryFrame(screen: Site.Screen, out: File, opts: Options): String? {
+        for (row in screen.rows) {
+            val t = row.timeline
+            val mp4 = t.video?.let { File(t.dir, it.file) }?.takeIf { it.isFile } ?: continue
+            val at = t.steps.firstOrNull { it.videoMs != null }?.videoMs ?: continue
+            val dest = File(out, (if (screen.feature.isEmpty()) "" else "${screen.feature}/") + "_screen.jpg")
+            dest.parentFile?.mkdirs()
+            // one try: without ffmpeg, or with a file it cannot read, the other scenarios would fail the same way
+            return runCatching {
+                dev.nate.uiagent.runProcess(listOf(opts.ffmpeg, "-y", "-loglevel", "error", "-ss", "%.3f".format(at / 1000.0), "-i", mp4.path,
+                    "-frames:v", "1", "-vf", "scale=${opts.thumbWidth}:-2", "-q:v", "4", dest.path), 30_000)
+                "_screen.jpg".takeIf { dest.isFile && dest.length() > 0 }
+            }.getOrNull()
+        }
+        return null
     }
 
     // ------------------------------------------------------------------ detail
@@ -315,7 +459,7 @@ object SitePages {
         val u = up(r.feature)
         val sb = StringBuilder()
         head(sb, r.title, u)
-        sb.append("<div class=topbar><div class=inner><span class=brand>simul</span><nav class=crumbs><a href=\"${u}index.html\">${esc(app)}</a><span>/</span><span>${esc(r.feature.ifEmpty { "(root)" })}</span><span>/</span><b>${esc(r.name)}</b></nav><span class=right>${esc(run.date)}</span></div></div><main class=detail>")
+        sb.append("<div class=topbar><div class=inner><span class=brand>simul</span><nav class=crumbs><a href=\"${u}index.html\">${esc(app)}</a><span>/</span><a href=\"${attr(u + screenPageOf(r.feature))}#${attr(r.key)}\">${esc(r.feature.ifEmpty { "(root)" })}</a><span>/</span><b>${esc(r.name)}</b></nav><span class=right>${esc(run.date)}</span></div></div><main class=detail>")
 
         // ---- header
         val replayStatus = verdict(r)
@@ -434,10 +578,6 @@ object SitePages {
         val end = last.videoMs!! + last.durationMs + 300
         return (first.videoMs!! - 300).coerceAtLeast(0) to (t.video?.durationMs?.let { minOf(end, it) } ?: end)
     }
-
-    /** `① 팔로우 취소 ② 팔로우 추가` with a status dot each — a scenario's sections in order, under its line of the full list. */
-    private fun sectionLine(r: ResultJson.Result): String = if (r.tests.isEmpty()) "" else
-        "<span class=secline>" + r.tests.mapIndexed { i, sec -> "<span><i class=\"dot ${cls(sec.status)}\"></i>${i + 1}. ${esc(sec.title)}</span>" }.joinToString("") + "</span>"
 
     /**
      * The steps of a run. A scenario with sections gets one block per section, in the order they ran: its number
@@ -628,6 +768,24 @@ object SitePages {
         })();
     """.trimIndent()
 
+    /** The home's table: a screen's row opens its scenarios, the search narrows the screens (opening those it leaves), `실패만` keeps the failures. */
+    private val HOME_JS = """
+        (function(){
+          var q=document.getElementById('q'),of=document.getElementById('onlyfail'),gs=[].slice.call(document.querySelectorAll('tbody.g'));
+          gs.forEach(function(g){g.querySelector('tr.srow').addEventListener('click',function(e){if(e.target.closest('a'))return;g.classList.toggle('open')})});
+          if(q)q.addEventListener('input',function(){var s=q.value.trim().toLowerCase();gs.forEach(function(g){var hit=g.dataset.q.indexOf(s)>=0;g.hidden=!!s&&!hit;g.classList.toggle('hit',!!s&&hit)})});
+          if(of)of.addEventListener('click',function(){of.setAttribute('aria-pressed',document.body.classList.toggle('onlyfail'))});
+        })();
+    """.trimIndent()
+
+    /** A screen page's list of screens, narrowed by the search. */
+    private val SCREEN_JS = """
+        (function(){
+          var q=document.getElementById('q'),as=[].slice.call(document.querySelectorAll('.snav a'));
+          if(q)q.addEventListener('input',function(){var s=q.value.trim().toLowerCase();as.forEach(function(a){a.hidden=!!s&&a.dataset.q.indexOf(s)<0})});
+        })();
+    """.trimIndent()
+
     private val CSS = """
         :root{--bg:#F4F4F1;--card:#FFFFFF;--fg:#1B1B1A;--dim:#5A5A56;--faint:#8A8A84;--line:#E2E2DD;--line2:#D6D6D0;--code:#F4F4F1;
           --fail:#B3261E;--failfg:#8A1C14;--failbg:#FBE9E7;--warn:#D08A1A;--warnfg:#7A4A00;--warnbg:#FCEFD6;--info:#1F4E8C;--infobg:#E4EEF9;--ok:#2E7D5B;--okfg:#1F5A3C;--okbg:#E3EFE8}
@@ -638,25 +796,14 @@ object SitePages {
         .crumbs{display:flex;gap:8px;color:var(--dim);font-size:13px}.crumbs b{color:var(--fg);font-weight:500}.right{margin-left:auto;display:flex;gap:12px;align-items:center;color:var(--dim);font-size:13px}
         h1{margin:0;font-size:26px;font-weight:600;letter-spacing:-.01em}h2{margin:0;font-size:17px;font-weight:600}h3{margin:14px 0 4px;font-size:14px}h4{margin:0 0 4px;font-size:11px;color:var(--faint);font-weight:600;letter-spacing:.04em}
         .kicker,.dim{color:var(--dim);font-size:13px}.mono,.code,code,pre{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:12.5px}
-        header.home{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap}header.home .chips{margin-left:auto;display:flex;gap:10px;flex-wrap:wrap}
         .chip{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;padding:2px 8px;border-radius:4px;white-space:nowrap}.chip.big{font-size:13px;padding:6px 12px;border-radius:6px}
         .chip.failed{color:var(--failfg);background:var(--failbg)}.chip.changed{color:var(--warnfg);background:var(--warnbg)}.chip.rerecord{color:var(--info);background:var(--infobg)}.chip.passed{color:var(--okfg);background:var(--okbg)}.chip.setup{color:var(--dim);background:#E8E8E3}
-        .sh{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:14px}.legend{margin-left:auto;display:flex;gap:12px;font-size:12px;color:var(--dim)}.legend span{display:flex;align-items:center;gap:5px}
-        .legend i,.strip i{display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--line2)}.strip{display:inline-flex;gap:3px;vertical-align:middle}.strip.wide i{width:16px;height:14px}.strip i.passed{background:var(--ok)}.strip i.changed{background:var(--warn)}.strip i.failed{background:var(--fail)}.strip i.none,.strip i.skipped{background:var(--line2)}
-        .legend i.passed{background:var(--ok)}.legend i.changed{background:var(--warn)}.legend i.failed{background:var(--fail)}
-        .cards{display:grid;gap:16px}.cards.two{grid-template-columns:repeat(2,minmax(0,1fr))}.cards.three{grid-template-columns:repeat(3,minmax(0,1fr));margin-top:16px}.cards.four{grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
-        .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:10px;min-width:0}.card.fail{border-left:4px solid var(--fail);flex-direction:row}.card.warn{border-left:4px solid var(--warn)}.card.info{border-left:4px solid var(--info)}.card.none{border-left:4px solid var(--line2)}
-        .card .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.card .title{font-weight:600;font-size:15px}.card .title a{text-decoration:none}.card .body{display:flex;flex-direction:column;gap:8px;min-width:0;flex:1}
-        .card .shot{flex-shrink:0;width:84px;border-radius:10px;overflow:hidden;border:1px solid var(--line2);background:#E8E8E3}.card .shot img{display:block;width:100%}.card .shot.empty{height:168px;display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:11px;text-align:center}
-        .reason{color:var(--failfg)}.card .foot{display:flex;align-items:center;gap:12px;margin-top:auto;font-size:13px;color:var(--dim)}.card .foot .more{margin-left:auto}
+        .sh{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+        .strip i{display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--line2)}.strip{display:inline-flex;gap:3px;vertical-align:middle}.strip.wide i{width:16px;height:14px}.strip i.passed{background:var(--ok)}.strip i.changed{background:var(--warn)}.strip i.failed{background:var(--fail)}.strip i.none,.strip i.skipped{background:var(--line2)}
+        .reason{color:var(--failfg)}
         .owner{display:inline-flex;align-items:center;gap:6px}.avatar{width:20px;height:20px;border-radius:50%;background:var(--dim);color:#fff;font-size:10px;display:inline-flex;align-items:center;justify-content:center;font-weight:600}
-        .pair{display:flex;gap:10px}.pair figure{flex:1;margin:0;display:flex;flex-direction:column;gap:4px;align-items:center;font-size:12px;color:var(--dim)}.pair img{width:100%;border-radius:8px;border:1px solid var(--line2)}.pair img.today{border:2px solid var(--warn)}
-        .note{font-size:13px}.card .code,.code{background:var(--code);padding:8px 10px;border-radius:6px;line-height:1.5;word-break:break-all}
         .btns{display:flex;gap:8px;flex-wrap:wrap}.btn{flex:1;text-align:center;padding:7px 10px;border-radius:6px;border:1px solid #C9C9C3;background:var(--card);color:var(--fg);font-size:13px;text-decoration:none;cursor:pointer;white-space:nowrap}.btn.primary{border-color:var(--fg);background:var(--fg);color:#fff;font-weight:500}
-        .card.feature{text-decoration:none;gap:8px;padding:14px}.card.feature .name{font-weight:600;font-size:15px}.card.feature .row{justify-content:space-between}
-        details.more{margin-top:12px}details.more summary,details.all summary{cursor:pointer;color:var(--dim);font-size:13px}details.more>summary{margin-bottom:12px}
-        .passline{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-        details.all ul{list-style:none;margin:4px 0;padding:0}details.all li{padding:3px 0;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--line2);flex-shrink:0}.dot.failed{background:var(--fail)}.dot.changed,.dot.rerecord{background:var(--warn)}.dot.passed{background:var(--ok)}
+        .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--line2);flex-shrink:0}.dot.failed{background:var(--fail)}.dot.passed{background:var(--ok)}
         main.detail header{display:flex;flex-direction:column;gap:14px}main.detail header .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.desc{margin:0;max-width:760px;color:#3A3A37;line-height:1.7}
         .tabs{display:flex;gap:4px;background:#E8E8E3;padding:3px;border-radius:8px}.tabs a{padding:6px 14px;border-radius:6px;color:var(--dim);font-size:13px;display:flex;align-items:center;gap:6px;text-decoration:none}.tabs a[aria-selected=true]{background:var(--card);color:var(--fg);font-weight:500}
         .cols{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}section.steps{flex:1 1 560px;min-width:0;display:flex;flex-direction:column;gap:10px}aside.replay{flex:0 1 380px;min-width:300px;display:flex;flex-direction:column;gap:10px;position:sticky;top:12px}
@@ -690,9 +837,35 @@ object SitePages {
         .sec .stitle{font-weight:600;font-size:15px}.sec.skipped .stitle,.sec.prep .stitle{color:var(--dim)}.sec .sinfo{margin-left:auto;font-size:12px;color:var(--dim);text-align:right}
         .sec .sbody{display:flex;flex-direction:column;gap:10px;padding:0 0 10px}.sec .sdesc{margin:0 2px;color:#3A3A37;font-size:13.5px;line-height:1.6}
         .sec .snote{font-size:12.5px;line-height:1.6;color:var(--dim);margin:0 2px}
-        .secline{flex-basis:100%;display:flex;gap:14px;flex-wrap:wrap;padding-left:16px;font-size:12px;color:var(--dim)}.secline span{display:inline-flex;align-items:center;gap:5px}
         footer{max-width:1200px;margin:0 auto;padding:0 24px 24px;font-size:12px}
-        @media(max-width:900px){.cards.two,.cards.three,.cards.four{grid-template-columns:repeat(2,minmax(0,1fr))}aside.replay{position:static}}
-        @media(max-width:600px){main{padding:20px 16px 40px}.cards.two,.cards.three,.cards.four{grid-template-columns:1fr}.cols2{grid-template-columns:1fr}.card.fail{flex-direction:column}}
+        .gate{display:flex;flex-direction:column;gap:10px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px}.gate .grow{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.gate h1{font-size:30px}.gate.failed h1{color:var(--fail)}.gate.passed h1{color:var(--ok)}.gate .chips{display:flex;gap:8px;flex-wrap:wrap}
+        .gsum{color:var(--dim);font-size:13px}.gcells{display:flex;flex-wrap:wrap;gap:4px 9px}.gcells i{height:16px}
+        .cells{display:inline-flex;flex-wrap:wrap;gap:3px 5px;vertical-align:middle}.cells span{display:inline-flex;gap:1px}.cells i{display:block;width:8px;height:13px;border-radius:2px;background:var(--line2)}.cells i.passed{background:var(--ok)}.cells i.failed{background:var(--fail)}
+        .ic{flex-shrink:0;width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;font-style:normal;background:var(--okbg);color:var(--okfg)}.ic.failed{background:var(--fail);color:#fff}.ic.skipped{background:#E8E8E3;color:var(--faint)}
+        code.e{background:var(--code);padding:1px 6px;border-radius:4px;font-size:12px;overflow-wrap:anywhere}.bad{color:var(--failfg);font-weight:600}.note{font-size:13px}
+        .todo{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}.frow{display:grid;grid-template-columns:52px minmax(0,1fr) auto;gap:14px;padding:12px 16px;border-top:1px solid var(--line);align-items:start}.frow:first-child{border-top:0}
+        .frow .shot{display:block;width:52px;border-radius:6px;overflow:hidden;border:1px solid var(--line2);background:#E8E8E3}.frow .shot img{display:block;width:100%}.frow .shot.empty{aspect-ratio:9/19}.frow .shot.none{border:0;background:none}
+        .frow .body{display:flex;flex-direction:column;gap:4px;min-width:0}.frow .mono{overflow-wrap:anywhere}.path{display:flex;align-items:center;gap:6px;flex-wrap:wrap;color:var(--dim);font-size:13px}.path a{text-decoration:none}.path a:hover{text-decoration:underline}.path .title{color:var(--fg);font-weight:600;font-size:14.5px}
+        .frow .side{display:flex;flex-direction:column;align-items:flex-end;gap:3px;font-size:12.5px;color:var(--dim);text-align:right}
+        .tools{margin-left:auto;display:flex;gap:8px;align-items:center}.tools input,.snav input{font:inherit;font-size:13px;padding:6px 10px;border:1px solid var(--line2);border-radius:6px;background:var(--card);color:var(--fg);width:220px;max-width:100%}
+        .tog{font:inherit;font-size:13px;padding:5px 12px;border-radius:14px;border:1px solid var(--line2);background:var(--card);color:var(--dim);cursor:pointer}.tog[aria-pressed=true]{background:var(--fg);border-color:var(--fg);color:#fff}
+        .tw{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:10px}table.scr{border-collapse:collapse;width:100%;font-size:13px}table.scr th{font-size:11px;font-weight:600;letter-spacing:.04em;color:var(--faint);text-align:left;padding:8px 14px;white-space:nowrap}table.scr td{padding:9px 14px;border-top:1px solid var(--line);vertical-align:top}
+        table.scr .r{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}tbody.g[hidden]{display:none}tr.srow{cursor:pointer}tr.srow:hover td{background:#FAFAF8}tr.srow td:first-child{white-space:nowrap;font-weight:600}tr.srow a{text-decoration:none}tr.srow a:hover{text-decoration:underline}
+        tr.srow td:first-child::before{content:'▸';color:var(--faint);font-size:11px;display:inline-block;width:16px}tbody.g.open tr.srow td:first-child::before,tbody.g.hit tr.srow td:first-child::before{content:'▾'}
+        tr.sub{display:none}tbody.g.open tr.sub,tbody.g.hit tr.sub{display:table-row}tr.sub td{background:var(--bg)}tr.sub td:first-child{padding-left:30px}tr.sub td:first-child .dot{margin-right:8px}tr.sub a{text-decoration:none}tr.sub a:hover{text-decoration:underline}
+        .onlyfail tbody.g:not(.failed){display:none}.onlyfail tbody.g.failed tr.sub{display:none}.onlyfail tbody.g.failed tr.sub.failed{display:table-row}
+        .cl{display:flex;flex-direction:column;gap:5px}.cl>span{display:grid;grid-template-columns:18px minmax(0,1fr);gap:8px}.cl b{font-weight:600}.cl .failed b{color:var(--failfg)}.cl .skipped{color:var(--dim)}
+        main.screen{display:grid;grid-template-columns:220px minmax(0,1fr);gap:28px;align-items:start}.snav{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto;display:flex;flex-direction:column;gap:2px}.snav input{width:100%;margin-bottom:8px}
+        .snav a{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;text-decoration:none;font-size:13.5px}.snav a[hidden]{display:none}.snav a.on{background:var(--card);box-shadow:inset 0 0 0 1px var(--line2);font-weight:500}.snav .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.snav .c{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+        .doc{min-width:0;max-width:860px;display:flex;flex-direction:column;gap:22px}.shead{display:flex;gap:18px;align-items:flex-start;padding-bottom:18px;border-bottom:1px solid var(--line2)}.shead img{width:96px;border-radius:10px;border:1px solid var(--line2);flex-shrink:0}.shead .b{display:flex;flex-direction:column;gap:6px;min-width:0}
+        .eyebrow{font-size:11px;font-weight:600;letter-spacing:.06em;color:var(--faint)}.ents{display:flex;flex-direction:column;gap:3px}.entry{display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px 10px;font-size:12.5px;color:var(--dim)}
+        .sp{display:flex;flex-direction:column;gap:6px;padding-bottom:20px;border-bottom:1px solid var(--line);scroll-margin-top:12px}.sp:last-of-type{border-bottom:0}.sph{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px}.sph h2 a{text-decoration:none}.sph .m{margin-left:auto;font-size:12px;color:var(--faint)}.sph .more{font-size:12.5px;color:var(--dim)}
+        .spd{margin:0;color:#3A3A37;max-width:70ch;line-height:1.65}.sp p.reason{margin:0;font-size:13px}.prep{margin:0;font-size:12.5px;color:var(--faint);border-left:2px dashed var(--line2);padding-left:10px}
+        ul.ck{list-style:none;margin:2px 0 0;padding:0}ul.ck>li{border-top:1px solid var(--line)}ul.ck>li:first-child{border-top:0}ul.ck summary,ul.ck .flat{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:10px;padding:8px 0;align-items:start}ul.ck summary{cursor:pointer;list-style:none}ul.ck summary::-webkit-details-marker{display:none}
+        .ckt{max-width:68ch}.ckt b{font-weight:600;margin-right:6px}ul.ck li.failed .ckt b{color:var(--failfg)}ul.ck li.skipped .ckt{color:var(--dim)}.ckn{font-size:12px;color:var(--faint);white-space:nowrap}.ckn::after{content:' ▸'}ul.ck details[open] .ckn::after{content:' ▾'}
+        ol.st{margin:0 0 12px 28px;padding:10px 12px 10px 34px;background:#ECECE7;border-radius:8px;font-size:13px;color:var(--dim);display:flex;flex-direction:column;gap:3px}ol.st li.v{color:var(--fg);font-weight:500}ol.st li.failed{color:var(--failfg)}ol.st li.skipped{color:var(--faint)}
+        ol.st .why{display:inline-block;font-weight:400;font-size:12.5px;background:var(--failbg);border-radius:4px;padding:2px 8px;margin-top:2px}
+        @media(max-width:900px){aside.replay{position:static}main.screen{grid-template-columns:minmax(0,1fr)}.snav{position:static;max-height:none}.frow{grid-template-columns:52px minmax(0,1fr)}.frow .side{grid-column:2;align-items:flex-start;text-align:left}.tools{margin-left:0}}
+        @media(max-width:600px){main{padding:20px 16px 40px}.cols2{grid-template-columns:1fr}}
     """.trimIndent()
 }

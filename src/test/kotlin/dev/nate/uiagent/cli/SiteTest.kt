@@ -50,7 +50,7 @@ class SiteTest {
             "         ${(t0 + 9000) / 1000}.500  1566  1600 V FA-SVC  : Logging event: origin=auto,name=user_engagement,params=Bundle[{engagement_time_msec=8000}]\n")
         val r = ScenarioRunResult(name, status, steps, null, 2000, startedAtMs = t0, setupFailed = setupFailed, reportDir = dir, video = vid)
         ResultJson.write(r, "replay", ResultJson.Meta(feature, name, state, "$feature/$name.md", "쿠폰을 등록한다", "nate", "설정에서 쿠폰 메뉴로 들어간다.", traceAt,
-            ResultJson.Env("4.21.0", "sdk_gphone64", "1.0.1")), dir)
+            ResultJson.Env("4.21.0", "sdk_gphone64", "1.0.1"), setup = ResultJson.Setup("app://$feature", false, state)), dir)
     }
 
     private val screenA = listOf(el("설정", resourceId = "tab_settings", bounds = Bounds(0, 0, 100, 50), center = Point(50, 25)), el(resourceId = "btn_apply", bounds = Bounds(0, 100, 100, 150), center = Point(50, 125), id = 1))
@@ -74,6 +74,7 @@ class SiteTest {
         // the mp4 started 2.5s before the scenario: step 2 began at +1000ms → 3500ms into the video; its tap at +1200 → 3700
         assertEquals(3500L, s2.videoMs)
         assertEquals(3700L, s2.actions.single().videoMs)
+        assertEquals(ResultJson.Setup("app://billing", false, "member"), r.setup, "how the scenario is entered")
         assertEquals("steps/02.png", s2.screenshot)
         assertEquals("layout/02.json", s2.layout)
         // the Firebase events of the scenario, on the step they fell in: step 2 began at +1000 and nothing came after it
@@ -96,7 +97,7 @@ class SiteTest {
     }
 
     @Test
-    fun `pages - home with failure cards, scenario page with the step timeline, in place or copied`() {
+    fun `pages - home as a checklist by screen, a spec page per screen, scenario page with the step timeline, in place or copied`() {
         scenario("2026-10-19", "billing", "coupon", "member", StepStatus.FAILED, listOf(screenA, screenB), video = true)
         scenario("2026-10-19", "billing", "subscribe", "nosub", StepStatus.PASSED, listOf(screenA, screenBNew))
         scenario("2026-10-19", "auth", "login", null, StepStatus.FAILED, emptyList(), setupFailed = true)
@@ -107,12 +108,37 @@ class SiteTest {
         assertEquals("실패 1 · 안 돌림 1 · 통과 1", built.counts())
 
         val home = File(site, "index.html").readText()
-        assertTrue("실패 1" in home && "안 돌림 1" in home && "통과 1" in home, home.substringAfter("<header"))
-        assertTrue("<article class=\"card fail\">" in home && "2. Tap the &quot;btn2&quot; button" in home && "evidence not on screen: toast" in home)
-        assertTrue("billing/coupon.member/steps/02.jpg" in home, "the failure card shows the failed step's frame")
-        assertTrue("setup failed: deeplink not handled" in home)
-        assertTrue("<span class=name>billing</span>" in home && "WatchaPlay 4.21.0" in home && "총 소요 38m00s" in home)
+        assertTrue("<h1>실패 1</h1>" in home && "안 돌림 1" in home && "통과 1" in home, home.substringAfter("<header"))
+        // counted by what the scenarios confirm, and by screen
+        assertTrue("확인 3개 중 1개 통과 · 시나리오 3 · 화면 2 · 총 소요 38m00s" in home && "WatchaPlay 4.21.0" in home, home.substringAfter("<header").substringBefore("</header>"))
+        // what has to be looked at: where the failure is, the step it stopped on, why — in words — and its frame
+        val failure = home.split("<article").first { "쿠폰을 등록한다</a>" in it }.substringBefore("</article>")
+        assertTrue("<a href=\"billing/_screen.html#coupon.member\">billing</a>" in failure && "2. Tap the &quot;btn2&quot; button" in failure, failure)
+        assertTrue("녹화 때 있던 것이 화면에 없음: toast" in failure && "replay broken" !in failure, failure)
+        assertTrue("billing/coupon.member/steps/02.jpg" in failure, "the failure row shows the failed step's frame")
+        assertTrue("<code class=e>app://billing</code>" in failure && "member · " in failure, "and how the scenario is entered")
+        assertTrue("setup failed: deeplink not handled — 앱 판정이 아니라 환경 문제입니다." in home)
+        // the whole run: a row a screen (failures first), its scenarios under it with what each confirms
+        val table = home.substringAfter("<table class=scr>")
+        assertTrue(table.indexOf("billing/_screen.html") < table.indexOf("auth/_screen.html"), "the screen with a failure first")
+        val billing = table.split("<tbody").first { "billing/_screen.html" in it }
+        assertTrue("class=\"g failed open\"" in billing && "<td class=r>2</td><td class=r><b class=\"bad\">1/2</b></td>" in billing, billing)
+        assertTrue("<i class=\"failed\"></i>" in billing && "<i class=\"passed\"></i>" in billing, "a cell per check")
+        assertTrue("<tr class=\"sub failed\">" in billing && "<tr class=\"sub passed\">" in billing && "설정에서 쿠폰 메뉴로 들어간다." in billing, "a scenario without sections is its own check, its prose the sentence")
+        assertTrue("id=onlyfail" in home && "id=q" in home)
         assertTrue("어제" !in home && "7일" !in home && "acknowledged" !in home, "no history, no site machinery")
+
+        // a screen's page: its ways in, then each scenario's prose and checks, a failed check open on its steps
+        val screen = File(site, "billing/_screen.html")
+        assertTrue(screen in built.screens && built.screens.size == 2)
+        val spec = screen.readText()
+        assertTrue("<h1>billing</h1>" in spec && "<code class=e>app://billing</code><span>member 1</span><span>nosub 1</span>" in spec, spec.substringAfter("<header"))
+        assertTrue("시나리오 2 · 확인 2 · <b class=bad>실패 1</b>" in spec)
+        assertTrue("<section class=\"sp failed\" id=\"coupon.member\">" in spec && "<a href=\"../billing/coupon.member.html\">쿠폰을 등록한다</a>" in spec)
+        assertTrue("<details open><summary>" in spec && "<li class=\"failed\">Tap the &quot;btn2&quot; button<br><span class=why>녹화 때 있던 것이 화면에 없음: toast</span>" in spec, spec.substringAfter("<ul class=ck>"))
+        assertTrue("<a class=on href=\"../billing/_screen.html\"" in spec && "href=\"../auth/_screen.html\"" in spec, "the other screens beside it")
+        assertTrue("_screen.jpg" !in spec, "no recording ffmpeg can read: no entry frame")
+        assertTrue("setup failed: deeplink not handled" in File(site, "auth/_screen.html").readText())
 
         val page = File(site, "billing/coupon.member.html")
         assertTrue(page in built.pages)
@@ -126,7 +152,7 @@ class SiteTest {
         assertTrue("+ list<br>+ toast" in detail && "· toast 없음" in detail, "expected vs found")
         assertTrue("CouponRepo: HTTP 422" in detail && "Later: unrelated" !in detail, "logcat ±2s around the failing tap")
         assertTrue("firebase 2</span> w_coupon_apply · user_engagement" in detail && "w_code=X" in detail, "the step's Firebase events, folded under it")
-        assertTrue("href=\"../index.html\"" in detail)
+        assertTrue("href=\"../index.html\"" in detail && "href=\"../billing/_screen.html#coupon.member\"" in detail, "back to the run and to its screen")
         assertTrue(File(site, "billing/coupon.member/steps/02.jpg").isFile)
         // a page without a recording shows the step frame instead
         assertTrue("<img class=still src=\"subscribe.nosub/steps/01.jpg\"" in File(site, "billing/subscribe.nosub.html").readText())
@@ -141,7 +167,7 @@ class SiteTest {
         val withRecord = SitePages.build(File(runs, "2026-10-19"), File(root, "site2"))
         assertEquals("실패 2 (녹화 실패 1) · 안 돌림 1 · 통과 0", withRecord.counts())
         val home2 = File(root, "site2/index.html").readText()
-        assertTrue("녹화 실패 1</span>" in home2 && "LLM 녹화: step 2 `Tap the &quot;구독&quot; button` — agent error: Error from client: OpenAILLMClient Status code: 500" in home2, home2.substringAfter("<header"))
+        assertTrue("<h1>실패 2</h1>" in home2 && "녹화 실패 1</span>" in home2 && "LLM 녹화: step 2 `Tap the &quot;구독&quot; button` — agent error: Error from client: OpenAILLMClient Status code: 500" in home2, home2.substringAfter("<header"))
         assertTrue("1/2 녹화됨" in home2)
         val sub2 = File(root, "site2/billing/subscribe.nosub.html").readText()
         assertTrue("녹화 실패</span>" in sub2 && "trace는 커밋본 그대로, 아래는 그 재생" in sub2)
@@ -243,6 +269,44 @@ class SiteTest {
         val login = File(runs, "2026-10-20/auth/login.html").readText()
         assertTrue("녹화 실패 · 1/2</span>" in login && "<details class=replaysec><summary>커밋된 trace의 재생 · PASSED · 2/2" in login, login.substringAfter("<header"))
         assertTrue("<div class=\"step passed static\"><div class=line>" in login && "step passed\" data-step=1" !in login, "the replay's steps do not drive the player")
+    }
+
+    @Test
+    fun `a scenario with sections counts as its sections - each a check with its sentence, the preparation none`() {
+        val dir = File(runs, "2026-11-10/my-other/follow").apply { mkdirs() }
+        fun st(n: Int, text: String, status: StepStatus, reason: String? = null) =
+            StepReport(n, text, status, if (status == StepStatus.SKIPPED) null else "replay", emptyList(), emptyList(), reason, 500, emptyList(), startedMs = n * 1000L)
+        val steps = listOf(
+            st(1, "팔로우하고 있지 않으면 \"팔로우\"를 눌러 팔로우한다", StepStatus.PASSED),
+            st(2, "\"팔로우 취소\"를 누른다", StepStatus.PASSED), st(3, "\"팔로우\"가 보이는지 확인한다", StepStatus.PASSED),
+            st(4, "\"팔로우\"를 누른다", StepStatus.PASSED), st(5, "\"팔로우 취소\"가 보이는지 확인한다", StepStatus.FAILED, "replay broken: evidence not on screen: 팔로우 취소"),
+            st(6, "\"팔로우 취소\"를 누른다", StepStatus.SKIPPED),
+        )
+        val sections = listOf(
+            SectionReport("준비", "", StepStatus.PASSED, 1..1, preparation = true),
+            SectionReport("팔로우 취소", "팔로우 중인 유저의 팔로우를 취소할 수 있다.", StepStatus.PASSED, 2..3),
+            SectionReport("팔로우 추가", "팔로우하지 않은 유저를 팔로우할 수 있다.", StepStatus.FAILED, 4..5),
+            SectionReport("다시 취소", "한 번 더 취소할 수 있다.", StepStatus.SKIPPED, 6..6),
+        )
+        ResultJson.write(ScenarioRunResult("팔로우", StepStatus.FAILED, steps, null, 9000, startedAtMs = 1_794_000_000_000L, reportDir = dir, sections = sections), "replay",
+            ResultJson.Meta("my-other", "follow", null, "my-other/follow.md", "팔로우", null, "타인 프로필의 팔로우 버튼은 누를 때마다 바뀐다.", "2026-11-09",
+                ResultJson.Env("6.4.0", "sdk", "1.1"), setup = ResultJson.Setup("app://users/42", false, "member")), dir)
+
+        val row = Site.classify(Site.load(File(runs, "2026-11-10"))).single()
+        assertEquals(listOf("팔로우 취소" to "PASSED", "팔로우 추가" to "FAILED", "다시 취소" to "SKIPPED"), row.checks.map { it.title to it.status })
+        assertEquals(listOf(2, 3), row.checks[0].steps.map { it.n })
+        val screen = Site.screens(listOf(row)).single()
+        assertEquals("app://users/42" to mapOf("member" to 1), screen.entries.single().let { it.entry to it.states })
+
+        SitePages.build(File(runs, "2026-11-10"), File(runs, "2026-11-10"))
+        val home = File(runs, "2026-11-10/index.html").readText()
+        assertTrue("확인 3개 중 1개 통과 · 시나리오 1 · 화면 1" in home, home.substringAfter("<header").substringBefore("</header>"))
+        assertTrue("<span>›</span><span>팔로우 추가</span>" in home && "<div class=mono>2. &quot;팔로우 취소&quot;가 보이는지 확인한다</div>" in home, "the failure names its section, the step by its number there")
+        assertTrue("<b>팔로우 추가</b> 팔로우하지 않은 유저를 팔로우할 수 있다.<br><span class=reason>녹화 때 있던 것이 화면에 없음: 팔로우 취소</span>" in home)
+        val spec = File(runs, "2026-11-10/my-other/_screen.html").readText()
+        assertTrue("<p class=spd>타인 프로필의 팔로우 버튼은 누를 때마다 바뀐다.</p>" in spec && "<p class=prep>준비 · 팔로우하고 있지 않으면" in spec, spec.substringAfter("<section"))
+        assertTrue("<li class=\"passed v\">&quot;팔로우&quot;가 보이는지 확인한다</li>" in spec, "a passed check step is set apart from the steps that get there")
+        assertTrue("<li class=\"skipped\"><details><summary>" in spec && "<b>다시 취소</b>" in spec, "a section that was not reached is listed, not open")
     }
 
     @Test
