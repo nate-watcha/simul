@@ -294,6 +294,7 @@ internal fun executeScenario(
         description = fillValues(scenario.description, result.values),
         traceRecordedAt = traceRecordedAt(traceFile, project.appRoot),
         env = ResultJson.Env(ops.appVersionName(project.config.app), ops.deviceName(), ops.androidCliVersion()),
+        setup = scenario.setup?.let { ResultJson.Setup(it.deeplink, it.launch, scenario.precondition) },
     ), reportDir)
 
     result.updatedTrace?.let { updated ->

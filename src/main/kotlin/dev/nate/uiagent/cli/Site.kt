@@ -4,7 +4,8 @@ import java.io.File
 
 /**
  * The HTML report of one run as pages (README "나이틀리 운영"): what the builder reads from a runs
- * directory and how it groups each scenario. Rendering lives in SitePages.kt.
+ * directory and how it groups each scenario — by screen (its group directory), each scenario counted by
+ * what it confirms ([Check]). Rendering lives in SitePages.kt.
  *
  * ```
  * .simul/reports/<stamp>/                  one `simul report`
@@ -49,8 +50,49 @@ object Site {
         val app: String? get() = summary?.app ?: record?.app
     }
 
+    /**
+     * One thing a scenario confirms — what the report counts and reads as a line of spec: a `## title` section with
+     * its sentence, or the scenario itself (its prose) when it has no sections. [status] is PASSED, FAILED, SKIPPED
+     * (an earlier one failed) or NONE (the scenario never ran).
+     */
+    class Check(val title: String?, val description: String, val status: String, val steps: List<ResultJson.Step>)
+
+    /** One way into a screen — a deeplink or `앱 실행` — with the account states its scenarios start from and how many each. */
+    class Entry(val entry: String, val states: Map<String, Int>)
+
+    /**
+     * The scenarios of one group directory: a screen of the app (or an issue), which is what the report is organised
+     * by — the first page lists screens, and each has a page that reads as its spec.
+     */
+    class Screen(val feature: String, val rows: List<Row>) {
+        val name: String get() = feature.ifEmpty { "(root)" }
+        val checks: List<Check> get() = rows.flatMap { it.checks }
+        /** The worst of its scenarios. */
+        val kind: Kind get() = rows.minOf { it.kind }
+        val durationMs: Long get() = rows.sumOf { it.timeline.durationMs }
+        /** The ways in its scenarios declare (`setup:`), most used first; empty for results that recorded none. */
+        val entries: List<Entry> get() = rows.mapNotNull { r -> r.result.setup?.let { s -> s.entry?.let { it to (s.appState ?: r.result.state ?: "") } } }
+            .groupBy({ it.first }, { it.second })
+            .map { (entry, states) -> Entry(entry, states.filter { it.isNotEmpty() }.groupingBy { it }.eachCount()) }
+            .sortedByDescending { it.states.values.sum() }
+    }
+
+    /** The screens of a run, those with a failure first, then by name. */
+    fun screens(rows: List<Row>): List<Screen> = rows.groupBy { it.result.feature }.map { Screen(it.key, it.value) }
+        .sortedWith(compareBy({ it.kind.ordinal }, { it.feature }))
+
     class Row(val result: ResultJson.Result, val kind: Kind, val record: ScenarioOutcome? = null, val recording: ResultJson.Result? = null) {
         val id get() = result.id
+        /** The run the pages tell this scenario by: tonight's recording when it failed and left its steps, else the replay. */
+        val timeline: ResultJson.Result get() = recordTimeline ?: result
+        /** What this scenario confirms, in file order (see [Check]). */
+        val checks: List<Check> get() {
+            val t = timeline
+            if (t.tests.isNotEmpty()) return t.tests.map { sec ->
+                Check(sec.title, sec.description, if (kind == Kind.SETUP) "NONE" else sec.status, t.steps.filter { it.n in sec.from..sec.to })
+            }
+            return listOf(Check(null, t.description, when (kind) { Kind.FAILED -> "FAILED"; Kind.PASSED -> "PASSED"; Kind.SETUP -> "NONE" }, t.steps))
+        }
         /** The replay never ran this scenario (no trace, no steps) — there is nothing of it but the summary line. */
         val replayed get() = result.steps.isNotEmpty()
         /** The LLM could not re-record this scenario tonight (the replay then ran the committed trace, if any). */
