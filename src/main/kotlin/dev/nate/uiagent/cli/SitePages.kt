@@ -412,12 +412,13 @@ object SitePages {
             val first = executed.firstOrNull()?.let { thumbs[it.n] }
             sb.append(if (first != null) "<img class=still src=\"${attr(first)}\" alt=\"스텝 화면\">" else "<span class=dim>녹화 없음 (--video)</span>")
         }
-        sb.append("<div class=caption>${executed.firstOrNull()?.let { "${noOf(t, it)}/${outOf(t, it)} · ${esc(it.text)}" } ?: ""}</div></div>")
+        // the current step's line sits under the frame, not over it: laid over the video it hid the app's bottom bar
+        sb.append("</div><div class=caption>${executed.firstOrNull()?.let { "${noOf(t, it)}/${outOf(t, it)} · ${esc(it.text)}" } ?: ""}</div>")
         sb.append("<div class=controls>")
         if (video != null) sb.append("<button type=button class=play aria-label=\"재생\">▶</button>")
-        val total = executed.sumOf { it.durationMs }.coerceAtLeast(1)
+        // one part per step, all the same width: sized by duration, a one-second step was a sliver next to a long one
         sb.append("<span class=segments>")
-        for (s in steps) sb.append("<i class=\"${cls(s.status)}\" data-step=${s.n} style=\"flex:${(s.durationMs * 1000 / total).coerceAtLeast(20)}\" title=\"${noOf(t, s)}. ${attr(s.text)}\"></i>")
+        for (s in steps) sb.append("<i class=\"${cls(s.status)}\" data-step=${s.n} title=\"${noOf(t, s)}. ${attr(s.text)}\"></i>")
         sb.append("</span>")
         if (video != null) sb.append("<span class=time>0:00 / ${clock(window?.let { it.second - it.first } ?: t.video?.durationMs ?: 0)}</span>")
         sb.append("</div>$footer</div>")
@@ -661,7 +662,7 @@ object SitePages {
         .cols{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}section.steps{flex:1 1 560px;min-width:0;display:flex;flex-direction:column;gap:10px}aside.replay{flex:0 1 380px;min-width:300px;display:flex;flex-direction:column;gap:10px;position:sticky;top:12px}
         section.steps h2,aside.replay h2{font-size:13px;color:var(--dim);letter-spacing:.04em;margin-bottom:4px}section.steps h2 .hint{margin-left:12px;font-weight:400;font-size:12px;letter-spacing:0}
         .secgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(264px,1fr));gap:12px;align-items:start}.secgrid details.sec{margin:0}.secgrid details.sec.wide{grid-column:1/-1}
-        .scols{display:flex;flex-direction:column;gap:10px}.ssteps{min-width:0;display:flex;flex-direction:column;gap:8px}.scols .player{order:-1;padding:10px;gap:8px}.scols .caption{font-size:10.5px;padding:6px 8px;left:8px;right:8px;bottom:8px}.scols .play{width:28px;height:28px}
+        .scols{display:flex;flex-direction:column;gap:10px}.ssteps{min-width:0;display:flex;flex-direction:column;gap:8px}.scols .player{order:-1;padding:10px;gap:8px}.scols .caption{font-size:10.5px}.scols .play{width:28px;height:28px}
         .sec.wide .scols{flex-direction:row;flex-wrap:wrap;gap:14px;align-items:flex-start}.sec.wide .ssteps{flex:1 1 320px;gap:10px}.sec.wide .scols .player{order:0;flex:0 0 260px}
         .secgrid .sec:not(.wide) .step{padding:10px}.secgrid .sec:not(.wide) .step .line{gap:8px}.secgrid .sec:not(.wide) .sinfo{margin-left:0;flex-basis:100%;text-align:left;order:9}
         .whole{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:4px}.whole .btn{flex:0 0 auto}
@@ -678,9 +679,9 @@ object SitePages {
         pre.log{margin:0;background:#1B1B1A;color:#E6E6E2;padding:10px 12px;border-radius:6px;font-size:11.5px;line-height:1.5;overflow:auto;max-height:260px;white-space:pre-wrap}
         .actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.actions code{background:var(--code);padding:6px 10px;border-radius:6px}.actions .btn{flex:0 0 auto}
         .player{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:12px}.frame{position:relative;width:100%;aspect-ratio:9/16;max-height:560px;border-radius:10px;background:#E8E8E3;border:1px solid var(--line2);overflow:hidden;display:flex;align-items:center;justify-content:center}
-        .frame video,.frame img{width:100%;height:100%;object-fit:contain;background:#000}.caption{position:absolute;left:10px;right:10px;bottom:10px;background:rgba(27,27,26,.88);color:#fff;padding:8px 10px;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.5;pointer-events:none}
+        .frame video,.frame img{width:100%;height:100%;object-fit:contain;background:#000}.caption{margin-top:-4px;color:var(--dim);font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.5;overflow-wrap:anywhere}
         .controls{display:flex;align-items:center;gap:10px}.play{width:32px;height:32px;border-radius:50%;border:0;background:var(--fg);color:#fff;cursor:pointer;font-size:11px;flex-shrink:0}
-        .segments{flex:1;display:flex;gap:3px}.segments i{height:8px;border-radius:4px;background:var(--line2);cursor:pointer;min-width:6px}.segments i.passed{background:var(--ok)}.segments i.failed{background:var(--fail)}.segments i.skipped{cursor:default}.segments i.on{outline:2px solid var(--fg);outline-offset:1px}
+        .segments{flex:1;display:flex;gap:3px}.segments i{flex:1;height:8px;border-radius:4px;background:var(--line2);cursor:pointer;min-width:6px}.segments i.passed{background:var(--ok)}.segments i.failed{background:var(--fail)}.segments i.skipped{cursor:default}.segments i.on{outline:2px solid var(--fg);outline-offset:1px}
         .time{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--dim)}
         details.sec{background:#ECECE7;border:1px solid var(--line2);border-radius:12px;padding:2px 12px}details.sec+details.sec{margin-top:4px}details.sec.failed{border-color:var(--fail)}details.sec.prep{background:transparent;border-style:dashed}
         details.sec>summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0}details.sec>summary::-webkit-details-marker{display:none}
