@@ -279,5 +279,11 @@ class ScenarioMdTest {
         assertFailsWith<IllegalArgumentException> { ScenarioMd.parse("## 준비\n\n1. 팔로우한다") }
         assertFailsWith<IllegalArgumentException> { ScenarioMd.parse(md.replace("팔로우 버튼은 누를 때마다 바뀐다.", "1. 앞에 놓인 스텝")) }
         assertTrue(ScenarioMd.parse("# 제목\n\n1. 스텝").sections.isEmpty(), "only `##` makes a section")
+
+        // what is written under the steps is the author's memo: no step, and in no description (the report shows neither)
+        val memo = ScenarioMd.parse(md.replace("2. \"팔로우\"가 보이는지 확인한다", "2. \"팔로우\"가 보이는지 확인한다\n\n메모: 이 계정은 42번 유저를 팔로우한 채로 저장돼 있다.") + "\n\n메모: 차단은 block.md가 본다.")
+        assertEquals(s.steps, memo.steps)
+        assertEquals(s.sections.map { it.description }, memo.sections.map { it.description })
+        assertEquals("스펙 한 줄.", ScenarioMd.parse("스펙 한 줄.\n\n1. 스텝\n\n메모: 왜 이 경우만 쓰는지.").description)
     }
 }
