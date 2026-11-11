@@ -84,6 +84,22 @@ object SitePages {
     private fun esc(s: String) = escapeHtml(s)
     private fun attr(s: String) = esc(s).replace("'", "&#39;")
 
+    /**
+     * A step's sentence with what it quotes set apart: `"작품" 탭을 누른다` — the quotes are the words on the screen the step
+     * taps, types or looks for, and read on their own they are the path the scenario takes. Steps only: a description's
+     * quote is a sentence's quote, and the spec reads as prose.
+     */
+    private fun stepText(text: String): String {
+        val sb = StringBuilder()
+        var at = 0
+        for (m in QUOTED.findAll(text)) {
+            sb.append(esc(text.substring(at, m.range.first))).append("<span class=q>").append(esc(m.value)).append("</span>")
+            at = m.range.last + 1
+        }
+        return sb.append(esc(text.substring(at))).toString()
+    }
+    private val QUOTED = Regex("\"[^\"]+\"")
+
     /** `02:14` from an ISO stamp. */
     private fun hm(iso: String?): String = iso?.takeIf { it.length >= 16 }?.substring(11, 16) ?: ""
     private fun clock(ms: Long): String = "${ms / 60000}:${"%02d".format((ms / 1000) % 60)}"
@@ -314,11 +330,11 @@ object SitePages {
         when {
             rec != null -> {
                 sb.append("<div class=progress>${strip(rec.steps)}<span class=dim>${esc(stoppedAt(rec))}</span></div>")
-                if (step != null) sb.append("<div class=mono>${noOf(rec, step)}. ${esc(step.text)}</div><div class=reason>${esc(humanReason(step.reason))}</div>")
+                if (step != null) sb.append("<div class=mono>${noOf(rec, step)}. ${stepText(step.text)}</div><div class=reason>${esc(humanReason(step.reason))}</div>")
                 sb.append("<div class=dim>$replayLine</div>")
             }
             row.recordFailed -> sb.append("<div class=reason>LLM 녹화: ${esc(row.recordFailure ?: "failed")}</div><div class=dim>$replayLine</div>")
-            step != null -> sb.append("<div class=mono>${noOf(r, step)}. ${esc(step.text)}</div><div class=reason>${esc(humanReason(step.reason))}</div>")
+            step != null -> sb.append("<div class=mono>${noOf(r, step)}. ${stepText(step.text)}</div><div class=reason>${esc(humanReason(step.reason))}</div>")
         }
         val when_ = if (rec != null) "녹화 ${esc(hm(t.startedAt))} · ${esc(humanDuration(t.durationMs))}"
                     else if (row.replayed || row.record == null) "${esc(hm(r.startedAt))} · ${esc(humanDuration(r.durationMs))}"
@@ -399,7 +415,7 @@ object SitePages {
         sb.append("<span class=m>${esc(listOf(stateOf(r), humanDuration(t.durationMs)).filter { it.isNotEmpty() }.joinToString(" · "))}</span><a class=more href=\"$page\">스텝·영상 ›</a></div>")
         if (t.tests.isNotEmpty() && t.description.isNotEmpty()) sb.append("<p class=spd>${esc(t.description)}</p>")
         t.sections.firstOrNull { it.preparation }?.let { prep ->
-            sb.append("<p class=prep>준비 · ${t.steps.filter { it.n in prep.from..prep.to }.joinToString(" / ") { esc(it.text) }}</p>")
+            sb.append("<p class=prep>준비 · ${t.steps.filter { it.n in prep.from..prep.to }.joinToString(" / ") { stepText(it.text) }}</p>")
         }
         orphanFailure(row)?.let { sb.append("<p class=reason>${esc(it)}</p>") }
         sb.append("<ul class=ck>")
@@ -410,7 +426,7 @@ object SitePages {
             for (s in c.steps) {
                 // a step that checks is what the scenario is there to confirm: set apart from the steps that get there
                 val verify = s.status == "PASSED" && (s.text.endsWith("확인한다") || s.text.startsWith("Verify", ignoreCase = true))
-                sb.append("<li class=\"${cls(s.status)}${if (verify) " v" else ""}\">${esc(s.text)}")
+                sb.append("<li class=\"${cls(s.status)}${if (verify) " v" else ""}\">${stepText(s.text)}")
                 if (s.status == "FAILED") sb.append("<br><span class=why>${esc(humanReason(s.reason))}</span>")
                 sb.append("</li>")
             }
@@ -484,7 +500,7 @@ object SitePages {
             sb.append("<div class=\"${if (row.recordFailed) "reason" else "dim"}\">LLM 녹화: ${esc(row.recordFailure ?: "${recSummary.status} · ${humanDuration(recSummary.durationMs)}")}$then</div>")
             // the recording left no directory: what record.json kept of the step the agent gave up on
             recSummary.failedStep?.takeIf { row.recordFailed }?.let { f ->
-                sb.append("<div class=\"step failed static\"><div class=line><span class=icon>✕</span><div class=text><div class=mono><span class=n>녹화 ${f.index}.</span> ${esc(f.text)}</div><div class=meta>${esc(f.reason ?: "failed")}</div></div></div>")
+                sb.append("<div class=\"step failed static\"><div class=line><span class=icon>✕</span><div class=text><div class=mono><span class=n>녹화 ${f.index}.</span> ${stepText(f.text)}</div><div class=meta>${esc(f.reason ?: "failed")}</div></div></div>")
                 if (f.screen.isNotEmpty()) sb.append("<div class=fail><div><h4>그때 화면</h4><div class=mono>${f.screen.take(12).joinToString("<br>") { "<span class=dim>· ${esc(it)}</span>" }}</div></div></div>")
                 sb.append("</div>")
             }
@@ -636,7 +652,7 @@ object SitePages {
         val icon = when (s.status) { "PASSED" -> "✓"; "FAILED" -> "✕"; else -> "–" }
         val target = s.actions.lastOrNull()?.let { it.target ?: it.tool }?.let { "→ ${esc(it)} · " } ?: ""
         val attrs = if (interactive) " data-step=${s.n}${s.videoMs?.let { " data-video-ms=$it" } ?: ""}" else ""
-        sb.append("<div class=\"step ${cls(s.status)}${if (interactive) "" else " static"}\"$attrs><div class=line><span class=icon>$icon</span><div class=text><div class=mono><span class=n>${noOf(r, s)}.</span> ${esc(s.text)}")
+        sb.append("<div class=\"step ${cls(s.status)}${if (interactive) "" else " static"}\"$attrs><div class=line><span class=icon>$icon</span><div class=text><div class=mono><span class=n>${noOf(r, s)}.</span> ${stepText(s.text)}")
         s.criterion?.let { sb.append("<br><span class=criterion>:: ${esc(it)}</span>") }
         sb.append("</div><div class=meta>")
         sb.append(when {
@@ -800,7 +816,7 @@ object SitePages {
         .chip.failed{color:var(--failfg);background:var(--failbg)}.chip.changed{color:var(--warnfg);background:var(--warnbg)}.chip.rerecord{color:var(--info);background:var(--infobg)}.chip.passed{color:var(--okfg);background:var(--okbg)}.chip.setup{color:var(--dim);background:#E8E8E3}
         .sh{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px}
         .strip i{display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--line2)}.strip{display:inline-flex;gap:3px;vertical-align:middle}.strip.wide i{width:16px;height:14px}.strip i.passed{background:var(--ok)}.strip i.changed{background:var(--warn)}.strip i.failed{background:var(--fail)}.strip i.none,.strip i.skipped{background:var(--line2)}
-        .reason{color:var(--failfg)}
+        .reason{color:var(--failfg)}.q{font-weight:600}ol.st li .q{color:var(--fg)}ol.st li.failed .q,ol.st li.skipped .q{color:inherit}
         .owner{display:inline-flex;align-items:center;gap:6px}.avatar{width:20px;height:20px;border-radius:50%;background:var(--dim);color:#fff;font-size:10px;display:inline-flex;align-items:center;justify-content:center;font-weight:600}
         .btns{display:flex;gap:8px;flex-wrap:wrap}.btn{flex:1;text-align:center;padding:7px 10px;border-radius:6px;border:1px solid #C9C9C3;background:var(--card);color:var(--fg);font-size:13px;text-decoration:none;cursor:pointer;white-space:nowrap}.btn.primary{border-color:var(--fg);background:var(--fg);color:#fff;font-weight:500}
         .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--line2);flex-shrink:0}.dot.failed{background:var(--fail)}.dot.passed{background:var(--ok)}

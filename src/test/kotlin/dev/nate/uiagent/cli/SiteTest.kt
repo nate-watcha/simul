@@ -113,7 +113,7 @@ class SiteTest {
         assertTrue("확인 3개 중 1개 통과 · 시나리오 3 · 화면 2 · 총 소요 38m00s" in home && "WatchaPlay 4.21.0" in home, home.substringAfter("<header").substringBefore("</header>"))
         // what has to be looked at: where the failure is, the step it stopped on, why — in words — and its frame
         val failure = home.split("<article").first { "쿠폰을 등록한다</a>" in it }.substringBefore("</article>")
-        assertTrue("<a href=\"billing/_screen.html#coupon.member\">billing</a>" in failure && "2. Tap the &quot;btn2&quot; button" in failure, failure)
+        assertTrue("<a href=\"billing/_screen.html#coupon.member\">billing</a>" in failure && "2. Tap the <span class=q>&quot;btn2&quot;</span> button" in failure, failure)
         assertTrue("녹화 때 있던 것이 화면에 없음: toast" in failure && "replay broken" !in failure, failure)
         assertTrue("billing/coupon.member/steps/02.jpg" in failure, "the failure row shows the failed step's frame")
         assertTrue("<code class=e>app://billing</code>" in failure && "member · " in failure, "and how the scenario is entered")
@@ -135,7 +135,7 @@ class SiteTest {
         assertTrue("<h1>billing</h1>" in spec && "<code class=e>app://billing</code><span>member 1</span><span>nosub 1</span>" in spec, spec.substringAfter("<header"))
         assertTrue("시나리오 2 · 확인 2 · <b class=bad>실패 1</b>" in spec)
         assertTrue("<section class=\"sp failed\" id=\"coupon.member\">" in spec && "<a href=\"../billing/coupon.member.html\">쿠폰을 등록한다</a>" in spec)
-        assertTrue("<details open><summary>" in spec && "<li class=\"failed\">Tap the &quot;btn2&quot; button<br><span class=why>녹화 때 있던 것이 화면에 없음: toast</span>" in spec, spec.substringAfter("<ul class=ck>"))
+        assertTrue("<details open><summary>" in spec && "<li class=\"failed\">Tap the <span class=q>&quot;btn2&quot;</span> button<br><span class=why>녹화 때 있던 것이 화면에 없음: toast</span>" in spec, spec.substringAfter("<ul class=ck>"))
         assertTrue("<a class=on href=\"../billing/_screen.html\"" in spec && "href=\"../auth/_screen.html\"" in spec, "the other screens beside it")
         assertTrue("_screen.jpg" !in spec, "no recording ffmpeg can read: no entry frame")
         assertTrue("setup failed: deeplink not handled" in File(site, "auth/_screen.html").readText())
@@ -284,7 +284,7 @@ class SiteTest {
         )
         val sections = listOf(
             SectionReport("준비", "", StepStatus.PASSED, 1..1, preparation = true),
-            SectionReport("팔로우 취소", "팔로우 중인 유저의 팔로우를 취소할 수 있다.", StepStatus.PASSED, 2..3),
+            SectionReport("팔로우 취소", "\"팔로우 취소\"를 누르면 \"팔로우\"로 바뀐다.", StepStatus.PASSED, 2..3),
             SectionReport("팔로우 추가", "팔로우하지 않은 유저를 팔로우할 수 있다.", StepStatus.FAILED, 4..5),
             SectionReport("다시 취소", "한 번 더 취소할 수 있다.", StepStatus.SKIPPED, 6..6),
         )
@@ -301,11 +301,12 @@ class SiteTest {
         SitePages.build(File(runs, "2026-11-10"), File(runs, "2026-11-10"))
         val home = File(runs, "2026-11-10/index.html").readText()
         assertTrue("확인 3개 중 1개 통과 · 시나리오 1 · 화면 1" in home, home.substringAfter("<header").substringBefore("</header>"))
-        assertTrue("<span>›</span><span>팔로우 추가</span>" in home && "<div class=mono>2. &quot;팔로우 취소&quot;가 보이는지 확인한다</div>" in home, "the failure names its section, the step by its number there")
+        assertTrue("<span>›</span><span>팔로우 추가</span>" in home && "<div class=mono>2. <span class=q>&quot;팔로우 취소&quot;</span>가 보이는지 확인한다</div>" in home, "the failure names its section, the step by its number there")
         assertTrue("<b>팔로우 추가</b> 팔로우하지 않은 유저를 팔로우할 수 있다.<br><span class=reason>녹화 때 있던 것이 화면에 없음: 팔로우 취소</span>" in home)
         val spec = File(runs, "2026-11-10/my-other/_screen.html").readText()
         assertTrue("<p class=spd>타인 프로필의 팔로우 버튼은 누를 때마다 바뀐다.</p>" in spec && "<p class=prep>준비 · 팔로우하고 있지 않으면" in spec, spec.substringAfter("<section"))
-        assertTrue("<li class=\"passed v\">&quot;팔로우&quot;가 보이는지 확인한다</li>" in spec, "a passed check step is set apart from the steps that get there")
+        assertTrue("<li class=\"passed v\"><span class=q>&quot;팔로우&quot;</span>가 보이는지 확인한다</li>" in spec, "a passed check step is set apart from the steps that get there")
+        assertTrue("<b>팔로우 취소</b> &quot;팔로우 취소&quot;를 누르면 &quot;팔로우&quot;로 바뀐다." in spec, "a step's quotes are set apart, a sentence's are not")
         assertTrue("<li class=\"skipped\"><details><summary>" in spec && "<b>다시 취소</b>" in spec, "a section that was not reached is listed, not open")
     }
 
