@@ -1,5 +1,6 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.device.DevicePins
 import java.io.File
 
 /** Version of this tool, written into traces and checked against config `agentVersion`. */
@@ -18,12 +19,60 @@ class SimulProject(val appRoot: File) {
     val statesDir = File(dir, "states")
     val config: SimulConfig = SimulConfig.load(File(dir, "config.yaml"))
 
-    /** All scenario markdown files, sorted for stable ordering. */
+    /** All scenario markdown files, sorted for stable ordering — a screen's way in (`_entry.md`) ahead of the scenarios that start from it. */
     fun scenarios(): List<File> =
         scenariosDir.walkTopDown()
             .filter { it.isFile && it.extension == "md" }
-            .sortedBy { it.relativeTo(scenariosDir).path }
+            .sortedWith(compareBy({ it.parentFile.relativeTo(scenariosDir).path }, { it.name != ENTRY_FILE }, { it.name }))
             .toList()
+
+    /** The screen a scenario file belongs to: its group directory under `scenarios/` ("" for a file at the root). */
+    fun screenOf(md: File): String = Mentions.norm(areaOf(md.absoluteFile.relativeTo(scenariosDir.absoluteFile).path))
+
+    /** The file that says how [md]'s screen is entered, when its directory has one and [md] is not that file. */
+    fun entryFileOf(md: File): File? =
+        File(md.absoluteFile.parentFile, ENTRY_FILE).takeIf { it.isFile && md.name != ENTRY_FILE && screenOf(md).isNotEmpty() }
+
+    /**
+     * [md] as it runs. A screen's directory may hold `_entry.md` — where the app is opened to get to that
+     * screen and the steps from there (none when the address opens it). A scenario beside it that opens
+     * nothing itself (no `setup.deeplink`, no `setup.launch`) starts from that way in: it takes the entry's
+     * setup — keeping an account of its own when it names one — and the runner plays the entry's steps from
+     * the entry's trace before the scenario's first step. A scenario with its own address runs as it always did.
+     */
+    fun load(md: File): Scenario {
+        val scenario = ScenarioMd.parse(md)
+        // every screen's way in is the same file name: unnamed, it is called by its screen in logs, summaries and report directories
+        if (md.name == ENTRY_FILE) return scenario.also(::checkEntry).let { if (it.name == md.nameWithoutExtension) it.copy(name = entryName(screenOf(md))) else it }
+        val own = scenario.setup
+        val entryFile = entryFileOf(md)?.takeIf { own?.deeplink == null && own?.launch != true } ?: return scenario
+        val entry = ScenarioMd.parse(entryFile).also(::checkEntry).setup!!
+        val ownAccount = own?.appState != null || own?.clearData == true || scenario.states.isNotEmpty()
+        return scenario.copy(
+            via = screenOf(md),
+            setup = Scenario.Setup(
+                deeplink = entry.deeplink, launch = entry.launch,
+                clearData = if (ownAccount) own?.clearData == true else entry.clearData,
+                appState = if (ownAccount) own?.appState else entry.appState,
+                device = own?.device?.takeIf { it != DevicePins.NONE } ?: entry.device,
+            ),
+        )
+    }
+
+    private fun checkEntry(entry: Scenario) {
+        val name = "$ENTRY_FILE '${entry.name}'"
+        require(entry.setup?.deeplink != null || entry.setup?.launch == true) { "$name: a way in opens the app — give it `setup.deeplink` or `setup.launch: true`" }
+        require(entry.sections.isEmpty() && entry.values.isEmpty() && entry.states.isEmpty()) { "$name: a way in is plain steps — no `##` sections, `values:` or `states:`" }
+    }
+
+    /** The way in of [screen] with the trace that plays it (null until it is recorded); null when the screen has no `_entry.md`. */
+    fun entryOf(screen: String): ScreenEntry? {
+        val dir = scenariosDir.listFiles { f -> f.isDirectory && Mentions.norm(f.name) == Mentions.norm(screen) }?.firstOrNull() ?: return null
+        val md = File(dir, ENTRY_FILE).takeIf { it.isFile } ?: return null
+        val entry = load(md)
+        val trace = traceFileFor(md).takeIf { it.isFile }?.let { runCatching { TraceJson.read(it) }.getOrNull() }
+        return ScreenEntry(Mentions.norm(screen), entry.setup!!, entry.steps, entry.precondition, trace, md.relativeTo(scenariosDir).path)
+    }
 
     /**
      * The committed trace sits next to the scenario: `<name>.trace.json` — or, for a scenario
@@ -47,7 +96,7 @@ class SimulProject(val appRoot: File) {
      */
     fun scenarioVariants(onError: (File, String) -> Unit = { _, _ -> }): List<Pair<File, Scenario>> =
         scenarios().flatMap { md ->
-            runCatching { ScenarioMd.parse(md).variants().map { md to it } }
+            runCatching { load(md).variants().map { md to it } }
                 .getOrElse { onError(md, it.message ?: it.toString()); emptyList() }
         }
 
@@ -62,6 +111,12 @@ class SimulProject(val appRoot: File) {
 
     companion object {
         const val TRACE_SUFFIX = ".trace.json"
+
+        /** A screen's way in, in its directory (see [load]). */
+        const val ENTRY_FILE = "_entry.md"
+
+        /** What an unnamed way in is called: `프로필 수정 진입`. */
+        fun entryName(screen: String): String = screen.replace('/', ' ').ifEmpty { "root" } + " 진입"
 
         /** Walk up from [from] looking for a `.simul/` directory. */
         fun find(from: File): SimulProject? {
@@ -87,3 +142,18 @@ class SimulProject(val appRoot: File) {
 
 /** [path] as given when absolute, else relative to [base] — how every CLI argument names a file. */
 fun resolvePath(base: File, path: String): File = File(path).takeIf { it.isAbsolute } ?: File(base, path)
+
+/**
+ * A screen's way in as the runner plays it: open the app as [setup] says, then the [steps] from [trace] —
+ * without the model. [precondition] is the account it was recorded in: under another one the labels a step
+ * saw are that account's data and are not asked for again.
+ */
+class ScreenEntry(
+    val screen: String,
+    val setup: Scenario.Setup,
+    val steps: List<String>,
+    val precondition: String?,
+    val trace: TraceFile?,
+    /** The entry's file under `scenarios/`, for the message that says what to record. */
+    val file: String,
+)

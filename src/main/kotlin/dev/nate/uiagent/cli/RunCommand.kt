@@ -87,7 +87,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
             val ofTrace = file.takeIf { it.name.endsWith(SimulProject.TRACE_SUFFIX) }?.let(project::scenarioOfTrace)
             val md = ofTrace?.first ?: file
             if (!md.isFile) return err("$p: no scenario beside this trace (${md.name})")
-            val variants = try { ScenarioMd.parse(md).variants() } catch (e: IllegalArgumentException) {
+            val variants = try { project.load(md).variants() } catch (e: IllegalArgumentException) {
                 return err("${md.relativeToOrSelf(cwd)}: ${e.message}")
             }
             val named = if (ofTrace == null) variants else variants.filter { it.state == ofTrace.second }
@@ -108,6 +108,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
         else -> return err("nothing to run: give a scenario path, --tag <tag>, or --all")
     }
     if (targets.isEmpty()) return err("no scenarios matched")
+    val runs = withEntries(project, targets, mode)
 
     val llm = project.config.llm.let { if (urlOverride != null) it.copy(url = urlOverride) else it }
     // The key is only needed when the LLM actually runs; replay must work without the secret.
@@ -123,16 +124,18 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     val ops = AdbOps(statesDir = project.statesDir)
     BatchSession(project, ops, ::println, runsDir).use { batch ->
         if (!dryRun) batch.pin()
-        for ((md, scenario) in targets) {
+        for ((md, scenario) in runs) {
             if (dryRun) {
                 val trace = project.traceFileFor(md, scenario)
                 val planned = if (mode == RunMode.AUTO) (if (trace.isFile) "replay" else "skip (no trace)") else mode.name.lowercase()
                 println("${scenario.name} (${scenarioPath(project, md, scenario)})")
                 println("  mode: $planned  trace: ${TraceState.of(md, trace).name.lowercase()}  tags: ${scenario.tags}" +
                     (scenario.state?.let { "  state: $it" } ?: ""))
+                scenario.via?.let { println("  starts from the way in to '$it' (${SimulProject.ENTRY_FILE})") }
                 scenario.steps.forEachIndexed { idx, s ->
                     scenario.sections.firstOrNull { it.first == idx }?.let { sec ->
-                        println("  ## ${sec.title}" + if (sec.preparation) " — by the model, in every mode" else "")
+                        println("  ## ${sec.title}" + (if (sec.preparation) " — by the model, in every mode" else "") +
+                            (sec.open?.let { o -> " — starts at ${o.deeplink ?: "the way in to '${o.screen}'"}" } ?: ""))
                     }
                     println("  ${idx + 1}. $s")
                 }
@@ -189,6 +192,23 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
         }
     }
     return if (anyFailed) 1 else 0
+}
+
+/**
+ * [targets] with the ways in they need. A scenario that starts from its screen's way in — or a section of it
+ * that starts at another screen's — plays that `_entry.md` from its trace; when the entry is not among the
+ * targets and a recording finds its trace missing or older than the file, the entry is recorded first.
+ * Every entry, added or asked for, runs ahead of the scenarios that start from it.
+ */
+internal fun withEntries(project: SimulProject, targets: List<Pair<File, Scenario>>, mode: RunMode): List<Pair<File, Scenario>> {
+    val asked = targets.map { it.first.absoluteFile }.toSet()
+    val needed = targets.flatMap { (_, sc) -> listOfNotNull(sc.via) + sc.sections.mapNotNull { it.open?.screen } }.distinct()
+    val added = if (mode != RunMode.LLM) emptyList() else needed.mapNotNull { screen ->
+        val md = File(project.scenariosDir, project.entryOf(screen)?.file ?: return@mapNotNull null)
+        md.takeIf { it.absoluteFile !in asked && TraceState.of(it, project.traceFileFor(it)) != TraceState.OK }
+            ?.let { it to project.load(it) }
+    }
+    return (added + targets).sortedBy { (md, _) -> md.name != SimulProject.ENTRY_FILE }
 }
 
 /**
@@ -261,7 +281,8 @@ internal fun executeScenario(
         val recorder = if (video) ScreenRecorder() else null
         // steps are logged live by the runner — a scenario can run for minutes
         val runner = ScenarioRunner(stack.controller, listener, ops, executor, reportDir, project.config.app,
-            locale = project.config.device.locale, stepFrames = !(video && mode == RunMode.REPLAY), log = log, onSetupDone = { recorder?.start() })
+            locale = project.config.device.locale, stepFrames = !(video && mode == RunMode.REPLAY), log = log, onSetupDone = { recorder?.start() },
+            entries = project::entryOf)
 
         log("── ${scenario.name} [${mode.name.lowercase()}] ${"─".repeat(30)}")
         try {
@@ -294,7 +315,7 @@ internal fun executeScenario(
         description = fillValues(scenario.description, result.values),
         traceRecordedAt = traceRecordedAt(traceFile, project.appRoot),
         env = ResultJson.Env(ops.appVersionName(project.config.app), ops.deviceName(), ops.androidCliVersion()),
-        setup = scenario.setup?.let { ResultJson.Setup(it.deeplink, it.launch, scenario.precondition) },
+        setup = scenario.setup?.let { ResultJson.Setup(it.deeplink, it.launch, scenario.precondition, scenario.via) },
     ), reportDir)
 
     result.updatedTrace?.let { updated ->

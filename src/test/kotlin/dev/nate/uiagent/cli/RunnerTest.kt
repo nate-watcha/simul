@@ -545,6 +545,79 @@ class RunnerTest {
         assertEquals("device command failed: no answer within 20s: android layout", result.steps[0].reason)
     }
 
+
+    // ------------------------------------------------------------------ a screen's way in, a section's own start
+
+    private fun webtoonEntry(trace: TraceFile?, account: String? = null) =
+        ScreenEntry("웹툰", Scenario.Setup(deeplink = "app://home", launch = false), listOf("Tap the \"웹툰\" tab"), account, trace, "웹툰/_entry.md")
+
+    /** [scenario]'s check alone, started from the 웹툰 screen's way in — its tap is the entry's, not the scenario's. */
+    private val inside = scenario.copy(steps = listOf("Verify \"웹툰 홈\" is shown"), via = "웹툰")
+    private val insideTrace = goodTrace.copy(steps = goodTrace.steps.drop(1))
+
+    private fun replayInside(entry: ScreenEntry, dev: FakeDevice = FakeDevice(screenA, screenA, screenB, screenB)): Pair<ScenarioRunResult, FakeDevice> {
+        val listener = SwitchableListener()
+        val controller = DeviceController(dev, settleIntervalMs = 0, listener = listener)
+        val runner = ScenarioRunner(controller, listener, FakeOps(), neverCalledExecutor, tempDir(), "com.example",
+            entries = { name -> entry.takeIf { name == "웹툰" } })
+        return runner.run(inside, insideTrace, RunMode.REPLAY) to dev
+    }
+
+    @Test
+    fun `a scenario that starts from its screen's way in is walked there from the entry's trace - no model, nothing of it among its steps`() {
+        val (result, dev) = replayInside(webtoonEntry(goodTrace.copy(steps = goodTrace.steps.take(1))))
+
+        assertEquals(StepStatus.PASSED, result.status, result.steps.firstOrNull()?.reason)
+        assertEquals(listOf("Verify \"웹툰 홈\" is shown"), result.steps.map { it.text })
+        assertEquals(listOf("tap 360 1176"), dev.gestures.filter { it.startsWith("tap") }, "the way in was played")
+    }
+
+    @Test
+    fun `a way in that is not recorded or no longer plays is a failed setup that says so`() {
+        val (missing, _) = replayInside(webtoonEntry(null))
+        assertTrue(missing.setupFailed)
+        assertTrue("run 웹툰/_entry.md with --mode llm" in missing.steps[0].reason!!, missing.steps[0].reason)
+
+        val gone = goodTrace.steps[0].copy(actions = listOf(TraceAction("tap", target = TraceTarget(null, "틀린라벨", Point(360, 1176)))))
+        val (broken, dev) = replayInside(webtoonEntry(goodTrace.copy(steps = listOf(gone))), FakeDevice(screenA))
+        assertTrue(broken.setupFailed)
+        assertTrue(broken.steps[0].reason!!.startsWith("setup failed: the way in to '웹툰' broke at its step 1"), broken.steps[0].reason)
+        assertTrue(dev.gestures.none { it.startsWith("tap") })
+    }
+
+    @Test
+    fun `in another account than the way in was recorded in, its labels are not asked for`() {
+        // the entry saw a label of the account it was recorded in; this account's screen does not have it
+        val seen = goodTrace.steps[0].copy(evidence = listOf("member의 작품"))
+        val (same, _) = replayInside(webtoonEntry(goodTrace.copy(steps = listOf(seen)), account = null))
+        assertTrue(same.setupFailed, "the same account: the way in is held to everything it recorded")
+        val (other, dev) = replayInside(webtoonEntry(goodTrace.copy(steps = listOf(seen)), account = "member"))
+        assertEquals(StepStatus.PASSED, other.status, other.steps.firstOrNull()?.reason)
+        assertEquals(1, dev.gestures.count { it.startsWith("tap") })
+    }
+
+    @Test
+    fun `a failed look at another screen does not skip the sections after it, and a section with a place of its own starts there`() {
+        // not following: "팔로우 취소" is not there to tap, so the first section fails
+        val looking = follow.copy(sections = listOf(
+            Scenario.Section("팔로우 취소", "[[다른 화면]]에서도 취소로 보인다.", 0, 2, open = Scenario.Open(deeplink = "app://elsewhere")),
+            Scenario.Section("팔로우 추가", "", 2, 2),
+        ))
+        val h = followHarness(FollowApp(following = false))
+
+        val result = h.runner.run(looking, trace = null, mode = RunMode.LLM)
+
+        assertEquals(StepStatus.FAILED, result.status)
+        assertEquals(listOf(StepStatus.FAILED, StepStatus.PASSED), result.sections.map { it.status }, "the section after the look ran")
+        assertEquals(listOf(StepStatus.FAILED, StepStatus.SKIPPED, StepStatus.PASSED, StepStatus.PASSED), result.steps.map { it.status })
+        assertEquals(listOf("com.example|false|app://elsewhere", "com.example|false|app://users/1"), h.ops.reopens, "the first section is opened at its own address, the next at the scenario's")
+        assertEquals(Scenario.Open(deeplink = "app://elsewhere"), result.sections[0].open)
+        assertNull(result.updatedTrace, "a failed scenario records no trace")
+
+        // a section the others build on still ends the scenario there
+        val plain = followHarness(FollowApp(following = false)).runner.run(follow, trace = null, mode = RunMode.LLM)
+        assertEquals(listOf(StepStatus.FAILED, StepStatus.SKIPPED), plain.sections.map { it.status })
+    }
 }
 
 class FailedStepScreenTest {

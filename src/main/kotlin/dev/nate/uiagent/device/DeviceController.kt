@@ -258,26 +258,51 @@ class DeviceController(
      * Tap the field, then set its text through the device ([Device.inputText]) — the tap gives it
      * focus and is the fallback target when the field has no resource-id. A refused input
      * (not editable, gone before the set) is a tool error the model sees, not a crashed step.
+     *
+     * A field is named by its accessible name, and that name is not always on the editable node:
+     * a Compose text field holding a value is labelled by the value, and its contentDescription
+     * is a text node inside it — beside the heading above the field, which carries the same word
+     * (실측 2026-11-12, stone 프로필 수정 "링크": two labels matched, neither takes input). So a
+     * name that lands on text goes to the field that text sits in, and of several elements
+     * sharing the name the one field is the target. An empty field needs none of this: the
+     * adapter gives it the name.
      */
     fun type(target: String, text: String): String = traced("type", "target" to target, "text" to text) {
-        when (val r = resolve(target)) {
-            is Resolution.NotFound -> notFoundMsg(target)
-            is Resolution.Ambiguous -> ambiguousMsg(target, r.candidates)
-            is Resolution.Match -> {
-                if ("focusable" !in r.element.interactions)
-                    return@traced "ERROR: '${handleOf(r.element)}' is not focusable; cannot type into it."
-                lastResolved = r.element
-                userTap(r.element)
-                pause(300)
-                try {
-                    gesture { device.inputText(text, r.element.resourceId.takeIf { r.element.origin == Origin.NATIVE }) }
-                } catch (ex: ProcessFailure) {
-                    val why = ex.stderr.trim().lineSequence().firstOrNull { it.isNotBlank() } ?: "input failed"
-                    return@traced "ERROR: could not type into '${handleOf(r.element)}': $why"
+        val field = when (val r = resolve(target)) {
+            is Resolution.NotFound -> return@traced notFoundMsg(target)
+            is Resolution.Ambiguous -> r.candidates.mapNotNull(::fieldOf).distinctBy { it.id }.singleOrNull()
+                ?: return@traced ambiguousMsg(target, r.candidates)
+            is Resolution.Match -> when {
+                "focusable" in r.element.interactions -> r.element
+                else -> fieldOf(r.element) ?: return@traced when (r.element.kind) {
+                    // the fact alone, as in [plainTextGuard]: where the field is is the model's call
+                    "label" -> "ERROR: '${handleOf(r.element)}' is text, not an input field, and is not inside one; " +
+                        "no input field with that name is on the current screen."
+                    else -> "ERROR: '${handleOf(r.element)}' is not focusable; cannot type into it."
                 }
-                "Typed \"$text\" into '${handleOf(r.element)}'.\n" + settleAndDiff("type $target")
             }
         }
+        lastResolved = field
+        userTap(field)
+        pause(300)
+        try {
+            gesture { device.inputText(text, field.resourceId.takeIf { field.origin == Origin.NATIVE }) }
+        } catch (ex: ProcessFailure) {
+            val why = ex.stderr.trim().lineSequence().firstOrNull { it.isNotBlank() } ?: "input failed"
+            return@traced "ERROR: could not type into '${handleOf(field)}': $why"
+        }
+        "Typed \"$text\" into '${handleOf(field)}'.\n" + settleAndDiff("type $target")
+    }
+
+    /** The editable [e] is, or the nearest one it sits inside; null when it is neither. */
+    private fun fieldOf(e: LogicalElement): LogicalElement? {
+        val byId = grounding?.elements.orEmpty().associateBy { it.id }
+        var at: LogicalElement? = e
+        while (at != null) {
+            if ("editable" in at.interactions) return at
+            at = at.parentId?.let(byId::get)
+        }
+        return null
     }
 
     fun scroll(scrollable: String, direction: String): String =
@@ -304,15 +329,33 @@ class DeviceController(
         }
     }
 
+    /**
+     * Scroll until [target] is on screen. An element the scroll container still cuts at the edge
+     * the scroll brings content in from is not there yet: a dump clips bounds to the container,
+     * so one that ends exactly on that edge is partly below (beside) the fold, and what belongs
+     * with it is wholly out of view — the heading of a text field showing 15px at the bottom,
+     * the field under it not on screen, answered "FOUND without scrolling" and the type that
+     * followed had nothing to type into (실측 2026-11-12, stone 프로필 수정 "링크"). When the
+     * container cannot scroll further, the cut element is all there is and it is found.
+     */
     fun scrollToFind(scrollable: String, target: String, direction: String): String =
         traced("scrollToFind", "scrollable" to scrollable, "target" to target, "direction" to direction) {
-            when (val r = resolve(target)) {
-                is Resolution.Match -> return@traced foundMsg("without scrolling", target, listOf(r.element))
-                is Resolution.Ambiguous -> return@traced foundMsg("without scrolling", target, r.candidates)
-                is Resolution.NotFound -> {}
+            fun seen(): List<LogicalElement>? = when (val r = resolve(target)) {
+                is Resolution.Match -> listOf(r.element)
+                is Resolution.Ambiguous -> r.candidates
+                is Resolution.NotFound -> null
             }
+            fun inView(found: List<LogicalElement>): Boolean {
+                val box = (resolve(scrollable) as? Resolution.Match)?.element
+                return found.any { !cutOff(it, box, direction) }
+            }
+            fun after(rounds: Int) = if (rounds == 0) "without scrolling" else "after $rounds scroll(s) $direction"
+
+            var found = seen()
+            if (found != null && inView(found)) return@traced foundMsg(after(0), target, found)
+            var rounds = 0
             var stalled = false
-            for (round in 1..maxScrollRounds) {
+            while (rounds < maxScrollRounds) {
                 val before = grounding?.elements ?: emptyList()
                 scrollOnce(scrollable, direction)?.let { return@traced it } // guard error
                 val after = stabilize()
@@ -321,16 +364,36 @@ class DeviceController(
                     stalled = true
                     break
                 }
-                when (val r = resolve(target)) {
-                    is Resolution.Match -> return@traced foundMsg("after $round scroll(s) $direction", target, listOf(r.element))
-                    is Resolution.Ambiguous -> return@traced foundMsg("after $round scroll(s) $direction", target, r.candidates)
-                    is Resolution.NotFound -> {} // keep scrolling
-                }
+                rounds++
+                found = seen()
+                if (found != null && inView(found)) return@traced foundMsg(after(rounds), target, found)
             }
+            found?.let { return@traced foundMsg(after(rounds), target, it) }
             val why = if (stalled) "the layout stopped changing (end reached)" else "scroll limit reached"
             "NOT_FOUND: '$target' did not appear scrolling $direction in '$scrollable' — $why. " +
                 "Try a different direction or scrollable once, or report FAILED."
         }
+
+    /**
+     * Is [e] cut by the edge of the scroll container [box] that scrolling [direction] brings
+     * content in from? Only an element inside [box] with nothing nested in it: a card or a
+     * pager that fills the container reaches its edge without being cut.
+     */
+    private fun cutOff(e: LogicalElement, box: LogicalElement?, direction: String): Boolean {
+        val b = e.bounds ?: return false
+        val s = box?.bounds ?: return false
+        val all = grounding?.elements.orEmpty()
+        if (all.any { it.parentId == e.id }) return false
+        val byId = all.associateBy { it.id }
+        if (generateSequence(e.parentId?.let(byId::get)) { it.parentId?.let(byId::get) }.none { it.id == box.id }) return false
+        return when (direction) {
+            "down" -> b.y1 >= s.y1
+            "up" -> b.y0 <= s.y0
+            "left" -> b.x1 >= s.x1   // "left" reveals what is to the right
+            "right" -> b.x0 <= s.x0
+            else -> false
+        }
+    }
 
     fun back(): String = traced("back") {
         gesture { device.keyBack() }

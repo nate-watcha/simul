@@ -74,7 +74,8 @@ object SitePages {
         val frames = rows.associate { it.id to (it.recordTimeline?.let { rec -> copyRecordFrames(rec, out, opts) } ?: RecordFrames.NONE) }
         val pages = rows.map { row -> renderDetail(run, row, rows, out, opts, frames.getValue(row.id)) }
         val screens = Site.screens(rows)
-        val screenPages = screens.map { s -> renderScreen(run, s, screens, out, opts, entryFrame(s, out, opts)) }
+        val links = Site.links(screens)
+        val screenPages = screens.map { s -> renderScreen(run, s, screens, links, out, opts, entryFrame(s, out, opts)) }
         val index = File(out, "index.html").apply { writeText(renderHome(run, rows, opts, frames)) }
         return Built(index, pages, rows, screenPages)
     }
@@ -223,14 +224,26 @@ object SitePages {
         val t = row.timeline
         return t.failedStepOf?.let { f -> "${t.sectionOf(f.n)?.title ?: "실패"} — ${noOf(t, f)}. ${f.text} · ${humanReason(f.reason)}" } ?: row.recordFailure ?: t.reason ?: "failed"
     }
-    /** Why a check is not a pass: the failed step's reason, or why the scenario never ran. */
+    /** Why a check is not a pass: its failed step's reason (a scenario may have more than one failed check), or why the scenario never ran. */
     private fun whyNot(row: Site.Row, c: Site.Check): String? = when (c.status) {
-        "FAILED" -> row.timeline.failedStepOf?.takeIf { f -> c.steps.any { it.n == f.n } }?.let { humanReason(it.reason) } ?: row.recordFailure ?: row.timeline.reason
+        "FAILED" -> c.steps.firstOrNull { it.status == "FAILED" }?.let { humanReason(it.reason) } ?: row.recordFailure ?: row.timeline.reason
         "NONE" -> row.result.reason
         else -> null
     }
     /** What a check says: its title and sentence — a scenario without sections is its own prose (its name without any). */
-    private fun checkText(row: Site.Row, c: Site.Check) = (c.title?.let { "<b>${esc(it)}</b> " } ?: "") + esc(c.description.ifEmpty { if (c.title == null) row.result.title else "" })
+    private fun checkText(row: Site.Row, c: Site.Check) = (c.title?.let { "<b>${esc(it)}</b> " } ?: "") + esc(Mentions.plain(c.description).ifEmpty { if (c.title == null) row.title else "" })
+    /** A step that checks is what the scenario is there to confirm; the others get there. */
+    private fun verifies(text: String) = text.endsWith("확인한다") || text.startsWith("Verify", ignoreCase = true)
+    /** Prose with its `[[화면]]` mentions drawn: a link to that screen's page when the run has it ([pages]: screen → its feature), the name alone otherwise. */
+    private fun mentions(text: String, u: String, pages: Map<String, String>, here: String? = null): String =
+        Mentions.parts(text).joinToString("") { (t, screen) ->
+            when {
+                screen == null -> esc(t)
+                screen == here -> "<b class=\"mn here\">${esc(t)}</b>"
+                pages[screen] != null -> "<a class=mn href=\"${attr(u + screenPageOf(pages.getValue(screen)))}\">${esc(t)}</a>"
+                else -> "<span class=mn>${esc(t)}</span>"
+            }
+        }
 
     // ------------------------------------------------------------------ home
 
@@ -246,6 +259,7 @@ object SitePages {
         val setup = rows.filter { it.kind == Site.Kind.SETUP }
         val passed = rows.filter { it.kind == Site.Kind.PASSED }
         val screens = Site.screens(rows)
+        val links = Site.links(screens)
         val (ok, total) = passedOf(rows)
         val wall = run.summary?.durationMs ?: rows.sumOf { it.result.durationMs }
         val sb = StringBuilder()
@@ -265,7 +279,7 @@ object SitePages {
         val recFailed = rows.count { it.recordFailed }
         if (recFailed > 0) sb.append("<span class=\"chip big failed\">녹화 실패 $recFailed</span>")
         sb.append("</div></div>")
-        sb.append("<div class=gsum>확인 ${total}개 중 ${ok}개 통과 · 시나리오 ${rows.size} · 화면 ${screens.size} · 총 소요 ${esc(humanDuration(wall))}</div>")
+        sb.append("<div class=gsum>확인 ${total}개 중 ${ok}개 통과 · 시나리오 ${rows.count { !it.isEntry }} · 화면 ${screens.size} · 총 소요 ${esc(humanDuration(wall))}</div>")
         sb.append("<div class=gcells>${screens.joinToString("") { cells(it.rows) }}</div></header>")
         run.record?.let { rec ->
             val l = dev.nate.uiagent.agent.LlmStats.sum(rec.scenarios.map { it.llm })
@@ -274,30 +288,39 @@ object SitePages {
         }
 
         // ---- what has to be looked at
-        val todo = failed + setup
+        // a scenario that was not run because its screen's way in failed is told by that failure, not as a line of its own
+        val todo = failed + setup.filterNot { it.waitsForEntry }
         sb.append("<section><div class=sh><h2>봐야 할 것</h2><span class=dim>${todo.size}건${if (failed.isNotEmpty()) " · 멈춘 스텝과 이유" else ""}</span></div>")
         if (todo.isEmpty()) sb.append("<p class=dim>전부 통과 ${passed.size} — ${if (run.record != null) "오늘 녹화되고 " else ""}끝까지 재생됨.</p>")
         else {
             sb.append("<div class=todo>")
-            for (row in failed) failureRow(sb, row, frames[row.id] ?: RecordFrames.NONE)
-            for (row in setup) setupRow(sb, row)
+            for (row in failed) failureRow(sb, row, frames[row.id] ?: RecordFrames.NONE, if (row.isEntry) rows.count { it.waitsForEntry && it.result.feature == row.result.feature } else 0)
+            for (row in setup.filterNot { it.waitsForEntry }) setupRow(sb, row)
             sb.append("</div>")
         }
         sb.append("</section>")
 
         // ---- the whole run, by screen
-        sb.append("<section><div class=sh><h2>전체</h2><span class=dim>화면 ${screens.size} · 시나리오 ${rows.size} · 화면을 누르면 시나리오와 확인이 펼쳐진다</span>")
+        sb.append("<section><div class=sh><h2>전체</h2><span class=dim>화면 ${screens.size} · 시나리오 ${rows.count { !it.isEntry }} · 화면을 누르면 시나리오와 확인이 펼쳐진다</span>")
         sb.append("<span class=tools><input type=search id=q placeholder=\"화면·시나리오 찾기\" aria-label=\"화면·시나리오 찾기\">")
         if (failed.isNotEmpty()) sb.append("<button type=button id=onlyfail class=tog aria-pressed=false>실패만</button>")
-        sb.append("</span></div><div class=tw><table class=scr><thead><tr><th>화면</th><th>진입</th><th class=r>시나리오</th><th class=r>확인</th><th>상태</th><th class=r>소요</th></tr></thead>")
+        sb.append("</span></div><div class=tw><table class=scr><thead><tr><th>화면</th><th>진입</th><th class=r>시나리오</th><th class=r>확인</th><th>상태</th><th class=r title=\"다른 화면의 확인이 이 화면을 말한 줄\">다른 화면에서</th><th class=r title=\"이 화면의 확인이 다른 화면을 말한 줄\">다른 화면으로</th><th class=r>소요</th></tr></thead>")
         for (s in screens) {
             val (p, n) = passedOf(s.rows)
             val q = (s.name + " " + s.rows.joinToString(" ") { it.result.title + " " + it.result.name }).lowercase()
             // a run of a few screens (one scenario, a feature branch) is read open
             sb.append("<tbody class=\"g ${s.kind.cls}${if (screens.size <= 3) " open" else ""}\" data-q=\"${attr(q)}\"><tr class=srow><td><a href=\"${attr(screenPageOf(s.feature))}\">${esc(s.name)}</a></td>")
-            sb.append("<td>${s.entries.firstOrNull()?.let { e -> "<code class=e>${esc(e.entry)}</code>" + if (s.entries.size > 1) " <span class=dim>외 ${s.entries.size - 1}</span>" else "" } ?: "<span class=dim>–</span>"}</td>")
-            sb.append("<td class=r>${s.rows.size}</td><td class=r>${if (p < n) "<b class=\"${if (s.kind == Site.Kind.FAILED) "bad" else "dim"}\">$p/$n</b>" else "$n"}</td>")
-            sb.append("<td>${cells(s.rows)}</td><td class=\"r dim\">${esc(humanDuration(s.durationMs))}</td></tr>")
+            // the screen's own way in when it has one — the address, and that there are steps after it — else where its scenarios start
+            val way = s.entry?.let { e -> e.result.setup?.entry?.let { a -> "<code class=e>${esc(a)}</code>" + if (e.timeline.steps.any { st -> !verifies(st.text) }) " <span class=dim>→ 진입</span>" else "" } }
+                ?: s.entries.firstOrNull()?.let { e -> "<code class=e>${esc(e.entry)}</code>" + if (s.entries.size > 1) " <span class=dim>외 ${s.entries.size - 1}</span>" else "" }
+            sb.append("<td>${way ?: "<span class=dim>–</span>"}</td>")
+            sb.append("<td class=r>${s.scenarios.size}</td><td class=r>${if (p < n) "<b class=\"${if (s.kind == Site.Kind.FAILED) "bad" else "dim"}\">$p/$n</b>" else "$n"}</td>")
+            val here = Mentions.norm(s.feature)
+            val from = links.filter { it.to == here && it.from !== s }
+            val to = links.count { it.from === s && it.to != here }
+            val fromFailed = from.count { it.status == "FAILED" }
+            sb.append("<td>${cells(s.rows)}</td><td class=r>${if (from.isEmpty()) "<span class=dim>–</span>" else "${from.size}" + if (fromFailed > 0) " <b class=bad>· 실패 $fromFailed</b>" else ""}</td>")
+            sb.append("<td class=r>${if (to == 0) "<span class=dim>–</span>" else "$to"}</td><td class=\"r dim\">${esc(humanDuration(s.durationMs))}</td></tr>")
             for (row in s.rows.sortedBy { it.kind.ordinal }) scenarioRow(sb, row)
             sb.append("</tbody>")
         }
@@ -312,7 +335,7 @@ object SitePages {
      * When tonight's recording failed the row is about that — how far the agent got, the step it gave up on — and the
      * replay (of yesterday's trace, if any) is one dim line.
      */
-    private fun failureRow(sb: StringBuilder, row: Site.Row, frames: RecordFrames) {
+    private fun failureRow(sb: StringBuilder, row: Site.Row, frames: RecordFrames, waiting: Int = 0) {
         val r = row.result
         val rec = row.recordTimeline
         val t = row.timeline
@@ -323,9 +346,14 @@ object SitePages {
         sb.append("<article class=frow>")
         if (thumb != null) sb.append("<a class=shot href=\"${attr(pageOf(r))}\"><img src=\"${attr(thumb)}\" alt=\"실패 시점 스크린샷\" loading=lazy></a>")
         else sb.append("<div class=\"shot empty\"></div>")
-        sb.append("<div class=body><div class=path>${chip(Site.Kind.FAILED, if (row.recordFailed) "녹화 실패" else "FAILED")}<a href=\"${attr(screenPageOf(r.feature))}#${attr(r.key)}\">${esc(r.feature.ifEmpty { "(root)" })}</a><span>›</span><a class=title href=\"${attr(pageOf(r))}\">${esc(r.title)}</a>")
-        step?.let { t.sectionOf(it.n) }?.let { sb.append("<span>›</span><span>${esc(it.title)}</span>") }
+        sb.append("<div class=body><div class=path>${chip(Site.Kind.FAILED, if (row.recordFailed) "녹화 실패" else "FAILED")}<a href=\"${attr(screenPageOf(r.feature))}#${attr(r.key)}\">${esc(r.feature.ifEmpty { "(root)" })}</a><span>›</span><a class=title href=\"${attr(pageOf(r))}\">${esc(row.title)}</a>")
+        step?.let { t.sectionOf(it.n) }?.let { sec ->
+            sb.append("<span>›</span><span>${esc(sec.title)}</span>")
+            // the screens the failed check is about: the failure shows on their pages too
+            Mentions.of(sec.description).forEach { sb.append("<span class=to>→ ${esc(it)}</span>") }
+        }
         sb.append("</div>")
+        if (waiting > 0) sb.append("<div class=reason>이 화면의 진입이 실패해 시나리오 ${waiting}개를 돌리지 못했다.</div>")
         val replayLine = if (row.replayed) "커밋 trace 재생 · ${esc(if (r.failed) verdict(r).replace(" · ", " ") else r.status)}" else "재생 없음 · ${esc(r.reason ?: "no trace")}"
         when {
             rec != null -> {
@@ -345,14 +373,14 @@ object SitePages {
     /** A scenario that never ran (its setup failed, or it has no trace): not a verdict on the app. */
     private fun setupRow(sb: StringBuilder, row: Site.Row) {
         val r = row.result
-        sb.append("<article class=frow><div class=\"shot none\"></div><div class=body><div class=path>${chip(Site.Kind.SETUP)}<a href=\"${attr(screenPageOf(r.feature))}#${attr(r.key)}\">${esc(r.feature.ifEmpty { "(root)" })}</a><span>›</span><a class=title href=\"${attr(pageOf(r))}\">${esc(r.title)}</a></div>")
+        sb.append("<article class=frow><div class=\"shot none\"></div><div class=body><div class=path>${chip(Site.Kind.SETUP)}<a href=\"${attr(screenPageOf(r.feature))}#${attr(r.key)}\">${esc(r.feature.ifEmpty { "(root)" })}</a><span>›</span><a class=title href=\"${attr(pageOf(r))}\">${esc(row.title)}</a></div>")
         sb.append("<div class=note>${esc(r.reason ?: "setup failed")} — 앱 판정이 아니라 환경 문제입니다.</div></div><div class=side><span>${esc(stateOf(r))}</span></div></article>")
     }
 
     /** One scenario under its screen's row: its name, the state it starts from, what it confirms — each check with its sentence. */
     private fun scenarioRow(sb: StringBuilder, row: Site.Row) {
         val r = row.result
-        sb.append("<tr class=\"sub ${row.kind.cls}\"><td><i class=\"dot ${row.kind.cls}\"></i><a href=\"${attr(pageOf(r))}\">${esc(r.title)}</a>")
+        sb.append("<tr class=\"sub ${row.kind.cls}\"><td><i class=\"dot ${row.kind.cls}\"></i><a href=\"${attr(pageOf(r))}\">${esc(row.title)}</a>")
         if (row.recordFailed) sb.append(" ${chip(Site.Kind.FAILED, "녹화 실패")}") else if (row.kind == Site.Kind.SETUP) sb.append(" ${chip(Site.Kind.SETUP)}")
         sb.append("</td><td class=dim>${esc(stateOf(r))}</td><td colspan=3><span class=cl>")
         orphanFailure(row)?.let { sb.append("<span class=failed>${icon("FAILED")}<span class=reason>${esc(it)}</span></span>") }
@@ -367,14 +395,19 @@ object SitePages {
     // ------------------------------------------------------------------ screen
 
     /**
-     * A screen's page reads as its spec: the frame it is entered on and the ways in, then every scenario with its prose
-     * and what it confirms — each check a sentence with its verdict, opening to its steps (the checks of a step list are
-     * the `…확인한다` ones, set apart). Steps and video are a click away, on the scenario's own page.
+     * A screen's page reads as its spec, in the order it is read every day: how one gets here — its way in
+     * (`_entry.md`) and the checks of other screens that walk here — then what other screens change that shows
+     * here, then the screen's own scenarios, a line each, those of another account under that account. The lines
+     * from other screens are shown here and counted where they are written. A scenario opens to its prose and
+     * checks, a check to its steps (the `…확인한다` ones set apart); steps and video are a click away, on the
+     * scenario's own page.
      */
-    private fun renderScreen(run: Site.Run, screen: Site.Screen, screens: List<Site.Screen>, out: File, opts: Options, frame: String?): File {
+    private fun renderScreen(run: Site.Run, screen: Site.Screen, screens: List<Site.Screen>, links: List<Site.Link>, out: File, opts: Options, frame: String?): File {
         val app = opts.appName ?: run.app ?: "app"
         val u = up(screen.feature)
         val (p, n) = passedOf(screen.rows)
+        val pages = screens.associate { Mentions.norm(it.feature) to it.feature }
+        val here = Mentions.norm(screen.feature)
         val sb = StringBuilder()
         head(sb, "${screen.name} · $app", u)
         sb.append("<div class=topbar><div class=inner><span class=brand>simul</span><nav class=crumbs><a href=\"${u}index.html\">${esc(app)}</a><span>/</span><b>${esc(screen.name)}</b></nav><span class=right>${esc(run.date)}</span></div></div><main class=screen>")
@@ -383,20 +416,46 @@ object SitePages {
         sb.append("<nav class=snav aria-label=\"화면\"><input type=search id=q placeholder=\"화면·시나리오 찾기\" aria-label=\"화면·시나리오 찾기\">")
         for (s in screens) {
             val (sp, sn) = passedOf(s.rows)
-            val q = (s.name + " " + s.rows.joinToString(" ") { it.result.title }).lowercase()
+            val q = (s.name + " " + s.rows.joinToString(" ") { it.title }).lowercase()
             sb.append("<a${if (s.feature == screen.feature) " class=on" else ""} href=\"${attr(u + screenPageOf(s.feature))}\" data-q=\"${attr(q)}\"><i class=\"dot ${s.kind.cls}\"></i><span class=nm>${esc(s.name)}</span><span class=\"c${if (s.kind == Site.Kind.FAILED) " bad" else ""}\">$sp/$sn</span></a>")
         }
         sb.append("</nav><div class=doc>")
 
-        // ---- the screen: what it looks like when entered, and how
+        // ---- the screen: what it looks like when entered
         sb.append("<header class=shead>")
         if (frame != null) sb.append("<img src=\"${attr(frame)}\" alt=\"진입 직후 화면\">")
         sb.append("<div class=b><span class=eyebrow>화면</span><h1>${esc(screen.name)}</h1>")
-        if (screen.entries.isNotEmpty()) sb.append("<div class=ents>${screen.entries.joinToString("") { entryLine(it) }}</div>")
+        // without a way in of its own, where its scenarios start is all there is to say about getting here
+        if (screen.entry == null && screen.entries.isNotEmpty()) sb.append("<div class=ents>${screen.entries.joinToString("") { entryLine(it) }}</div>")
         val failedN = screen.rows.count { it.kind == Site.Kind.FAILED }
-        sb.append("<span class=dim>시나리오 ${screen.rows.size} · 확인 $n · ${if (failedN > 0) "<b class=bad>실패 $failedN</b>" else if (p == n) "전부 통과" else "통과 $p"} · ${esc(humanDuration(screen.durationMs))}</span></div></header>")
+        sb.append("<span class=dim>시나리오 ${screen.scenarios.size} · 확인 $n · ${if (failedN > 0) "<b class=bad>실패 $failedN</b>" else if (p == n) "전부 통과" else "통과 $p"} · ${esc(humanDuration(screen.durationMs))}</span></div></header>")
 
-        for (row in screen.rows) spec(sb, row, u)
+        // ---- how one gets here, and what other screens change that shows here
+        val incoming = links.filter { it.to == here && it.from !== screen }
+        val ways = incoming.filterNot { it.look }
+        val looks = incoming.filter { it.look }
+        if (screen.entry != null || ways.isNotEmpty()) {
+            sb.append("<section class=blk>${blockHead("들어오는 길", ways)}<div class=ways>")
+            screen.entry?.let { entryRows(sb, screen, it, u) }
+            for (l in ways) linkRow(sb, l, u, pages, here)
+            sb.append("</div></section>")
+        }
+        if (looks.isNotEmpty()) {
+            sb.append("<section class=blk>${blockHead("다른 화면에서 바꾸면", looks, "쓰인 화면에서 센다")}<div class=ways>")
+            for (l in looks) linkRow(sb, l, u, pages, here)
+            sb.append("</div></section>")
+        }
+
+        // ---- the screen's own scenarios: those of the account most of them run in, then each other account's
+        val byState = screen.scenarios.groupBy { stateOf(it.result) }
+        val main = screen.entry?.let { stateOf(it.result) }?.takeIf { it in byState } ?: byState.maxByOrNull { it.value.size }?.key
+        for ((state, rows) in byState.entries.sortedBy { it.key != main }) {
+            val title = if (state == main) "이 화면에서" else "다른 계정으로 보면 <code class=e>${esc(state.ifEmpty { "계정 없음" })}</code>"
+            sb.append("<section class=blk><h3>$title</h3><div class=fl>")
+            for (row in rows) scenarioLine(sb, row, u, pages)
+            sb.append("</div></section>")
+        }
+
         sb.append("</div><script>").append(SCREEN_JS).append("</script>")
         sb.append("</main><footer class=dim>generated by simul $AGENT_VERSION</footer></body></html>\n")
         val file = screenFile(out, screen.feature)
@@ -405,34 +464,104 @@ object SitePages {
         return file
     }
 
-    /** One scenario on its screen's page: name, the state it starts from, its prose, its preparation, then its checks. */
-    private fun spec(sb: StringBuilder, row: Site.Row, u: String) {
+    /** A block's heading on a screen's page: how many of the lines from other screens failed, and a note. */
+    private fun blockHead(title: String, links: List<Site.Link>, note: String? = null): String {
+        val failed = links.count { it.status == "FAILED" }
+        val hn = listOfNotNull(if (failed > 0) "<b class=bad>실패 $failed</b>" else null, note).joinToString(" · ")
+        return "<h3>$title${if (hn.isNotEmpty()) " <span class=hn>$hn</span>" else ""}</h3>"
+    }
+
+    /**
+     * The screen's way in, as the first lines of its page. When its steps only check — the address opens the screen —
+     * it is the screen's deeplink; with steps that move, the screen has no deeplink of its own and the way in is the
+     * address and those steps. Either way it says how many of the screen's scenarios start from it, and when it failed,
+     * that they were not run.
+     */
+    private fun entryRows(sb: StringBuilder, screen: Site.Screen, row: Site.Row, u: String) {
         val r = row.result
         val t = row.timeline
-        val page = attr(u + pageOf(r))
-        sb.append("<section class=\"sp ${row.kind.cls}\" id=\"${attr(r.key)}\"><div class=sph><h2><a href=\"$page\">${esc(r.title)}</a></h2>")
-        if (row.kind == Site.Kind.FAILED) sb.append(chip(Site.Kind.FAILED, if (row.recordFailed) "녹화 실패" else "실패")) else if (row.kind == Site.Kind.SETUP) sb.append(chip(Site.Kind.SETUP))
-        sb.append("<span class=m>${esc(listOf(stateOf(r), humanDuration(t.durationMs)).filter { it.isNotEmpty() }.joinToString(" · "))}</span><a class=more href=\"$page\">스텝·영상 ›</a></div>")
-        if (t.tests.isNotEmpty() && t.description.isNotEmpty()) sb.append("<p class=spd>${esc(t.description)}</p>")
+        val addr = r.setup?.entry?.let { "<code class=e>${esc(it)}</code>" } ?: ""
+        val more = " <a class=more href=\"${attr(u + pageOf(r))}\">스텝·영상 ›</a>"
+        if (t.steps.isEmpty()) {
+            sb.append("<div class=\"in skipped\">${icon("NONE")}<span class=ip>진입</span><span class=it>$addr <span class=st2>${esc(r.reason ?: "돌지 않음")}</span></span></div>")
+            return
+        }
+        val status = if (row.kind == Site.Kind.PASSED) "PASSED" else "FAILED"
+        val from = screen.scenarios.count { it.result.setup?.via != null || it.waitsForEntry }
+        val waiting = screen.scenarios.count { it.waitsForEntry }
+        val note = if (from > 0) "<span class=st2>이 화면의 시나리오 ${from}개가 여기서 시작한다</span>" else ""
+        val why = if (status != "FAILED") "" else
+            "<br><span class=reason>${esc(t.failedStepOf?.let { f -> "${noOf(t, f)}. ${f.text} · ${humanReason(f.reason)}" } ?: row.recordFailure ?: t.reason ?: "failed")}" +
+                (if (waiting > 0) " — 시나리오 ${waiting}개를 돌리지 못했다" else "") + "</span>"
+        val moves = t.steps.filterNot { verifies(it.text) }
+        if (moves.isEmpty()) {
+            sb.append("<div class=\"in ${cls(status)}\">${icon(status)}<span class=ip>딥링크</span><span class=it>$addr<span class=st2>이 주소가 바로 연다</span>$note$more$why</span></div>")
+        } else {
+            sb.append("<div class=\"in skipped\"><i class=\"ic none\">–</i><span class=ip>딥링크</span><span class=it>없음</span></div>")
+            sb.append("<div class=\"in ${cls(status)}\">${icon(status)}<span class=ip>진입</span><span class=it>$addr 를 열고 ${moves.joinToString(" / ") { stepText(it.text) }}$note$more$why</span></div>")
+        }
+    }
+
+    /** A check of another screen that mentions this one, as a line here: where it is written (a link to it), and what it says. */
+    private fun linkRow(sb: StringBuilder, l: Site.Link, u: String, pages: Map<String, String>, here: String) {
+        val path = listOfNotNull(l.from.name, l.row.title, l.check?.title).joinToString(" › ") { esc(it) }
+        sb.append("<div class=\"in ${cls(l.status)}\">${icon(l.status)}<a class=ip href=\"${attr(u + screenPageOf(l.from.feature))}#${attr(l.row.result.key)}\">$path</a><span class=it>${mentions(l.text, u, pages, here)}")
+        if (l.status == "FAILED") (l.check?.let { whyNot(l.row, it) } ?: orphanFailure(l.row))?.let { sb.append("<br><span class=reason>${esc(it)}</span>") }
+        sb.append("</span></div>")
+    }
+
+    /**
+     * One scenario on its screen's page, as a line that opens: its name, then its sentence when it confirms one thing,
+     * or its sections' titles and the screens they mention when it confirms several. Opened: its prose, its
+     * preparation, each check with its sentence and — a click further — its steps. A scenario that did not pass is open.
+     */
+    private fun scenarioLine(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>) {
+        val r = row.result
+        val t = row.timeline
+        val checks = row.checks
+        val status = when (row.kind) { Site.Kind.FAILED -> "FAILED"; Site.Kind.PASSED -> "PASSED"; Site.Kind.SETUP -> "NONE" }
+        val mark = if (row.recordFailed) chip(Site.Kind.FAILED, "녹화 실패") else if (row.kind == Site.Kind.SETUP) chip(Site.Kind.SETUP) else ""
+        val single = checks.size == 1 && checks[0].title == null
+        sb.append("<details class=\"ft ${row.kind.cls}\" id=\"${attr(r.key)}\"${if (row.kind != Site.Kind.PASSED) " open" else ""}><summary>${icon(status)}<b class=fn>${esc(row.title)}</b>")
+        if (single) {
+            val c = checks[0]
+            sb.append("<span class=fs>${mentions(c.description, u, pages)}$mark</span><span class=ckn>${if (c.steps.isEmpty()) "" else "${c.steps.size}스텝"}</span></summary><div class=fb>")
+        } else {
+            val to = (Mentions.of(t.description) + checks.flatMap { Mentions.of(it.description) }).distinct()
+            sb.append("<span class=\"fs titles\">${checks.joinToString(" · ") { "<span class=${cls(it.status)}>${esc(it.title ?: "")}</span>" }}${to.joinToString("") { "<span class=to>→ ${esc(it)}</span>" }}$mark</span>")
+            sb.append("<span class=ckn>확인 ${checks.size}</span></summary><div class=fb>")
+            if (t.description.isNotEmpty()) sb.append("<p class=spd>${mentions(t.description, u, pages)}</p>")
+        }
         t.sections.firstOrNull { it.preparation }?.let { prep ->
             sb.append("<p class=prep>준비 · ${t.steps.filter { it.n in prep.from..prep.to }.joinToString(" / ") { stepText(it.text) }}</p>")
         }
+        if (row.kind == Site.Kind.SETUP) sb.append("<p class=dim>${esc(r.reason ?: "돌지 않음")}</p>")
         orphanFailure(row)?.let { sb.append("<p class=reason>${esc(it)}</p>") }
-        sb.append("<ul class=ck>")
-        for (c in row.checks) {
-            val head = "${icon(c.status)}<span class=ckt>${checkText(row, c)}${whyNot(row, c)?.takeIf { c.steps.isEmpty() || c.status == "NONE" }?.let { "<br><span class=${if (c.status == "FAILED") "reason" else "dim"}>${esc(it)}</span>" } ?: ""}</span>"
-            if (c.steps.isEmpty()) { sb.append("<li class=\"${cls(c.status)}\"><div class=flat>$head</div></li>"); continue }
-            sb.append("<li class=\"${cls(c.status)}\"><details${if (c.status == "FAILED") " open" else ""}><summary>$head<span class=ckn>${c.steps.size}스텝</span></summary><ol class=st>")
-            for (s in c.steps) {
-                // a step that checks is what the scenario is there to confirm: set apart from the steps that get there
-                val verify = s.status == "PASSED" && (s.text.endsWith("확인한다") || s.text.startsWith("Verify", ignoreCase = true))
-                sb.append("<li class=\"${cls(s.status)}${if (verify) " v" else ""}\">${stepText(s.text)}")
-                if (s.status == "FAILED") sb.append("<br><span class=why>${esc(humanReason(s.reason))}</span>")
-                sb.append("</li>")
-            }
-            sb.append("</ol></details></li>")
+        if (single) { if (checks[0].steps.isNotEmpty()) stepList(sb, checks[0].steps) }
+        else for (c in checks) checkLine(sb, row, c, u, pages)
+        sb.append("<span class=fm>${esc(listOf(stateOf(r), humanDuration(t.durationMs)).filter { it.isNotEmpty() }.joinToString(" · "))} · <a class=more href=\"${attr(u + pageOf(r))}\">스텝·영상 ›</a></span></div></details>")
+    }
+
+    /** One check of a scenario with sections: its title and sentence, where it started when that was a place of its own, and its steps on demand. */
+    private fun checkLine(sb: StringBuilder, row: Site.Row, c: Site.Check, u: String, pages: Map<String, String>) {
+        val at = c.deeplink?.let { " <code class=\"e dl\">${esc(it)}</code>" } ?: c.entry?.let { " <span class=to>${esc(it)}의 진입으로 연다</span>" } ?: ""
+        val why = whyNot(row, c)?.takeIf { c.status == "FAILED" && c.steps.none { s -> s.status == "FAILED" } }?.let { "<br><span class=reason>${esc(it)}</span>" } ?: ""
+        val head = "${icon(c.status)}<span class=ckt>${c.title?.let { "<b>${esc(it)}</b>" } ?: ""}${mentions(c.description, u, pages)}$at$why</span>"
+        if (c.steps.isEmpty()) { sb.append("<div class=\"ck flat ${cls(c.status)}\">$head</div>"); return }
+        sb.append("<details class=\"ck ${cls(c.status)}\"${if (c.status == "FAILED") " open" else ""}><summary>$head<span class=ckn>${c.steps.size}스텝</span></summary>")
+        stepList(sb, c.steps)
+        sb.append("</details>")
+    }
+
+    /** A check's steps: the ones that check set apart from the ones that get there, the failed one with why. */
+    private fun stepList(sb: StringBuilder, steps: List<ResultJson.Step>) {
+        sb.append("<ol class=st>")
+        for (s in steps) {
+            sb.append("<li class=\"${cls(s.status)}${if (s.status == "PASSED" && verifies(s.text)) " v" else ""}\">${stepText(s.text)}")
+            if (s.status == "FAILED") sb.append("<br><span class=why>${esc(humanReason(s.reason))}</span>")
+            sb.append("</li>")
         }
-        sb.append("</ul></section>")
+        sb.append("</ol>")
     }
 
     /**
@@ -440,7 +569,8 @@ object SitePages {
      * began (the recording starts when setup is done) — as `<feature>/_screen.jpg`; null without a recording or ffmpeg.
      */
     private fun entryFrame(screen: Site.Screen, out: File, opts: Options): String? {
-        for (row in screen.rows) {
+        // a scenario's recording starts on the screen; the way in's starts where the app was opened, before it got there
+        for (row in screen.scenarios + listOfNotNull(screen.entry)) {
             val t = row.timeline
             val mp4 = t.video?.let { File(t.dir, it.file) }?.takeIf { it.isFile } ?: continue
             val at = t.steps.firstOrNull { it.videoMs != null }?.videoMs ?: continue
@@ -487,7 +617,7 @@ object SitePages {
         }
 
         sb.append("<span class=right>${avatar(r.owner)}${if (r.owner != null) " · " else ""}${esc(hm(t.startedAt))} · ${esc(humanDuration(t.durationMs))}</span></div>")
-        if (r.description.isNotEmpty()) sb.append("<p class=desc>${esc(r.description)}</p>")
+        if (r.description.isNotEmpty()) sb.append("<p class=desc>${esc(Mentions.plain(r.description))}</p>")
         if (rec != null) {
             val f = rec.failedStepOf
             sb.append("<div class=reason>LLM 녹화 ${esc(hm(rec.startedAt))} · ${esc(humanDuration(rec.durationMs))} — ${esc(stoppedAt(rec))}${f?.reason?.let { " · ${esc(it)}" } ?: ""} — 아래가 그 타임라인</div>")
@@ -627,7 +757,7 @@ object SitePages {
                 sec.preparation -> "모델이 준비 · ${if (did == 0) "한 일 없음" else "조작 ${did}번"} · $took"
                 else -> "${steps.size}스텝 · $took"
             } + "</span></summary><div class=sbody>")
-            if (sec.description.isNotEmpty()) sb.append("<p class=sdesc>${esc(sec.description)}</p>")
+            if (sec.description.isNotEmpty()) sb.append("<p class=sdesc>${esc(Mentions.plain(sec.description))}</p>")
             if (sec.preparation) sb.append("<div class=snote>테스트가 아니라 준비입니다. 지난 실행이 남긴 상태가 무엇이든 아래 구간이 같은 상태에서 시작하도록, 재생에서도 모델이 화면을 보고 필요한 만큼만 조작합니다.</div>")
             // the section's own player with its steps; a section that did not run has nothing to play
             val playing = players?.takeIf { ran }
@@ -802,26 +932,32 @@ object SitePages {
         })();
     """.trimIndent()
 
+    /**
+     * The pages' one stylesheet. Every colour is a token: the palette is the dark one, and the light one where the
+     * reader's system asks for light — a rule sets no colour of its own (the video's letterbox aside).
+     */
     private val CSS = """
-        :root{--bg:#F4F4F1;--card:#FFFFFF;--fg:#1B1B1A;--dim:#5A5A56;--faint:#8A8A84;--line:#E2E2DD;--line2:#D6D6D0;--code:#F4F4F1;
-          --fail:#B3261E;--failfg:#8A1C14;--failbg:#FBE9E7;--warn:#D08A1A;--warnfg:#7A4A00;--warnbg:#FCEFD6;--info:#1F4E8C;--infobg:#E4EEF9;--ok:#2E7D5B;--okfg:#1F5A3C;--okbg:#E3EFE8}
+        :root{color-scheme:dark;--bg:#161614;--card:#1F1F1D;--fg:#ECECE8;--ink2:#D2D2CC;--dim:#A6A6A0;--faint:#7E7E78;--line:#2C2C29;--line2:#3B3B37;--code:#252523;--panel:#252523;--chipbg:#2C2C29;--hover:#252523;--onfg:#161614;
+          --fail:#E0645B;--failfg:#F2A39C;--failbg:#3B1E1B;--onfail:#1B0C0A;--warn:#D9A040;--warnfg:#F0C678;--warnbg:#3A2C12;--info:#7FB0E8;--infobg:#1B2A3D;--ok:#5DB88F;--okfg:#9AD8BA;--okbg:#1C3328;--logbg:#0E0E0D;--logfg:#E6E6E2}
+        @media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#F4F4F1;--card:#FFFFFF;--fg:#1B1B1A;--ink2:#3A3A37;--dim:#5A5A56;--faint:#8A8A84;--line:#E2E2DD;--line2:#D6D6D0;--code:#F4F4F1;--panel:#ECECE7;--chipbg:#E8E8E3;--hover:#FAFAF8;--onfg:#FFFFFF;
+          --fail:#B3261E;--failfg:#8A1C14;--failbg:#FBE9E7;--onfail:#FFFFFF;--warn:#D08A1A;--warnfg:#7A4A00;--warnbg:#FCEFD6;--info:#1F4E8C;--infobg:#E4EEF9;--ok:#2E7D5B;--okfg:#1F5A3C;--okbg:#E3EFE8;--logbg:#1B1B1A;--logfg:#E6E6E2}}
         *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 'IBM Plex Sans KR',system-ui,-apple-system,'Apple SD Gothic Neo',sans-serif}
         a{color:inherit}main{max-width:1200px;margin:0 auto;padding:28px 24px 48px;display:flex;flex-direction:column;gap:32px}main.detail{gap:24px}
         .topbar{background:var(--card);border-bottom:1px solid var(--line)}.topbar .inner{max-width:1200px;margin:0 auto;padding:0 24px;display:flex;flex-wrap:wrap;align-items:center;gap:24px;min-height:56px}
-        .brand{font-weight:600;font-size:16px}.apps a{padding:6px 12px;border-radius:6px;color:var(--dim);text-decoration:none}.apps a.on{background:var(--fg);color:#fff;font-weight:500}
+        .brand{font-weight:600;font-size:16px}.apps a{padding:6px 12px;border-radius:6px;color:var(--dim);text-decoration:none}.apps a.on{background:var(--fg);color:var(--onfg);font-weight:500}
         .crumbs{display:flex;gap:8px;color:var(--dim);font-size:13px}.crumbs b{color:var(--fg);font-weight:500}.right{margin-left:auto;display:flex;gap:12px;align-items:center;color:var(--dim);font-size:13px}
         h1{margin:0;font-size:26px;font-weight:600;letter-spacing:-.01em}h2{margin:0;font-size:17px;font-weight:600}h3{margin:14px 0 4px;font-size:14px}h4{margin:0 0 4px;font-size:11px;color:var(--faint);font-weight:600;letter-spacing:.04em}
         .kicker,.dim{color:var(--dim);font-size:13px}.mono,.code,code,pre{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:12.5px}
         .chip{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;padding:2px 8px;border-radius:4px;white-space:nowrap}.chip.big{font-size:13px;padding:6px 12px;border-radius:6px}
-        .chip.failed{color:var(--failfg);background:var(--failbg)}.chip.changed{color:var(--warnfg);background:var(--warnbg)}.chip.rerecord{color:var(--info);background:var(--infobg)}.chip.passed{color:var(--okfg);background:var(--okbg)}.chip.setup{color:var(--dim);background:#E8E8E3}
+        .chip.failed{color:var(--failfg);background:var(--failbg)}.chip.changed{color:var(--warnfg);background:var(--warnbg)}.chip.rerecord{color:var(--info);background:var(--infobg)}.chip.passed{color:var(--okfg);background:var(--okbg)}.chip.setup{color:var(--dim);background:var(--chipbg)}
         .sh{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px}
         .strip i{display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--line2)}.strip{display:inline-flex;gap:3px;vertical-align:middle}.strip.wide i{width:16px;height:14px}.strip i.passed{background:var(--ok)}.strip i.changed{background:var(--warn)}.strip i.failed{background:var(--fail)}.strip i.none,.strip i.skipped{background:var(--line2)}
         .reason{color:var(--failfg)}.q{font-weight:600}ol.st li .q{color:var(--fg)}ol.st li.failed .q,ol.st li.skipped .q{color:inherit}
-        .owner{display:inline-flex;align-items:center;gap:6px}.avatar{width:20px;height:20px;border-radius:50%;background:var(--dim);color:#fff;font-size:10px;display:inline-flex;align-items:center;justify-content:center;font-weight:600}
-        .btns{display:flex;gap:8px;flex-wrap:wrap}.btn{flex:1;text-align:center;padding:7px 10px;border-radius:6px;border:1px solid #C9C9C3;background:var(--card);color:var(--fg);font-size:13px;text-decoration:none;cursor:pointer;white-space:nowrap}.btn.primary{border-color:var(--fg);background:var(--fg);color:#fff;font-weight:500}
+        .owner{display:inline-flex;align-items:center;gap:6px}.avatar{width:20px;height:20px;border-radius:50%;background:var(--dim);color:var(--onfg);font-size:10px;display:inline-flex;align-items:center;justify-content:center;font-weight:600}
+        .btns{display:flex;gap:8px;flex-wrap:wrap}.btn{flex:1;text-align:center;padding:7px 10px;border-radius:6px;border:1px solid var(--line2);background:var(--card);color:var(--fg);font-size:13px;text-decoration:none;cursor:pointer;white-space:nowrap}.btn.primary{border-color:var(--fg);background:var(--fg);color:var(--onfg);font-weight:500}
         .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--line2);flex-shrink:0}.dot.failed{background:var(--fail)}.dot.passed{background:var(--ok)}
-        main.detail header{display:flex;flex-direction:column;gap:14px}main.detail header .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.desc{margin:0;max-width:760px;color:#3A3A37;line-height:1.7}
-        .tabs{display:flex;gap:4px;background:#E8E8E3;padding:3px;border-radius:8px}.tabs a{padding:6px 14px;border-radius:6px;color:var(--dim);font-size:13px;display:flex;align-items:center;gap:6px;text-decoration:none}.tabs a[aria-selected=true]{background:var(--card);color:var(--fg);font-weight:500}
+        main.detail header{display:flex;flex-direction:column;gap:14px}main.detail header .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.desc{margin:0;max-width:760px;color:var(--ink2);line-height:1.7}
+        .tabs{display:flex;gap:4px;background:var(--chipbg);padding:3px;border-radius:8px}.tabs a{padding:6px 14px;border-radius:6px;color:var(--dim);font-size:13px;display:flex;align-items:center;gap:6px;text-decoration:none}.tabs a[aria-selected=true]{background:var(--card);color:var(--fg);font-weight:500}
         .cols{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}section.steps{flex:1 1 560px;min-width:0;display:flex;flex-direction:column;gap:10px}aside.replay{flex:0 1 380px;min-width:300px;display:flex;flex-direction:column;gap:10px;position:sticky;top:12px}
         section.steps h2,aside.replay h2{font-size:13px;color:var(--dim);letter-spacing:.04em;margin-bottom:4px}section.steps h2 .hint{margin-left:12px;font-weight:400;font-size:12px;letter-spacing:0}
         .secgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(264px,1fr));gap:12px;align-items:start}.secgrid details.sec{margin:0}.secgrid details.sec.wide{grid-column:1/-1}
@@ -830,43 +966,43 @@ object SitePages {
         .secgrid .sec:not(.wide) .step{padding:10px}.secgrid .sec:not(.wide) .step .line{gap:8px}.secgrid .sec:not(.wide) .sinfo{margin-left:0;flex-basis:100%;text-align:left;order:9}
         .whole{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:4px}.whole .btn{flex:0 0 auto}
         .step{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;cursor:pointer}.step.on{border-color:var(--fg);box-shadow:0 0 0 1px var(--fg)}.step.skipped{opacity:.55;cursor:default;border-style:dashed;border-color:var(--line2)}.step.failed{border-color:var(--fail);box-shadow:0 0 0 3px var(--failbg)}.step.static{cursor:default}
-        .step .line{display:flex;gap:12px}.step .icon{flex-shrink:0;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;background:var(--okbg);color:var(--okfg)}.step.failed .icon{background:var(--fail);color:#fff}.step.skipped .icon{background:#E8E8E3;color:var(--faint)}
+        .step .line{display:flex;gap:12px}.step .icon{flex-shrink:0;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;background:var(--okbg);color:var(--okfg)}.step.failed .icon{background:var(--fail);color:var(--onfail)}.step.skipped .icon{background:var(--chipbg);color:var(--faint)}
         .step .text{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}.step .n{color:var(--faint)}.criterion{color:var(--dim)}.step .meta{font-size:12px;color:var(--dim)}.step.failed .meta{color:var(--failfg);font-weight:500}
         .fail{margin-top:12px;padding-left:34px;display:flex;flex-direction:column;gap:12px;cursor:auto}.cols2{display:grid;grid-template-columns:1fr 1fr;gap:12px}.cols2>div{display:flex;flex-direction:column;gap:6px}.cols2 .mono{background:var(--code);border-radius:6px;padding:8px 10px;line-height:1.6}.cols2 .mono.actual{background:var(--failbg)}.miss{color:var(--failfg)}.fail .mono.screen{background:var(--code);border-radius:6px;padding:8px 10px;line-height:1.6}
         .film{display:flex;gap:8px;overflow-x:auto;padding:4px 0}.film figure{margin:0;flex:0 0 72px;display:flex;flex-direction:column;gap:3px;font-size:10px;color:var(--dim);text-align:center}.film img{display:block;width:100%;border-radius:6px;border:1px solid var(--line2)}
         .progress{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px}
         details.replaysec{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px}details.replaysec summary{cursor:pointer;font-weight:500;font-size:13px}details.replaysec .steps{display:flex;flex-direction:column;gap:10px;margin-top:12px}
-        .step.setup{cursor:default;border-style:dashed;border-color:var(--line2)}.step.setup .icon{background:#E8E8E3;color:var(--dim)}
+        .step.setup{cursor:default;border-style:dashed;border-color:var(--line2)}.step.setup .icon{background:var(--chipbg);color:var(--dim)}
         details.events{margin:8px 0 0 34px;cursor:auto}details.events summary{cursor:pointer;font-size:12px;color:var(--dim);list-style:none;display:flex;gap:8px;align-items:baseline;font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace}details.events summary::-webkit-details-marker{display:none}details.events summary .k{color:var(--faint);flex-shrink:0}details.events summary .k::before{content:'▸ '}details.events[open] summary .k::before{content:'▾ '}
         .evlist{margin-top:6px;background:var(--code);border-radius:6px;padding:8px 10px;display:flex;flex-direction:column;gap:3px}.ev{display:flex;gap:10px;align-items:baseline;font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:11.5px;line-height:1.5}.ev .at{color:var(--faint);min-width:44px;text-align:right;flex-shrink:0}.ev b{font-weight:500;flex-shrink:0}.ev b.auto{color:var(--faint);font-weight:400}.ev .params{color:var(--dim);overflow-wrap:anywhere}.ev .params .ga{color:var(--faint)}
-        pre.log{margin:0;background:#1B1B1A;color:#E6E6E2;padding:10px 12px;border-radius:6px;font-size:11.5px;line-height:1.5;overflow:auto;max-height:260px;white-space:pre-wrap}
+        pre.log{margin:0;background:var(--logbg);color:var(--logfg);padding:10px 12px;border-radius:6px;font-size:11.5px;line-height:1.5;overflow:auto;max-height:260px;white-space:pre-wrap}
         .actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.actions code{background:var(--code);padding:6px 10px;border-radius:6px}.actions .btn{flex:0 0 auto}
-        .player{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:12px}.frame{position:relative;width:100%;aspect-ratio:9/16;max-height:560px;border-radius:10px;background:#E8E8E3;border:1px solid var(--line2);overflow:hidden;display:flex;align-items:center;justify-content:center}
+        .player{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:12px}.frame{position:relative;width:100%;aspect-ratio:9/16;max-height:560px;border-radius:10px;background:var(--chipbg);border:1px solid var(--line2);overflow:hidden;display:flex;align-items:center;justify-content:center}
         .frame video,.frame img{width:100%;height:100%;object-fit:contain;background:#000}.caption{margin-top:-4px;color:var(--dim);font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.5;overflow-wrap:anywhere}
-        .controls{display:flex;align-items:center;gap:10px}.play{width:32px;height:32px;border-radius:50%;border:0;background:var(--fg);color:#fff;cursor:pointer;font-size:11px;flex-shrink:0}
+        .controls{display:flex;align-items:center;gap:10px}.play{width:32px;height:32px;border-radius:50%;border:0;background:var(--fg);color:var(--onfg);cursor:pointer;font-size:11px;flex-shrink:0}
         .segments{flex:1;display:flex;gap:3px}.segments i{flex:1;height:8px;border-radius:4px;background:var(--line2);cursor:pointer;min-width:6px}.segments i.passed{background:var(--ok)}.segments i.failed{background:var(--fail)}.segments i.skipped{cursor:default}.segments i.on{outline:2px solid var(--fg);outline-offset:1px}
         .time{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--dim)}
-        details.sec{background:#ECECE7;border:1px solid var(--line2);border-radius:12px;padding:2px 12px}details.sec+details.sec{margin-top:4px}details.sec.failed{border-color:var(--fail)}details.sec.prep{background:transparent;border-style:dashed}
+        details.sec{background:var(--panel);border:1px solid var(--line2);border-radius:12px;padding:2px 12px}details.sec+details.sec{margin-top:4px}details.sec.failed{border-color:var(--fail)}details.sec.prep{background:transparent;border-style:dashed}
         details.sec>summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0}details.sec>summary::-webkit-details-marker{display:none}
         details.sec>summary::after{content:'▸';color:var(--dim);font-size:13px;width:12px;flex-shrink:0}details.sec[open]>summary::after{content:'▾'}
-        .sec .ord{flex-shrink:0;width:24px;height:24px;border-radius:50%;background:var(--fg);color:#fff;font-size:12px;font-weight:600;display:inline-flex;align-items:center;justify-content:center}.sec.prep .ord{background:#E0E0DA;color:var(--dim)}.sec.skipped .ord{background:var(--line2);color:var(--dim)}.sec.failed:not(.prep) .ord{background:var(--fail)}
+        .sec .ord{flex-shrink:0;width:24px;height:24px;border-radius:50%;background:var(--fg);color:var(--onfg);font-size:12px;font-weight:600;display:inline-flex;align-items:center;justify-content:center}.sec.prep .ord{background:var(--line2);color:var(--dim)}.sec.skipped .ord{background:var(--line2);color:var(--dim)}.sec.failed:not(.prep) .ord{background:var(--fail)}
         .sec .stitle{font-weight:600;font-size:15px}.sec.skipped .stitle,.sec.prep .stitle{color:var(--dim)}.sec .sinfo{margin-left:auto;font-size:12px;color:var(--dim);text-align:right}
-        .sec .sbody{display:flex;flex-direction:column;gap:10px;padding:0 0 10px}.sec .sdesc{margin:0 2px;color:#3A3A37;font-size:13.5px;line-height:1.6}
+        .sec .sbody{display:flex;flex-direction:column;gap:10px;padding:0 0 10px}.sec .sdesc{margin:0 2px;color:var(--ink2);font-size:13.5px;line-height:1.6}
         .sec .snote{font-size:12.5px;line-height:1.6;color:var(--dim);margin:0 2px}
         footer{max-width:1200px;margin:0 auto;padding:0 24px 24px;font-size:12px}
         .gate{display:flex;flex-direction:column;gap:10px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px}.gate .grow{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.gate h1{font-size:30px}.gate.failed h1{color:var(--fail)}.gate.passed h1{color:var(--ok)}.gate .chips{display:flex;gap:8px;flex-wrap:wrap}
         .gsum{color:var(--dim);font-size:13px}.gcells{display:flex;flex-wrap:wrap;gap:4px 9px}.gcells i{height:16px}
         .cells{display:inline-flex;flex-wrap:wrap;gap:3px 5px;vertical-align:middle}.cells span{display:inline-flex;gap:1px}.cells i{display:block;width:8px;height:13px;border-radius:2px;background:var(--line2)}.cells i.passed{background:var(--ok)}.cells i.failed{background:var(--fail)}
-        .ic{flex-shrink:0;width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;font-style:normal;background:var(--okbg);color:var(--okfg)}.ic.failed{background:var(--fail);color:#fff}.ic.skipped{background:#E8E8E3;color:var(--faint)}
+        .ic{flex-shrink:0;width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;font-style:normal;background:var(--okbg);color:var(--okfg)}.ic.failed{background:var(--fail);color:var(--onfail)}.ic.skipped{background:var(--chipbg);color:var(--faint)}
         code.e{background:var(--code);padding:1px 6px;border-radius:4px;font-size:12px;overflow-wrap:anywhere}.bad{color:var(--failfg);font-weight:600}.note{font-size:13px}
         .todo{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}.frow{display:grid;grid-template-columns:52px minmax(0,1fr) auto;gap:14px;padding:12px 16px;border-top:1px solid var(--line);align-items:start}.frow:first-child{border-top:0}
-        .frow .shot{display:block;width:52px;border-radius:6px;overflow:hidden;border:1px solid var(--line2);background:#E8E8E3}.frow .shot img{display:block;width:100%}.frow .shot.empty{aspect-ratio:9/19}.frow .shot.none{border:0;background:none}
+        .frow .shot{display:block;width:52px;border-radius:6px;overflow:hidden;border:1px solid var(--line2);background:var(--chipbg)}.frow .shot img{display:block;width:100%}.frow .shot.empty{aspect-ratio:9/19}.frow .shot.none{border:0;background:none}
         .frow .body{display:flex;flex-direction:column;gap:4px;min-width:0}.frow .mono{overflow-wrap:anywhere}.path{display:flex;align-items:center;gap:6px;flex-wrap:wrap;color:var(--dim);font-size:13px}.path a{text-decoration:none}.path a:hover{text-decoration:underline}.path .title{color:var(--fg);font-weight:600;font-size:14.5px}
         .frow .side{display:flex;flex-direction:column;align-items:flex-end;gap:3px;font-size:12.5px;color:var(--dim);text-align:right}
         .tools{margin-left:auto;display:flex;gap:8px;align-items:center}.tools input,.snav input{font:inherit;font-size:13px;padding:6px 10px;border:1px solid var(--line2);border-radius:6px;background:var(--card);color:var(--fg);width:220px;max-width:100%}
-        .tog{font:inherit;font-size:13px;padding:5px 12px;border-radius:14px;border:1px solid var(--line2);background:var(--card);color:var(--dim);cursor:pointer}.tog[aria-pressed=true]{background:var(--fg);border-color:var(--fg);color:#fff}
+        .tog{font:inherit;font-size:13px;padding:5px 12px;border-radius:14px;border:1px solid var(--line2);background:var(--card);color:var(--dim);cursor:pointer}.tog[aria-pressed=true]{background:var(--fg);border-color:var(--fg);color:var(--onfg)}
         .tw{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:10px}table.scr{border-collapse:collapse;width:100%;font-size:13px}table.scr th{font-size:11px;font-weight:600;letter-spacing:.04em;color:var(--faint);text-align:left;padding:8px 14px;white-space:nowrap}table.scr td{padding:9px 14px;border-top:1px solid var(--line);vertical-align:top}
-        table.scr .r{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}tbody.g[hidden]{display:none}tr.srow{cursor:pointer}tr.srow:hover td{background:#FAFAF8}tr.srow td:first-child{white-space:nowrap;font-weight:600}tr.srow a{text-decoration:none}tr.srow a:hover{text-decoration:underline}
+        table.scr .r{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}tbody.g[hidden]{display:none}tr.srow{cursor:pointer}tr.srow:hover td{background:var(--hover)}tr.srow td:first-child{white-space:nowrap;font-weight:600}tr.srow a{text-decoration:none}tr.srow a:hover{text-decoration:underline}
         tr.srow td:first-child::before{content:'▸';color:var(--faint);font-size:11px;display:inline-block;width:16px}tbody.g.open tr.srow td:first-child::before,tbody.g.hit tr.srow td:first-child::before{content:'▾'}
         tr.sub{display:none}tbody.g.open tr.sub,tbody.g.hit tr.sub{display:table-row}tr.sub td{background:var(--bg)}tr.sub td:first-child{padding-left:30px}tr.sub td:first-child .dot{margin-right:8px}tr.sub a{text-decoration:none}tr.sub a:hover{text-decoration:underline}
         .onlyfail tbody.g:not(.failed){display:none}.onlyfail tbody.g.failed tr.sub{display:none}.onlyfail tbody.g.failed tr.sub.failed{display:table-row}
@@ -875,13 +1011,24 @@ object SitePages {
         .snav a{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;text-decoration:none;font-size:13.5px}.snav a[hidden]{display:none}.snav a.on{background:var(--card);box-shadow:inset 0 0 0 1px var(--line2);font-weight:500}.snav .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.snav .c{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
         .doc{min-width:0;max-width:860px;display:flex;flex-direction:column;gap:22px}.shead{display:flex;gap:18px;align-items:flex-start;padding-bottom:18px;border-bottom:1px solid var(--line2)}.shead img{width:96px;border-radius:10px;border:1px solid var(--line2);flex-shrink:0}.shead .b{display:flex;flex-direction:column;gap:6px;min-width:0}
         .eyebrow{font-size:11px;font-weight:600;letter-spacing:.06em;color:var(--faint)}.ents{display:flex;flex-direction:column;gap:3px}.entry{display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px 10px;font-size:12.5px;color:var(--dim)}
-        .sp{display:flex;flex-direction:column;gap:6px;padding-bottom:20px;border-bottom:1px solid var(--line);scroll-margin-top:12px}.sp:last-of-type{border-bottom:0}.sph{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px}.sph h2 a{text-decoration:none}.sph .m{margin-left:auto;font-size:12px;color:var(--faint)}.sph .more{font-size:12.5px;color:var(--dim)}
-        .spd{margin:0;color:#3A3A37;max-width:70ch;line-height:1.65}.sp p.reason{margin:0;font-size:13px}.prep{margin:0;font-size:12.5px;color:var(--faint);border-left:2px dashed var(--line2);padding-left:10px}
-        ul.ck{list-style:none;margin:2px 0 0;padding:0}ul.ck>li{border-top:1px solid var(--line)}ul.ck>li:first-child{border-top:0}ul.ck summary,ul.ck .flat{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:10px;padding:8px 0;align-items:start}ul.ck summary{cursor:pointer;list-style:none}ul.ck summary::-webkit-details-marker{display:none}
-        .ckt{max-width:68ch}.ckt b{font-weight:600;margin-right:6px}ul.ck li.failed .ckt b{color:var(--failfg)}ul.ck li.skipped .ckt{color:var(--dim)}.ckn{font-size:12px;color:var(--faint);white-space:nowrap}.ckn::after{content:' ▸'}ul.ck details[open] .ckn::after{content:' ▾'}
-        ol.st{margin:0 0 12px 28px;padding:10px 12px 10px 34px;background:#ECECE7;border-radius:8px;font-size:13px;color:var(--dim);display:flex;flex-direction:column;gap:3px}ol.st li.v{color:var(--fg);font-weight:500}ol.st li.failed{color:var(--failfg)}ol.st li.skipped{color:var(--faint)}
+        .blk{display:flex;flex-direction:column;gap:8px;min-width:0}.blk>h3{margin:0;font-size:12px;font-weight:600;letter-spacing:.05em;color:var(--faint)}.blk>h3 .hn{font-weight:400;letter-spacing:0;margin-left:8px}.blk>h3 code{letter-spacing:0;font-weight:400}
+        .ways{border:1px solid var(--line);border-radius:10px;font-size:13px;color:var(--dim)}.in{display:grid;grid-template-columns:18px minmax(0,280px) minmax(0,1fr);gap:4px 10px;align-items:start;padding:8px 14px;border-top:1px solid var(--line)}.in:first-child{border-top:0}
+        .in .ip{color:var(--faint);min-width:0;text-decoration:none}.in a.ip:hover{text-decoration:underline}.in .it{min-width:0}.in.failed{color:var(--fg)}.in.failed .ip{color:var(--failfg);font-weight:600}.in .more{margin-left:8px;font-size:12px;color:var(--faint)}
+        .ways .ic.passed{background:none;color:var(--ok)}.ic.none{background:none;color:var(--faint)}.st2{color:var(--faint);margin-left:8px}
+        .mn{font-weight:500;text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:3px;white-space:nowrap}a.mn:hover{text-decoration-color:var(--fg)}.mn.here{text-decoration:none;font-weight:600}
+        .to{display:inline-block;margin-left:8px;font-size:12px;font-weight:400;color:var(--dim);background:var(--chipbg);border-radius:4px;padding:1px 7px;white-space:nowrap}code.dl{margin-left:6px;color:var(--dim)}
+        .fl{border-top:1px solid var(--line2);border-bottom:1px solid var(--line2)}details.ft{border-top:1px solid var(--line);scroll-margin-top:12px}details.ft:first-child{border-top:0}
+        details.ft>summary,details.ck>summary{cursor:pointer;list-style:none}details.ft>summary::-webkit-details-marker,details.ck>summary::-webkit-details-marker{display:none}
+        details.ft>summary{display:grid;grid-template-columns:18px 160px minmax(0,1fr) auto;gap:6px 12px;align-items:start;padding:10px 0}.fn{font-size:14.5px;font-weight:600;min-width:0}.ft.failed .fn{color:var(--failfg)}
+        .fs{color:var(--ink2);max-width:64ch;min-width:0}.fs.titles{color:var(--dim)}.fs.titles .failed{color:var(--failfg);font-weight:600}.fs.titles .skipped{color:var(--faint)}.fs .chip{margin-left:8px}
+        .fb{padding:0 0 12px 30px;display:flex;flex-direction:column;gap:2px}.fb>ol.st{margin-left:0}.fb p.reason,.fb p.dim{margin:0 0 4px}.fm{font-size:12px;color:var(--faint);margin-top:4px}
+        .spd{margin:0 0 4px;color:var(--ink2);max-width:70ch;line-height:1.65}.prep{margin:0 0 4px;font-size:12.5px;color:var(--faint);border-left:2px dashed var(--line2);padding-left:10px}
+        details.ck>summary,.ck.flat{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:10px;align-items:start;padding:4px 0}
+        .ckt{max-width:68ch}.ckt b{font-weight:600;margin-right:8px}.ck.failed .ckt b{color:var(--failfg)}.ck.skipped .ckt{color:var(--dim)}.ckn{font-size:12px;color:var(--faint);white-space:nowrap}.ckn::after{content:' ▸'}details[open]>summary>.ckn::after{content:' ▾'}
+        ol.st{margin:4px 0 10px 28px;padding:10px 12px 10px 34px;background:var(--panel);border-radius:8px;font-size:13px;color:var(--dim);display:flex;flex-direction:column;gap:3px}ol.st li.v{color:var(--fg);font-weight:500}ol.st li.failed{color:var(--failfg)}ol.st li.skipped{color:var(--faint)}
         ol.st .why{display:inline-block;font-weight:400;font-size:12.5px;background:var(--failbg);border-radius:4px;padding:2px 8px;margin-top:2px}
         @media(max-width:900px){aside.replay{position:static}main.screen{grid-template-columns:minmax(0,1fr)}.snav{position:static;max-height:none}.frow{grid-template-columns:52px minmax(0,1fr)}.frow .side{grid-column:2;align-items:flex-start;text-align:left}.tools{margin-left:0}}
-        @media(max-width:600px){main{padding:20px 16px 40px}.cols2{grid-template-columns:1fr}}
+        @media(max-width:640px){main{padding:20px 16px 40px}.cols2{grid-template-columns:1fr}.in{grid-template-columns:18px minmax(0,1fr)}.in .it{grid-column:2}
+          details.ft>summary{grid-template-columns:18px minmax(0,1fr) auto}details.ft>summary>.fs{grid-column:2/-1;grid-row:2}.fb{padding-left:0}ol.st{margin-left:0}}
     """.trimIndent()
 }

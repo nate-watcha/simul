@@ -32,6 +32,12 @@ object Site {
     /** Where the recording's per-scenario directories sit under the report dir. */
     const val RECORD_DIR = "record"
 
+    /** The file name of a screen's way in (`_entry.md`), as a result names it. */
+    const val ENTRY_NAME = "_entry"
+
+    /** How the reason of a scenario begins that was not run because its screen's way in had failed (see BatchSession.run). */
+    const val WAY_IN_FAILED = "not run — the way in to"
+
     /** Where a scenario stands, in the order the report shows them. */
     enum class Kind(val label: String, val cls: String) {
         FAILED("실패", "failed"),
@@ -55,7 +61,34 @@ object Site {
      * its sentence, or the scenario itself (its prose) when it has no sections. [status] is PASSED, FAILED, SKIPPED
      * (an earlier one failed) or NONE (the scenario never ran).
      */
-    class Check(val title: String?, val description: String, val status: String, val steps: List<ResultJson.Step>)
+    class Check(
+        val title: String?, val description: String, val status: String, val steps: List<ResultJson.Step>,
+        /** The address the check's section was opened at instead of the scenario's entry. */
+        val deeplink: String? = null,
+        /** The screen whose way in the check's section started from instead of the scenario's entry. */
+        val entry: String? = null,
+    ) {
+        /** The check started somewhere of its own: it went to look at a place rather than walk there. */
+        val opened: Boolean get() = deeplink != null || entry != null
+    }
+
+    /**
+     * A check that says something about another screen: its sentence — or its scenario's prose, for all the
+     * scenario's checks ([check] null) — mentions [to] (`[[화면]]`). It is written, run and counted on the screen
+     * [from]; the report shows it on [to]'s page too. [look] tells the two kinds apart by how the check got there:
+     * opened at a place of its own, it looked at what a change elsewhere left on [to]; on foot, it is a way to [to].
+     */
+    class Link(val from: Screen, val row: Row, val check: Check?, val to: String, val text: String, val status: String, val look: Boolean)
+
+    /** Every mention among [screens]' scenarios, in the screens' order. A screen's way in mentions nothing: it is that screen's. */
+    fun links(screens: List<Screen>): List<Link> = screens.flatMap { screen ->
+        screen.scenarios.flatMap { row ->
+            val t = row.timeline
+            val whole = when (row.kind) { Kind.FAILED -> "FAILED"; Kind.PASSED -> "PASSED"; Kind.SETUP -> "NONE" }
+            Mentions.of(t.description).map { Link(screen, row, null, it, t.description, whole, look = false) } +
+                row.checks.filter { it.title != null }.flatMap { c -> Mentions.of(c.description).map { Link(screen, row, c, it, c.description, c.status, c.opened) } }
+        }
+    }
 
     /** One way into a screen — a deeplink or `앱 실행` — with the account states its scenarios start from and how many each. */
     class Entry(val entry: String, val states: Map<String, Int>)
@@ -66,6 +99,10 @@ object Site {
      */
     class Screen(val feature: String, val rows: List<Row>) {
         val name: String get() = feature.ifEmpty { "(root)" }
+        /** The screen's way in (`_entry.md`), when its directory has one and it ran. */
+        val entry: Row? get() = rows.firstOrNull { it.isEntry }
+        /** The scenarios that test the screen: all but its way in. */
+        val scenarios: List<Row> get() = rows.filterNot { it.isEntry }
         val checks: List<Check> get() = rows.flatMap { it.checks }
         /** The worst of its scenarios. */
         val kind: Kind get() = rows.minOf { it.kind }
@@ -83,13 +120,19 @@ object Site {
 
     class Row(val result: ResultJson.Result, val kind: Kind, val record: ScenarioOutcome? = null, val recording: ResultJson.Result? = null) {
         val id get() = result.id
+        /** This row is its screen's way in (`_entry.md`), not a scenario of it. */
+        val isEntry get() = result.name == ENTRY_NAME
+        /** What the pages call it: its title — `진입` for a way in that was given none. */
+        val title: String get() = if (isEntry && (result.title == ENTRY_NAME || result.title == SimulProject.entryName(result.feature))) "진입" else result.title
+        /** It was not run because its screen's way in had failed: the entry's failure is the one to read. */
+        val waitsForEntry get() = kind == Kind.SETUP && result.reason?.startsWith(WAY_IN_FAILED) == true
         /** The run the pages tell this scenario by: tonight's recording when it failed and left its steps, else the replay. */
         val timeline: ResultJson.Result get() = recordTimeline ?: result
         /** What this scenario confirms, in file order (see [Check]). */
         val checks: List<Check> get() {
             val t = timeline
             if (t.tests.isNotEmpty()) return t.tests.map { sec ->
-                Check(sec.title, sec.description, if (kind == Kind.SETUP) "NONE" else sec.status, t.steps.filter { it.n in sec.from..sec.to })
+                Check(sec.title, sec.description, if (kind == Kind.SETUP) "NONE" else sec.status, t.steps.filter { it.n in sec.from..sec.to }, sec.deeplink, sec.entry)
             }
             return listOf(Check(null, t.description, when (kind) { Kind.FAILED -> "FAILED"; Kind.PASSED -> "PASSED"; Kind.SETUP -> "NONE" }, t.steps))
         }

@@ -128,14 +128,17 @@ class SiteTest {
         assertTrue("id=onlyfail" in home && "id=q" in home)
         assertTrue("어제" !in home && "7일" !in home && "acknowledged" !in home, "no history, no site machinery")
 
-        // a screen's page: its ways in, then each scenario's prose and checks, a failed check open on its steps
+        // a screen's page: where its scenarios start, then each scenario as a line that opens — a failed one open on its steps
         val screen = File(site, "billing/_screen.html")
         assertTrue(screen in built.screens && built.screens.size == 2)
         val spec = screen.readText()
         assertTrue("<h1>billing</h1>" in spec && "<code class=e>app://billing</code><span>member 1</span><span>nosub 1</span>" in spec, spec.substringAfter("<header"))
         assertTrue("시나리오 2 · 확인 2 · <b class=bad>실패 1</b>" in spec)
-        assertTrue("<section class=\"sp failed\" id=\"coupon.member\">" in spec && "<a href=\"../billing/coupon.member.html\">쿠폰을 등록한다</a>" in spec)
-        assertTrue("<details open><summary>" in spec && "<li class=\"failed\">Tap the <span class=q>&quot;btn2&quot;</span> button<br><span class=why>녹화 때 있던 것이 화면에 없음: toast</span>" in spec, spec.substringAfter("<ul class=ck>"))
+        assertTrue("<details class=\"ft failed\" id=\"coupon.member\" open><summary>" in spec && "<b class=fn>쿠폰을 등록한다</b>" in spec &&
+            "<a class=more href=\"../billing/coupon.member.html\">스텝·영상 ›</a>" in spec, spec.substringAfter("<section"))
+        assertTrue("<h3>이 화면에서</h3>" in spec && "<h3>다른 계정으로 보면 <code class=e>nosub</code></h3>" in spec, "the scenarios of another account under that account")
+        assertTrue("들어오는 길" !in spec, "no way in of its own and no other screen that walks here: where its scenarios start is in the header")
+        assertTrue("<li class=\"failed\">Tap the <span class=q>&quot;btn2&quot;</span> button<br><span class=why>녹화 때 있던 것이 화면에 없음: toast</span>" in spec, spec.substringAfter("<section"))
         assertTrue("<a class=on href=\"../billing/_screen.html\"" in spec && "href=\"../auth/_screen.html\"" in spec, "the other screens beside it")
         assertTrue("_screen.jpg" !in spec, "no recording ffmpeg can read: no entry frame")
         assertTrue("setup failed: deeplink not handled" in File(site, "auth/_screen.html").readText())
@@ -306,8 +309,10 @@ class SiteTest {
         val spec = File(runs, "2026-11-10/my-other/_screen.html").readText()
         assertTrue("<p class=spd>타인 프로필의 팔로우 버튼은 누를 때마다 바뀐다.</p>" in spec && "<p class=prep>준비 · 팔로우하고 있지 않으면" in spec, spec.substringAfter("<section"))
         assertTrue("<li class=\"passed v\"><span class=q>&quot;팔로우&quot;</span>가 보이는지 확인한다</li>" in spec, "a passed check step is set apart from the steps that get there")
-        assertTrue("<b>팔로우 취소</b> &quot;팔로우 취소&quot;를 누르면 &quot;팔로우&quot;로 바뀐다." in spec, "a step's quotes are set apart, a sentence's are not")
-        assertTrue("<li class=\"skipped\"><details><summary>" in spec && "<b>다시 취소</b>" in spec, "a section that was not reached is listed, not open")
+        assertTrue("<b>팔로우 취소</b>&quot;팔로우 취소&quot;를 누르면 &quot;팔로우&quot;로 바뀐다." in spec, "a step's quotes are set apart, a sentence's are not")
+        assertTrue("<details class=\"ck skipped\"><summary>" in spec && "<b>다시 취소</b>" in spec, "a section that was not reached is listed, not open")
+        assertTrue("<span class=\"fs titles\"><span class=passed>팔로우 취소</span> · <span class=failed>팔로우 추가</span> · <span class=skipped>다시 취소</span></span><span class=ckn>확인 3</span>" in spec,
+            "closed, a scenario of several checks is its sections' titles")
     }
 
     @Test
@@ -332,5 +337,73 @@ class SiteTest {
         assertTrue(!File(ReportDirs.inRuns(File(root, "runs/x"), p, md, sc), "stale.txt").exists())
         val rootMd = File(p.scenariosDir, "smoke.md").apply { writeText("---\nname: smoke\n---\n1. a\n") }
         assertEquals(File(root, "runs/x/smoke"), ReportDirs.inRuns(File(root, "runs/x"), p, rootMd, ScenarioMd.parse(rootMd)))
+    }
+
+    @Test
+    fun `a check that mentions another screen shows on that screen's page too, and a screen's way in heads its page`() {
+        val day = File(runs, "2026-11-12")
+        fun st(n: Int, text: String, status: StepStatus, reason: String? = null) =
+            StepReport(n, text, status, if (status == StepStatus.SKIPPED) null else "replay", emptyList(), emptyList(), reason, 500, emptyList(), startedMs = n * 1000L)
+        fun write(feature: String, name: String, title: String, prose: String, setup: ResultJson.Setup, steps: List<StepReport>, sections: List<SectionReport> = emptyList()) {
+            val dir = File(day, "$feature/$name").apply { mkdirs() }
+            val status = if (steps.any { it.status == StepStatus.FAILED }) StepStatus.FAILED else StepStatus.PASSED
+            ResultJson.write(ScenarioRunResult(title, status, steps, null, 5000, startedAtMs = 1_794_000_000_000L, reportDir = dir, sections = sections), "replay",
+                ResultJson.Meta(feature, name, null, "$feature/$name.md", title, null, prose, "2026-11-12", ResultJson.Env("6.4.0", "sdk", "1.1"), setup = setup), dir)
+        }
+        // 나의왓챠-활동: a way in with a step that moves; a scenario that starts from it and walks to 작품 상세
+        write("나의왓챠-활동", "_entry", "_entry", "나의 왓챠에서 \"활동\" 탭을 누르면 열린다.", ResultJson.Setup("app://my", false, "member"),
+            listOf(st(1, "\"활동\" 탭을 누른다", StepStatus.PASSED), st(2, "\"활동\" 탭이 selected 상태인지 확인한다", StepStatus.PASSED)))
+        write("나의왓챠-활동", "posters", "포스터", "포스터를 누르면 그 작품의 [[작품 상세]]로 간다.", ResultJson.Setup("app://my", false, "member", via = "나의왓챠-활동"),
+            listOf(st(1, "\"재혼 황후\" 포스터를 누른다", StepStatus.PASSED)))
+        // 작품 상세: its address opens it. A comment is added, looked for on the activity tab — not there — and removed all the same.
+        write("작품 상세", "_entry", "_entry", "", ResultJson.Setup("app://contents/1", false, "member"), listOf(st(1, "작품 제목이 보이는지 확인한다", StepStatus.PASSED)))
+        write("작품 상세", "comment", "코멘트 추가와 삭제", "작품 상세에서 코멘트를 쓰고 지우기.", ResultJson.Setup("app://contents/1", false, "member", via = "작품 상세"),
+            listOf(st(1, "\"등록\"을 누른다", StepStatus.PASSED), st(2, "\"방금 쓴 코멘트\"가 보이는지 확인한다", StepStatus.FAILED, "replay broken: evidence not on screen: 방금 쓴 코멘트"),
+                st(3, "\"삭제\"를 누른다", StepStatus.PASSED)),
+            listOf(SectionReport("추가", "코멘트를 써서 등록하면 보인다.", StepStatus.PASSED, 1..1),
+                SectionReport("추가 뒤 활동 탭", "[[나의왓챠-활동]] 코멘트 영역 맨 앞에 나온다.", StepStatus.FAILED, 2..2, open = Scenario.Open(screen = "나의왓챠-활동")),
+                SectionReport("삭제", "코멘트를 지우면 사라진다.", StepStatus.PASSED, 3..3)))
+        // 검색: its way in failed, so its scenario was not run — one failure, not two
+        write("검색", "_entry", "_entry", "", ResultJson.Setup("app://search", false, "member"), listOf(st(1, "\"검색\" 탭을 누른다", StepStatus.FAILED, "replay broken: evidence not on screen: 최근 검색어")))
+        File(day, "run.json").writeText(RunSummaryJson.toJson(RunSummary("verify", "replay", "2026-11-12T02:10:00+09:00", 60_000L, "0.2.0", "6.4.0", "sdk", listOf(
+            ScenarioOutcome("검색어 입력", "검색/query.md", emptyList(), "SKIPPED", null, 0, null, false, 0, 0, 2, null, "${Site.WAY_IN_FAILED} '검색' failed: step 1 — replay broken"),
+        ), app = "Pedia")).toString())
+
+        val rows = Site.classify(Site.load(day))
+        val screens = Site.screens(rows)
+        assertEquals(listOf("나의왓챠-활동" to "작품 상세" to false, "작품 상세" to "나의왓챠-활동" to true),
+            Site.links(screens).map { it.from.name to it.to to it.look }.sortedBy { it.first.first }, "on foot it is a way there; opened at a place of its own, a look")
+        assertTrue(rows.single { it.result.name == "query" }.waitsForEntry)
+
+        SitePages.build(day, day)
+        val activity = File(day, "나의왓챠-활동/_screen.html").readText()
+        assertTrue("<h3>들어오는 길</h3>" in activity && "<span class=ip>딥링크</span><span class=it>없음</span>" in activity, "a way in with a step that moves: the screen has no address of its own")
+        assertTrue("<span class=ip>진입</span><span class=it><code class=e>app://my</code> 를 열고 <span class=q>&quot;활동&quot;</span> 탭을 누른다<span class=st2>이 화면의 시나리오 1개가 여기서 시작한다</span>" in activity,
+            activity.substringAfter("들어오는 길").take(900))
+        assertTrue("<h3>다른 화면에서 바꾸면 <span class=hn><b class=bad>실패 1</b> · 쓰인 화면에서 센다</span></h3>" in activity)
+        assertTrue("href=\"../작품 상세/_screen.html#comment\">작품 상세 › 코멘트 추가와 삭제 › 추가 뒤 활동 탭</a><span class=it><b class=\"mn here\">나의왓챠-활동</b> 코멘트 영역 맨 앞에 나온다." +
+            "<br><span class=reason>녹화 때 있던 것이 화면에 없음: 방금 쓴 코멘트</span>" in activity, activity.substringAfter("다른 화면에서 바꾸면").take(900))
+        assertTrue("시나리오 1 · 확인 2 · 전부 통과" in activity, "the failure is counted where it is written")
+        val own = activity.substringAfter("<h3>이 화면에서</h3>")
+        assertTrue("<b class=fn>포스터</b><span class=fs>포스터를 누르면 그 작품의 <a class=mn href=\"../작품 상세/_screen.html\">작품 상세</a>로 간다.</span><span class=ckn>1스텝</span>" in own, own.take(600))
+        assertTrue("진입" !in own.substringBefore("<script>"), "the way in is not among the screen's scenarios")
+
+        val content = File(day, "작품 상세/_screen.html").readText()
+        assertTrue("<span class=ip>딥링크</span><span class=it><code class=e>app://contents/1</code><span class=st2>이 주소가 바로 연다</span><span class=st2>이 화면의 시나리오 1개가 여기서 시작한다</span>" in content,
+            content.substringAfter("들어오는 길").take(600))
+        assertTrue(">나의왓챠-활동 › 포스터</a>" in content && "다른 화면에서 바꾸면" !in content, "a check that walked here is a way in")
+        assertTrue("<span class=passed>추가</span> · <span class=failed>추가 뒤 활동 탭</span> · <span class=passed>삭제</span><span class=to>→ 나의왓챠-활동</span>" in content)
+        assertTrue("<span class=to>나의왓챠-활동의 진입으로 연다</span>" in content && "<details class=\"ck failed\" open>" in content)
+
+        val search = File(day, "검색/_screen.html").readText()
+        assertTrue("시나리오 1개를 돌리지 못했다" in search && "<span class=ip>진입</span>" in search, search.substringAfter("들어오는 길").take(600))
+
+        val home = File(day, "index.html").readText()
+        assertTrue("<h1>실패 2</h1>" in home && "이 화면의 진입이 실패해 시나리오 1개를 돌리지 못했다." in home, "the way in and the look: the scenario that waited for the way in is not a third")
+        assertTrue("안 돌림</span><a href=\"검색/_screen.html#query\"" !in home, "nor a line of its own")
+        assertTrue("<span>추가 뒤 활동 탭</span><span class=to>→ 나의왓챠-활동</span>" in home)
+        val line = home.split("<tbody").first { "나의왓챠-활동/_screen.html" in it }
+        assertTrue("<code class=e>app://my</code> <span class=dim>→ 진입</span>" in line && "<td class=r>1 <b class=bad>· 실패 1</b></td><td class=r>1</td>" in line, line.take(900))
+        assertTrue("[[" !in home && "[[" !in File(day, "작품 상세/comment.html").readText(), "a mention reads as the screen's name wherever it is not a link")
     }
 }

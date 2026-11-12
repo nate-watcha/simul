@@ -169,6 +169,79 @@ class DeviceControllerTest {
         assertContains(result, "not focusable")
     }
 
+    /** stone 프로필 수정 (2026-11-12): heading, the field labelled by its value, its contentDescription inside it. */
+    private fun linkField(value: String = "https://www.example.com/sky") = arrayOf(
+        el("링크", kind = "label", center = Point(54, 978), bounds = Bounds(30, 961, 78, 995)),
+        el(value, resourceId = "profile_edit_link",
+            interactions = listOf("clickable", "long_clickable", "focusable", "editable"),
+            center = Point(360, 1063), bounds = Bounds(30, 1011, 690, 1115)),
+        el("링크", kind = "label", center = Point(360, 1063), bounds = Bounds(62, 1043, 658, 1083), parentId = 1),
+    )
+
+    @Test
+    fun `type by a field's name reaches the field when the name is on text inside it and on its heading`() {
+        val l = layout(*linkField())
+        val dev = FakeDevice(l, l)
+        var grounded: String? = null
+        val c = DeviceController(dev, settleIntervalMs = 0, listener = object : ActionListener {
+            override fun before(tool: String, args: List<Pair<String, String>>) {}
+            override fun after(tool: String, args: List<Pair<String, String>>, resolved: dev.nate.uiagent.LogicalElement?, result: String) {
+                grounded = resolved?.resourceId
+            }
+        })
+        c.fullLayout()
+
+        val result = c.type("링크", "www.example.com/sea")
+
+        assertEquals(listOf("tap 360 1063", "text www.example.com/sea into profile_edit_link"), dev.gestures)
+        assertContains(result, "Typed \"www.example.com/sea\"")
+        assertEquals("profile_edit_link", grounded, "the trace records the field, not the text")
+    }
+
+    @Test
+    fun `type by a field's name reaches the field when only the text inside it carries the name`() {
+        // the heading has scrolled out of view: one match, and it is text
+        val l = layout(*linkField().drop(1).map { it.copy(parentId = it.parentId?.minus(1)) }.toTypedArray())
+        val dev = FakeDevice(l, l)
+        val c = controller(dev)
+        c.fullLayout()
+
+        val result = c.type("링크", "x")
+
+        assertEquals(listOf("tap 360 1063", "text x into profile_edit_link"), dev.gestures)
+        assertContains(result, "Typed \"x\"")
+    }
+
+    @Test
+    fun `type by a name whose field is not on screen says so and does nothing`() {
+        // the heading alone at the bottom edge, its field still below the fold
+        val l = layout(el("링크", kind = "label", center = Point(54, 1224), bounds = Bounds(30, 1217, 78, 1232)))
+        val dev = FakeDevice(l, l)
+        val c = controller(dev)
+        c.fullLayout()
+
+        val result = c.type("링크", "x")
+
+        assertTrue(dev.gestures.isEmpty())
+        assertContains(result, "is text, not an input field")
+        assertContains(result, "no input field with that name is on the current screen")
+    }
+
+    @Test
+    fun `type stays ambiguous when two fields carry the name`() {
+        val a = linkField()
+        val b = linkField().map { it.copy(center = Point(it.center.x, it.center.y + 200), parentId = it.parentId?.plus(3)) }
+        val l = layout(*a, *b.toTypedArray())
+        val dev = FakeDevice(l, l)
+        val c = controller(dev)
+        c.fullLayout()
+
+        val result = c.type("링크", "x")
+
+        assertTrue(dev.gestures.isEmpty())
+        assertContains(result, "AMBIGUOUS")
+    }
+
     @Test
     fun `scrollToFind finds target after one scroll`() {
         val list = el("목록", resourceId = "recycler_view", interactions = listOf("focusable", "scrollable"),
@@ -184,6 +257,63 @@ class DeviceControllerTest {
         assertEquals(listOf("swipe"), dev.gestures)
         assertContains(result, "FOUND after 1 scroll(s)")
         assertContains(result, "그린북")
+    }
+
+    /** stone 프로필 수정 (2026-11-12): the form's scroll area, and the "링크" heading 15px into it at the bottom. */
+    private val form = el(interactions = listOf("scrollable"), center = Point(360, 696), bounds = Bounds(0, 160, 720, 1232))
+    private val cutHeading = el("링크", kind = "label", center = Point(54, 1224), bounds = Bounds(30, 1217, 78, 1232), parentId = 0)
+
+    @Test
+    fun `scrollToFind scrolls on when the target is cut by the edge the scroll brings content in from`() {
+        val page1 = layout(form, cutHeading)
+        val page2 = layout(form,
+            el("링크", kind = "label", center = Point(54, 978), bounds = Bounds(30, 961, 78, 995), parentId = 0),
+            el("https://a.b", resourceId = "profile_edit_link", interactions = listOf("clickable", "focusable", "editable"),
+                center = Point(360, 1063), bounds = Bounds(30, 1011, 690, 1115), parentId = 0))
+        val dev = FakeDevice(page1, page1, page2, page2)
+        val c = controller(dev)
+        c.fullLayout()
+
+        val result = c.scrollToFind("@x360y696", "링크", "down")
+
+        assertEquals(listOf("swipe"), dev.gestures)
+        assertContains(result, "FOUND after 1 scroll(s) down")
+    }
+
+    @Test
+    fun `scrollToFind takes a cut target as found when the container cannot scroll further`() {
+        val page = layout(form, cutHeading)
+        val dev = FakeDevice(page, page)
+        val c = controller(dev)
+        c.fullLayout()
+
+        val result = c.scrollToFind("@x360y696", "링크", "down")
+
+        assertEquals(listOf("swipe"), dev.gestures)
+        assertContains(result, "FOUND without scrolling")
+    }
+
+    @Test
+    fun `scrollToFind does not take the far edge, a container, or an element outside the scrollable for cut`() {
+        // scrolling up brings content in from the top: the bottom edge cuts nothing that matters
+        val up = layout(form, cutHeading)
+        // a card that fills the scroll area down to its edge, with a title inside
+        val card = layout(form,
+            el("카드", interactions = listOf("clickable"), center = Point(360, 900), bounds = Bounds(0, 600, 720, 1232), parentId = 0),
+            el("제목", kind = "label", center = Point(360, 700), bounds = Bounds(30, 680, 300, 720), parentId = 1))
+        // a button pinned over the scroll area's bottom edge, not inside it
+        val pinned = layout(form, el("완료", interactions = listOf("clickable"), center = Point(360, 1180), bounds = Bounds(0, 1130, 720, 1232)))
+
+        for ((l, target, dir) in listOf(Triple(up, "링크", "up"), Triple(card, "카드", "down"), Triple(pinned, "완료", "down"))) {
+            val dev = FakeDevice(l, l)
+            val c = controller(dev)
+            c.fullLayout()
+
+            val result = c.scrollToFind("@x360y696", target, dir)
+
+            assertTrue(dev.gestures.isEmpty(), "$target $dir")
+            assertContains(result, "FOUND without scrolling")
+        }
     }
 
     @Test
