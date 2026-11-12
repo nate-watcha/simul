@@ -67,9 +67,13 @@ object SitePages {
         companion object { val NONE = RecordFrames(emptyMap(), emptyList()) }
     }
 
+    /** The screens a mention in this run's prose can name: the run's own and those its results say they mention (where a mention ends is not in the text, see [Mentions]). */
+    private var known: Set<String> = emptySet()
+
     fun build(runDir: File, out: File, opts: Options = Options()): Built {
         val run = Site.load(runDir)
         val rows = Site.classify(run)
+        known = rows.flatMap { r -> listOf(Mentions.norm(r.result.feature)) + r.timeline.mentions + r.timeline.tests.flatMap { it.mentions } }.toSet()
         out.mkdirs()
         val frames = rows.associate { it.id to (it.recordTimeline?.let { rec -> copyRecordFrames(rec, out, opts) } ?: RecordFrames.NONE) }
         val pages = rows.map { row -> renderDetail(run, row, rows, out, opts, frames.getValue(row.id)) }
@@ -231,12 +235,14 @@ object SitePages {
         else -> null
     }
     /** What a check says: its title and sentence — a scenario without sections is its own prose (its name without any). */
-    private fun checkText(row: Site.Row, c: Site.Check) = (c.title?.let { "<b>${esc(it)}</b> " } ?: "") + esc(Mentions.plain(c.description).ifEmpty { if (c.title == null) row.title else "" })
+    private fun checkText(row: Site.Row, c: Site.Check) = (c.title?.let { "<b>${esc(it)}</b> " } ?: "") + esc(plain(c.description).ifEmpty { if (c.title == null) row.title else "" })
     /** A step that checks is what the scenario is there to confirm; the others get there. */
     private fun verifies(text: String) = text.endsWith("확인한다") || text.startsWith("Verify", ignoreCase = true)
-    /** Prose with its `[[화면]]` mentions drawn: a link to that screen's page when the run has it ([pages]: screen → its feature), the name alone otherwise. */
+    /** Prose with each `@화면` mention as the screen's name alone, where it is not drawn as a link. */
+    private fun plain(text: String): String = Mentions.parts(text, known).joinToString("") { it.first }
+    /** Prose with its `@화면` mentions drawn: a link to that screen's page when the run has it ([pages]: screen → its feature), the name alone otherwise. */
     private fun mentions(text: String, u: String, pages: Map<String, String>, here: String? = null): String =
-        Mentions.parts(text).joinToString("") { (t, screen) ->
+        Mentions.parts(text, known).joinToString("") { (t, screen) ->
             when {
                 screen == null -> esc(t)
                 screen == here -> "<b class=\"mn here\">${esc(t)}</b>"
@@ -350,7 +356,7 @@ object SitePages {
         step?.let { t.sectionOf(it.n) }?.let { sec ->
             sb.append("<span>›</span><span>${esc(sec.title)}</span>")
             // the screens the failed check is about: the failure shows on their pages too
-            Mentions.of(sec.description).forEach { sb.append("<span class=to>→ ${esc(it)}</span>") }
+            sec.mentions.forEach { sb.append("<span class=to>→ ${esc(it)}</span>") }
         }
         sb.append("</div>")
         if (waiting > 0) sb.append("<div class=reason>이 화면의 진입이 실패해 시나리오 ${waiting}개를 돌리지 못했다.</div>")
@@ -527,7 +533,7 @@ object SitePages {
             val c = checks[0]
             sb.append("<span class=fs>${mentions(c.description, u, pages)}$mark</span><span class=ckn>${if (c.steps.isEmpty()) "" else "${c.steps.size}스텝"}</span></summary><div class=fb>")
         } else {
-            val to = (Mentions.of(t.description) + checks.flatMap { Mentions.of(it.description) }).distinct()
+            val to = (t.mentions + checks.flatMap { it.mentions }).distinct()
             sb.append("<span class=\"fs titles\">${checks.joinToString(" · ") { "<span class=${cls(it.status)}>${esc(it.title ?: "")}</span>" }}${to.joinToString("") { "<span class=to>→ ${esc(it)}</span>" }}$mark</span>")
             sb.append("<span class=ckn>확인 ${checks.size}</span></summary><div class=fb>")
             if (t.description.isNotEmpty()) sb.append("<p class=spd>${mentions(t.description, u, pages)}</p>")
@@ -542,9 +548,10 @@ object SitePages {
         sb.append("<span class=fm>${esc(listOf(stateOf(r), humanDuration(t.durationMs)).filter { it.isNotEmpty() }.joinToString(" · "))} · <a class=more href=\"${attr(u + pageOf(r))}\">스텝·영상 ›</a></span></div></details>")
     }
 
-    /** One check of a scenario with sections: its title and sentence, where it started when that was a place of its own, and its steps on demand. */
+    /** One check of a scenario with sections: its title and sentence, how it started when that was not as the scenario does (its place, its account), and its steps on demand. */
     private fun checkLine(sb: StringBuilder, row: Site.Row, c: Site.Check, u: String, pages: Map<String, String>) {
-        val at = c.deeplink?.let { " <code class=\"e dl\">${esc(it)}</code>" } ?: c.entry?.let { " <span class=to>${esc(it)}의 진입으로 연다</span>" } ?: ""
+        val at = (c.deeplink?.let { " <code class=\"e dl\">${esc(it)}</code>" } ?: c.entry?.let { " <span class=to>${esc(it)}의 진입으로 연다</span>" } ?: "") +
+            (c.appState?.let { " <span class=to>${esc(it)} 계정으로</span>" } ?: "")
         val why = whyNot(row, c)?.takeIf { c.status == "FAILED" && c.steps.none { s -> s.status == "FAILED" } }?.let { "<br><span class=reason>${esc(it)}</span>" } ?: ""
         val head = "${icon(c.status)}<span class=ckt>${c.title?.let { "<b>${esc(it)}</b>" } ?: ""}${mentions(c.description, u, pages)}$at$why</span>"
         if (c.steps.isEmpty()) { sb.append("<div class=\"ck flat ${cls(c.status)}\">$head</div>"); return }
@@ -617,7 +624,7 @@ object SitePages {
         }
 
         sb.append("<span class=right>${avatar(r.owner)}${if (r.owner != null) " · " else ""}${esc(hm(t.startedAt))} · ${esc(humanDuration(t.durationMs))}</span></div>")
-        if (r.description.isNotEmpty()) sb.append("<p class=desc>${esc(Mentions.plain(r.description))}</p>")
+        if (r.description.isNotEmpty()) sb.append("<p class=desc>${esc(plain(r.description))}</p>")
         if (rec != null) {
             val f = rec.failedStepOf
             sb.append("<div class=reason>LLM 녹화 ${esc(hm(rec.startedAt))} · ${esc(humanDuration(rec.durationMs))} — ${esc(stoppedAt(rec))}${f?.reason?.let { " · ${esc(it)}" } ?: ""} — 아래가 그 타임라인</div>")
@@ -757,7 +764,7 @@ object SitePages {
                 sec.preparation -> "모델이 준비 · ${if (did == 0) "한 일 없음" else "조작 ${did}번"} · $took"
                 else -> "${steps.size}스텝 · $took"
             } + "</span></summary><div class=sbody>")
-            if (sec.description.isNotEmpty()) sb.append("<p class=sdesc>${esc(Mentions.plain(sec.description))}</p>")
+            if (sec.description.isNotEmpty()) sb.append("<p class=sdesc>${esc(plain(sec.description))}</p>")
             if (sec.preparation) sb.append("<div class=snote>테스트가 아니라 준비입니다. 지난 실행이 남긴 상태가 무엇이든 아래 구간이 같은 상태에서 시작하도록, 재생에서도 모델이 화면을 보고 필요한 만큼만 조작합니다.</div>")
             // the section's own player with its steps; a section that did not run has nothing to play
             val playing = players?.takeIf { ran }

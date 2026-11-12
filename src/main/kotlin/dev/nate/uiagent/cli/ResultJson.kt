@@ -74,6 +74,8 @@ object ResultJson {
         val env: Env,
         /** How the scenario is entered (its `setup:`); null when it declares none. */
         val setup: Setup? = null,
+        /** The screens [description] mentions (`@화면`). */
+        val mentions: List<String> = emptyList(),
     )
 
     /**
@@ -115,6 +117,7 @@ object ResultJson {
             put("file", meta.file)
             put("owner", meta.owner?.let(::JsonPrimitive) ?: JsonNull)
             put("description", meta.description)
+            if (meta.mentions.isNotEmpty()) put("mentions", buildJsonArray { meta.mentions.forEach { add(JsonPrimitive(it)) } })
             meta.setup?.let { s ->
                 put("setup", buildJsonObject {
                     s.deeplink?.let { put("deeplink", it) }
@@ -156,9 +159,11 @@ object ResultJson {
                         put("title", sec.title)
                         put("description", fillValues(sec.description, r.values))
                         if (sec.preparation) put("preparation", true)
-                        // where the section started when that was not the scenario's entry
+                        if (sec.mentions.isNotEmpty()) put("mentions", buildJsonArray { sec.mentions.forEach { add(JsonPrimitive(it)) } })
+                        // the section's own `setup:` — where and as whom it started when that was not as the scenario does
                         sec.open?.deeplink?.let { put("deeplink", it) }
                         sec.open?.screen?.let { put("entry", it) }
+                        sec.open?.appState?.let { put("app_state", it) }
                         put("status", sec.status.name)
                         put("from", sec.steps.first)
                         put("to", sec.steps.last)
@@ -219,6 +224,8 @@ object ResultJson {
         val file: String,
         val owner: String?,
         val description: String,
+        /** The screens [description] mentions (`@화면`). */
+        val mentions: List<String> = emptyList(),
         val traceRecordedAt: String?,
         /** PASSED | FAILED | SKIPPED_SETUP */
         val status: String,
@@ -259,10 +266,14 @@ object ResultJson {
      */
     data class Section(
         val title: String, val description: String, val preparation: Boolean, val status: String, val from: Int, val to: Int,
-        /** The address the section was opened at instead of the scenario's entry (`deeplink:` under its heading). */
+        /** The address the section was opened at instead of the scenario's entry (its `setup.deeplink`). */
         val deeplink: String? = null,
-        /** The screen whose way in the section started from instead of the scenario's entry (`entry:` under its heading). */
+        /** The screen whose way in the section started from instead of the scenario's entry (its `setup.entry`). */
         val entry: String? = null,
+        /** The account state the section ran as instead of the scenario's (its `setup.appState`). */
+        val appState: String? = null,
+        /** The screens its sentence mentions (`@화면`). */
+        val mentions: List<String> = emptyList(),
     ) {
         /** The section started somewhere of its own: it went to look at another place rather than walk there. */
         val opened: Boolean get() = deeplink != null || entry != null
@@ -320,6 +331,7 @@ object ResultJson {
             file = o.str("file") ?: "",
             owner = o.str("owner"),
             description = o.str("description") ?: "",
+            mentions = o.strList("mentions"),
             traceRecordedAt = o.str("trace_recorded_at"),
             status = o.str("status") ?: "FAILED",
             failedStep = o.int("failed_step"),
@@ -362,7 +374,7 @@ object ResultJson {
             sections = o.arr("sections")?.mapNotNull { el ->
                 val sec = el as? JsonObject ?: return@mapNotNull null
                 Section(sec.str("title") ?: return@mapNotNull null, sec.str("description") ?: "", sec.bool("preparation") == true,
-                    sec.str("status") ?: "SKIPPED", sec.int("from") ?: 0, sec.int("to") ?: 0, sec.str("deeplink"), sec.str("entry"))
+                    sec.str("status") ?: "SKIPPED", sec.int("from") ?: 0, sec.int("to") ?: 0, sec.str("deeplink"), sec.str("entry"), sec.str("app_state"), sec.strList("mentions"))
             } ?: emptyList(),
         )
     }

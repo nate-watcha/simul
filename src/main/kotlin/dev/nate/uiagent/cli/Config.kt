@@ -88,8 +88,10 @@ data class SimulConfig(
      * or null — when the scenario declares no state, and also when `states:` has no line for it
      * (a bare snapshot name is not background the model can use, so nothing is sent).
      */
-    fun accountState(scenario: Scenario): String? =
-        scenario.precondition?.let { s -> states[s]?.let { "$s — $it" } }
+    fun accountState(scenario: Scenario): String? = scenario.precondition?.let(::accountLine)
+
+    /** The ACCOUNT STATE line of [state]: `<state> — <description>`, null when `states:` has no line for it. */
+    fun accountLine(state: String): String? = states[state]?.let { "$state — $it" }
 
     companion object {
         fun load(file: File, env: (String) -> String? = System::getenv): SimulConfig {

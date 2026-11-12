@@ -4,6 +4,7 @@ import dev.nate.uiagent.captureStdout
 import dev.nate.uiagent.tempDir
 import java.io.File
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
@@ -202,5 +203,55 @@ class CliProjectTest {
         assertFailsWith<IllegalArgumentException> { p.load(File(dir, "posters.md")) }
         File(dir, "_entry.md").writeText("---\nsetup:\n  deeplink: app://my\n---\n## 가\n1. 스텝\n")
         assertFailsWith<IllegalArgumentException> { p.load(File(dir, "_entry.md")) }
+    }
+
+    @Test
+    fun `mentions are resolved against the project's screens, and a scenario or a section may start from another screen's way in`() {
+        val root = makeProject()
+        val activity = File(root, ".simul/scenarios/나의왓챠-활동").also { it.mkdirs() }
+        File(activity, "_entry.md").writeText("---\nsetup:\n  appState: member\n  deeplink: app://my\n---\n1. \"활동\" 탭을 누른다\n")
+        val edit = File(root, ".simul/scenarios/프로필 수정").also { it.mkdirs() }
+        File(edit, "link.md").writeText("""
+            ---
+            name: 링크
+            setup:
+              appState: member
+              deeplink: app://edit
+            ---
+            링크를 고치면 @나의왓챠-활동에도 보인다.
+
+            ## 저장
+            1. "완료"를 누른다
+
+            ## 다시 들어와도 유지
+
+            setup:
+              entry: 나의왓챠-활동
+              appState: member-empty
+
+            @나의왓챠-활동의 링크가 바뀌어 있고, @프로필 수정의 입력칸에도 그대로다.
+            1. "링크"가 보이는지 확인한다
+        """.trimIndent())
+        val issue = File(root, ".simul/scenarios/이슈").also { it.mkdirs() }
+        File(issue, "from-activity.md").writeText("---\nname: 활동에서 시작\nsetup:\n  entry: 나의왓챠-활동\n---\n1. 스텝\n")
+        val p = SimulProject(root)
+
+        val link = p.load(File(edit, "link.md"))
+        assertEquals(listOf("나의왓챠-활동"), link.mentions)
+        assertEquals(listOf(emptyList(), listOf("나의왓챠-활동", "프로필 수정")), link.sections.map { it.mentions }, "a name with a space, a particle right after: cut by the screens there are")
+        assertEquals(Scenario.Open(screen = "나의왓챠-활동", appState = "member-empty"), link.sections[1].open)
+        assertEquals(listOf("_entry.md", "link.md"), withEntries(p, listOf(File(edit, "link.md") to link), RunMode.LLM).map { it.first.name }, "the way in a section starts from is recorded first")
+
+        // the file's setup names the screen: it starts as a scenario beside that screen's way in does
+        val fromActivity = p.load(File(issue, "from-activity.md"))
+        assertEquals("나의왓챠-활동" to "app://my", fromActivity.via to fromActivity.setup?.deeplink)
+        assertEquals("member", fromActivity.setup?.appState)
+        assertEquals(0, cliMain(arrayOf("run", "프로필 수정/link.md", "--dry-run"), root))
+
+        // an `@` that names no screen, and an entry that names a screen without a way in, are refused
+        File(issue, "typo.md").writeText("@나의왓챠-활돋에도 보인다.\n\n1. 스텝\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(issue, "typo.md")) }.message!!, "@나의왓챠-활돋에도 names no screen")
+        File(issue, "typo.md").writeText("---\nsetup:\n  entry: 프로필 수정\n---\n1. 스텝\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(issue, "typo.md")) }.message!!, "has no _entry.md")
     }
 }

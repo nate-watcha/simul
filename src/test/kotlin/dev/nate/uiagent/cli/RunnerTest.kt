@@ -600,7 +600,7 @@ class RunnerTest {
     fun `a failed look at another screen does not skip the sections after it, and a section with a place of its own starts there`() {
         // not following: "팔로우 취소" is not there to tap, so the first section fails
         val looking = follow.copy(sections = listOf(
-            Scenario.Section("팔로우 취소", "[[다른 화면]]에서도 취소로 보인다.", 0, 2, open = Scenario.Open(deeplink = "app://elsewhere")),
+            Scenario.Section("팔로우 취소", "@다른 화면에서도 취소로 보인다.", 0, 2, open = Scenario.Open(deeplink = "app://elsewhere"), mentions = listOf("다른 화면")),
             Scenario.Section("팔로우 추가", "", 2, 2),
         ))
         val h = followHarness(FollowApp(following = false))
@@ -612,11 +612,38 @@ class RunnerTest {
         assertEquals(listOf(StepStatus.FAILED, StepStatus.SKIPPED, StepStatus.PASSED, StepStatus.PASSED), result.steps.map { it.status })
         assertEquals(listOf("com.example|false|app://elsewhere", "com.example|false|app://users/1"), h.ops.reopens, "the first section is opened at its own address, the next at the scenario's")
         assertEquals(Scenario.Open(deeplink = "app://elsewhere"), result.sections[0].open)
+        assertEquals(listOf("다른 화면"), result.sections[0].mentions)
         assertNull(result.updatedTrace, "a failed scenario records no trace")
 
         // a section the others build on still ends the scenario there
         val plain = followHarness(FollowApp(following = false)).runner.run(follow, trace = null, mode = RunMode.LLM)
         assertEquals(listOf(StepStatus.FAILED, StepStatus.SKIPPED), plain.sections.map { it.status })
+    }
+
+    @Test
+    fun `a section with an account of its own is restored as it, and the scenario's account is restored for the section after`() {
+        val asOther = follow.copy(
+            setup = follow.setup!!.copy(appState = "member"),
+            steps = follow.steps + "\"팔로우 취소\"가 보이는지 확인한다",
+            sections = listOf(
+                Scenario.Section("팔로우 취소", "", 0, 2),
+                // as another account, at the scenario's own place
+                Scenario.Section("남이 보면", "", 2, 2, open = Scenario.Open(appState = "member-empty")),
+                Scenario.Section("다시 나로", "", 4, 1),
+            ),
+        )
+        val h = followHarness(FollowApp(following = true))
+
+        val result = h.runner.run(asOther, trace = null, mode = RunMode.LLM)
+
+        assertEquals(StepStatus.PASSED, result.status, result.steps.firstOrNull { it.status == StepStatus.FAILED }?.reason)
+        assertEquals(
+            listOf("com.example|member|false|false|app://users/1", "com.example|member-empty|false|false|app://users/1", "com.example|member|false|false|app://users/1"),
+            h.ops.setups, "the scenario's account, the section's, and the scenario's again — each a restore",
+        )
+        assertTrue(h.ops.reopens.isEmpty(), "no section here starts in the account the one before it left")
+        assertEquals(listOf(null, "member-empty", null), h.executor.accounts, "the model is told whom the section runs as")
+        assertEquals(Scenario.Open(appState = "member-empty"), result.sections[1].open)
     }
 }
 

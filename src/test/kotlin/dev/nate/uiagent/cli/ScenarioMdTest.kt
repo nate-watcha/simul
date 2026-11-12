@@ -3,7 +3,9 @@ package dev.nate.uiagent.cli
 import dev.nate.uiagent.device.DevicePins
 import dev.nate.uiagent.device.DeviceSetting
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -288,7 +290,7 @@ class ScenarioMdTest {
     }
 
     @Test
-    fun `a section may start somewhere of its own, and a sentence may mention another screen`() {
+    fun `a section may have a setup of its own, and a sentence may mention another screen`() {
         val s = ScenarioMd.parse("""
             작품 상세에서 코멘트를 쓰고 지우기.
 
@@ -297,31 +299,76 @@ class ScenarioMdTest {
             1. "등록"을 누른다
 
             ## 추가 뒤 활동 탭
-            entry: 나의왓챠-활동
-            [[나의왓챠-활동]] 코멘트 영역 맨 앞에 나온다.
+
+            setup:
+              entry: 나의왓챠-활동
+
+            @나의왓챠-활동 코멘트 영역 맨 앞에 나온다.
             1. "방금 쓴 코멘트"가 보이는지 확인한다
 
             ## 추가 뒤 코멘트 목록
-            deeplink: app://users/1/comments
-            [[활동상세]] 코멘트 목록 맨 위에 나온다.
+            setup:
+              deeplink: app://users/1/comments
+              appState: member-empty
+            @활동상세 코멘트 목록 맨 위에 나온다.
             1. "방금 쓴 코멘트"가 보이는지 확인한다
 
+            ## 남이 보면
+            setup:
+              appState: guest
+            로그인하지 않으면 코멘트 쓰기가 없다.
+            1. "코멘트 쓰기"가 없는지 확인한다
+
             ## 헤더
-            헤더를 누르면 [[활동상세]]로 간다.
+            헤더를 누르면 @활동상세로 간다.
             1. "전체 보기"를 누른다
         """.trimIndent())
 
-        assertEquals(listOf(null, Scenario.Open(screen = "나의왓챠-활동"), Scenario.Open(deeplink = "app://users/1/comments"), null), s.sections.map { it.open })
-        assertEquals("[[나의왓챠-활동]] 코멘트 영역 맨 앞에 나온다.", s.sections[1].description, "the line that says where it starts is no part of its sentence")
-        assertEquals(listOf(false, true, true, true), s.sections.map { it.looksElsewhere }, "a place of its own or a mention makes it a look at another screen")
+        assertEquals(
+            listOf(null, Scenario.Open(screen = "나의왓챠-활동"), Scenario.Open(deeplink = "app://users/1/comments", appState = "member-empty"), Scenario.Open(appState = "guest"), null),
+            s.sections.map { it.open },
+        )
+        assertEquals("@나의왓챠-활동 코멘트 영역 맨 앞에 나온다.", s.sections[1].description, "the setup block is no part of its sentence")
+        assertEquals(listOf(false, true, true, true, true), s.sections.map { it.looksElsewhere }, "a setup of its own or a mention makes it a look from somewhere else")
+        assertEquals(listOf(true, true, false), s.sections.subList(1, 4).map { it.open!!.elsewhere }, "another account alone is the scenario's own place")
 
-        assertEquals(listOf("나의왓챠-활동", "활동상세"), Mentions.of("[[나의왓챠-활동]]과 [[ 활동상세 ]], 다시 [[활동상세]]"))
-        assertEquals("헤더를 누르면 활동상세로 간다.", Mentions.plain(s.sections[3].description))
-        assertEquals(listOf("헤더를 누르면 " to null, "활동상세" to "활동상세", "로 간다." to null), Mentions.parts(s.sections[3].description))
+        // the block is the first thing under the heading, its keys are the three a section may change, each once and with a value
+        assertEquals(null, ScenarioMd.parse("## 가\n설명.\nsetup:\n  deeplink: app://x\n1. 스텝").sections[0].open, "after the sentence it is prose")
+        for (bad in listOf(
+            "## 가\nsetup:\n  launch: true\n1. 스텝",               // the file's
+            "## 가\nsetup:\n1. 스텝",                                 // empty
+            "## 가\nsetup:\n  entry: 화면\n  deeplink: app://x\n1. 스텝", // one place
+            "## 가\nsetup:\n  entry:\n1. 스텝",                      // no value
+            "## 가\nsetup:\n  appState: 회원 계정\n1. 스텝",          // not a state name
+            "## 준비\nsetup:\n  entry: 다른화면\n1. 지운다\n\n## 가\n1. 스텝", // the preparation is the scenario's own entry's
+        )) assertFailsWith<IllegalArgumentException>(bad) { ScenarioMd.parse(bad) }
+
+        // how a section's start and a mention were written before: said, not read as prose
+        assertContains(assertFailsWith<IllegalArgumentException> { ScenarioMd.parse("## 가\nentry: 화면\n설명.\n1. 스텝") }.message!!, "`setup:` block")
+        assertContains(assertFailsWith<IllegalArgumentException> { ScenarioMd.parse("[[화면]]에서도 보인다.\n\n1. 스텝") }.message!!, "`@화면`")
+    }
+
+    @Test
+    fun `the file's setup may name a screen to start from, in place of an address`() {
+        val s = ScenarioMd.parse("---\nsetup:\n  appState: member\n  entry: 나의왓챠-활동\n---\n1. 스텝")
+        assertEquals("나의왓챠-활동", s.setup?.entry)
+        assertFailsWith<IllegalArgumentException> { ScenarioMd.parse("---\nsetup:\n  entry: 화면\n  deeplink: app://x\n---\n1. 스텝") }
+        assertFailsWith<IllegalArgumentException> { ScenarioMd.parse("---\nsetup:\n  entry: 화면\n  launch: true\n---\n1. 스텝") }
+    }
+
+    @Test
+    fun `a mention ends where the longest known screen name does`() {
+        val screens = listOf("나의왓챠-활동", "활동상세", "프로필 수정", "프로필")
+        assertEquals(listOf("나의왓챠-활동", "활동상세"), Mentions.of("@나의왓챠-활동과 @활동상세, 다시 @활동상세", screens))
+        assertEquals(listOf("헤더를 누르면 " to null, "활동상세" to "활동상세", "로 간다." to null), Mentions.parts("헤더를 누르면 @활동상세로 간다.", screens))
+        assertEquals(listOf("프로필 수정"), Mentions.of("@프로필 수정의 링크가 바뀐다.", screens), "a name with a space, a particle right after it: the longest name wins")
         assertEquals(Mentions.norm("활동상세"), Mentions.norm(java.text.Normalizer.normalize("활동상세", java.text.Normalizer.Form.NFD)), "a directory name as macOS hands it out is the same screen")
+        assertEquals(listOf("활동상세"), Mentions.of("@" + java.text.Normalizer.normalize("활동상세", java.text.Normalizer.Form.NFD) + "에 나온다", screens))
 
-        // the line is the first under the heading; later it is prose. The preparation is the scenario's own entry's.
-        assertEquals(null, ScenarioMd.parse("## 가\n설명.\ndeeplink: app://x\n1. 스텝").sections[0].open)
-        assertFailsWith<IllegalArgumentException> { ScenarioMd.parse("## 준비\nentry: 다른화면\n1. 지운다\n\n## 가\n1. 스텝") }
+        // an address is no mention; an `@` that names no screen is left as text and reported as unknown
+        assertFalse(Mentions.has("simul201@watcha.com으로 로그인한 계정"))
+        assertTrue(Mentions.has("(@활동상세)"))
+        assertEquals(listOf("없는화면에도" to null).map { it.first }, Mentions.unknown("@없는화면에도 @활동상세에도 보인다", screens))
+        assertEquals(listOf("@없는화면 그대로" to null), Mentions.parts("@없는화면 그대로", screens))
     }
 }
