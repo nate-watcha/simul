@@ -344,24 +344,25 @@ class SiteTest {
         val day = File(runs, "2026-11-12")
         fun st(n: Int, text: String, status: StepStatus, reason: String? = null) =
             StepReport(n, text, status, if (status == StepStatus.SKIPPED) null else "replay", emptyList(), emptyList(), reason, 500, emptyList(), startedMs = n * 1000L)
-        fun write(feature: String, name: String, title: String, prose: String, setup: ResultJson.Setup, steps: List<StepReport>, sections: List<SectionReport> = emptyList()) {
+        fun write(feature: String, name: String, title: String, prose: String, setup: ResultJson.Setup, steps: List<StepReport>, sections: List<SectionReport> = emptyList(), mentions: List<String> = emptyList()) {
             val dir = File(day, "$feature/$name").apply { mkdirs() }
             val status = if (steps.any { it.status == StepStatus.FAILED }) StepStatus.FAILED else StepStatus.PASSED
             ResultJson.write(ScenarioRunResult(title, status, steps, null, 5000, startedAtMs = 1_794_000_000_000L, reportDir = dir, sections = sections), "replay",
-                ResultJson.Meta(feature, name, null, "$feature/$name.md", title, null, prose, "2026-11-12", ResultJson.Env("6.4.0", "sdk", "1.1"), setup = setup), dir)
+                ResultJson.Meta(feature, name, null, "$feature/$name.md", title, null, prose, "2026-11-12", ResultJson.Env("6.4.0", "sdk", "1.1"), setup = setup, mentions = mentions), dir)
         }
         // 나의왓챠-활동: a way in with a step that moves; a scenario that starts from it and walks to 작품 상세
         write("나의왓챠-활동", "_entry", "_entry", "나의 왓챠에서 \"활동\" 탭을 누르면 열린다.", ResultJson.Setup("app://my", false, "member"),
             listOf(st(1, "\"활동\" 탭을 누른다", StepStatus.PASSED), st(2, "\"활동\" 탭이 selected 상태인지 확인한다", StepStatus.PASSED)))
-        write("나의왓챠-활동", "posters", "포스터", "포스터를 누르면 그 작품의 [[작품 상세]]로 간다.", ResultJson.Setup("app://my", false, "member", via = "나의왓챠-활동"),
-            listOf(st(1, "\"재혼 황후\" 포스터를 누른다", StepStatus.PASSED)))
+        write("나의왓챠-활동", "posters", "포스터", "포스터를 누르면 그 작품의 @작품 상세로 간다.", ResultJson.Setup("app://my", false, "member", via = "나의왓챠-활동"),
+            listOf(st(1, "\"재혼 황후\" 포스터를 누른다", StepStatus.PASSED)), mentions = listOf("작품 상세"))
         // 작품 상세: its address opens it. A comment is added, looked for on the activity tab — not there — and removed all the same.
         write("작품 상세", "_entry", "_entry", "", ResultJson.Setup("app://contents/1", false, "member"), listOf(st(1, "작품 제목이 보이는지 확인한다", StepStatus.PASSED)))
         write("작품 상세", "comment", "코멘트 추가와 삭제", "작품 상세에서 코멘트를 쓰고 지우기.", ResultJson.Setup("app://contents/1", false, "member", via = "작품 상세"),
             listOf(st(1, "\"등록\"을 누른다", StepStatus.PASSED), st(2, "\"방금 쓴 코멘트\"가 보이는지 확인한다", StepStatus.FAILED, "replay broken: evidence not on screen: 방금 쓴 코멘트"),
                 st(3, "\"삭제\"를 누른다", StepStatus.PASSED)),
             listOf(SectionReport("추가", "코멘트를 써서 등록하면 보인다.", StepStatus.PASSED, 1..1),
-                SectionReport("추가 뒤 활동 탭", "[[나의왓챠-활동]] 코멘트 영역 맨 앞에 나온다.", StepStatus.FAILED, 2..2, open = Scenario.Open(screen = "나의왓챠-활동")),
+                SectionReport("추가 뒤 활동 탭", "@나의왓챠-활동 코멘트 영역 맨 앞에 나온다.", StepStatus.FAILED, 2..2,
+                    open = Scenario.Open(screen = "나의왓챠-활동", appState = "member-empty"), mentions = listOf("나의왓챠-활동")),
                 SectionReport("삭제", "코멘트를 지우면 사라진다.", StepStatus.PASSED, 3..3)))
         // 검색: its way in failed, so its scenario was not run — one failure, not two
         write("검색", "_entry", "_entry", "", ResultJson.Setup("app://search", false, "member"), listOf(st(1, "\"검색\" 탭을 누른다", StepStatus.FAILED, "replay broken: evidence not on screen: 최근 검색어")))
@@ -393,7 +394,8 @@ class SiteTest {
             content.substringAfter("들어오는 길").take(600))
         assertTrue(">나의왓챠-활동 › 포스터</a>" in content && "다른 화면에서 바꾸면" !in content, "a check that walked here is a way in")
         assertTrue("<span class=passed>추가</span> · <span class=failed>추가 뒤 활동 탭</span> · <span class=passed>삭제</span><span class=to>→ 나의왓챠-활동</span>" in content)
-        assertTrue("<span class=to>나의왓챠-활동의 진입으로 연다</span>" in content && "<details class=\"ck failed\" open>" in content)
+        assertTrue("<span class=to>나의왓챠-활동의 진입으로 연다</span> <span class=to>member-empty 계정으로</span>" in content && "<details class=\"ck failed\" open>" in content,
+            "a check's own setup: where it started and as whom")
 
         val search = File(day, "검색/_screen.html").readText()
         assertTrue("시나리오 1개를 돌리지 못했다" in search && "<span class=ip>진입</span>" in search, search.substringAfter("들어오는 길").take(600))
@@ -404,6 +406,8 @@ class SiteTest {
         assertTrue("<span>추가 뒤 활동 탭</span><span class=to>→ 나의왓챠-활동</span>" in home)
         val line = home.split("<tbody").first { "나의왓챠-활동/_screen.html" in it }
         assertTrue("<code class=e>app://my</code> <span class=dim>→ 진입</span>" in line && "<td class=r>1 <b class=bad>· 실패 1</b></td><td class=r>1</td>" in line, line.take(900))
-        assertTrue("[[" !in home && "[[" !in File(day, "작품 상세/comment.html").readText(), "a mention reads as the screen's name wherever it is not a link")
+        val steps = File(day, "작품 상세/comment.html").readText()
+        assertTrue("@나의왓챠-활동" !in home && "@나의왓챠-활동" !in content && "@나의왓챠-활동" !in steps, "a mention reads as the screen's name wherever it is not a link")
+        assertTrue("나의왓챠-활동 코멘트 영역 맨 앞에 나온다." in steps)
     }
 }

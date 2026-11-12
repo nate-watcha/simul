@@ -33,29 +33,52 @@ class SimulProject(val appRoot: File) {
     fun entryFileOf(md: File): File? =
         File(md.absoluteFile.parentFile, ENTRY_FILE).takeIf { it.isFile && md.name != ENTRY_FILE && screenOf(md).isNotEmpty() }
 
+    /** Every screen of the project: the group directories that hold a scenario, named as [screenOf] names them. */
+    fun screens(): List<String> = scenarios().map(::screenOf).filter { it.isNotEmpty() }.distinct()
+
     /**
      * [md] as it runs. A screen's directory may hold `_entry.md` — where the app is opened to get to that
-     * screen and the steps from there (none when the address opens it). A scenario beside it that opens
-     * nothing itself (no `setup.deeplink`, no `setup.launch`) starts from that way in: it takes the entry's
-     * setup — keeping an account of its own when it names one — and the runner plays the entry's steps from
-     * the entry's trace before the scenario's first step. A scenario with its own address runs as it always did.
+     * screen and the steps from there (none when the address opens it). A scenario starts from a screen's way
+     * in when its `setup` says `entry: <화면>`, or when it opens nothing itself (no `setup.deeplink`, no
+     * `setup.launch`) and its own directory has one: it takes the entry's setup — keeping an account of its
+     * own when it names one — and the runner plays the entry's steps from the entry's trace before the
+     * scenario's first step. A scenario with its own address runs as it always did.
+     *
+     * Its `@화면` mentions are resolved here, against the project's screens: one that names none is refused.
      */
     fun load(md: File): Scenario {
-        val scenario = ScenarioMd.parse(md)
+        val scenario = mentioned(ScenarioMd.parse(md))
         // every screen's way in is the same file name: unnamed, it is called by its screen in logs, summaries and report directories
         if (md.name == ENTRY_FILE) return scenario.also(::checkEntry).let { if (it.name == md.nameWithoutExtension) it.copy(name = entryName(screenOf(md))) else it }
         val own = scenario.setup
-        val entryFile = entryFileOf(md)?.takeIf { own?.deeplink == null && own?.launch != true } ?: return scenario
-        val entry = ScenarioMd.parse(entryFile).also(::checkEntry).setup!!
+        val screen = own?.entry
+            ?: entryFileOf(md)?.takeIf { own?.deeplink == null && own?.launch != true }?.let { screenOf(md) }
+            ?: return scenario
+        val entry = (entryOf(screen) ?: throw IllegalArgumentException("scenario '${scenario.name}': setup.entry '$screen' — that screen has no $ENTRY_FILE")).setup
         val ownAccount = own?.appState != null || own?.clearData == true || scenario.states.isNotEmpty()
         return scenario.copy(
-            via = screenOf(md),
+            via = screen,
             setup = Scenario.Setup(
                 deeplink = entry.deeplink, launch = entry.launch,
                 clearData = if (ownAccount) own?.clearData == true else entry.clearData,
                 appState = if (ownAccount) own?.appState else entry.appState,
                 device = own?.device?.takeIf { it != DevicePins.NONE } ?: entry.device,
             ),
+        )
+    }
+
+    /** [scenario] with the screens its prose and its sections' sentences mention. */
+    private fun mentioned(scenario: Scenario): Scenario {
+        val written = listOf(scenario.description) + scenario.sections.map { it.description }
+        if (written.none(Mentions::has)) return scenario
+        val screens = screens()
+        val unknown = written.flatMap { Mentions.unknown(it, screens) }.distinct()
+        require(unknown.isEmpty()) {
+            "scenario '${scenario.name}': ${unknown.joinToString(", ") { "@$it" }} names no screen (screens: ${screens.joinToString(", ")})"
+        }
+        return scenario.copy(
+            mentions = Mentions.of(scenario.description, screens),
+            sections = scenario.sections.map { it.copy(mentions = Mentions.of(it.description, screens)) },
         )
     }
 

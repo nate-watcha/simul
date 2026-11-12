@@ -67,6 +67,10 @@ object Site {
         val deeplink: String? = null,
         /** The screen whose way in the check's section started from instead of the scenario's entry. */
         val entry: String? = null,
+        /** The account state the check's section ran as instead of the scenario's. */
+        val appState: String? = null,
+        /** The screens [description] mentions (`@화면`). */
+        val mentions: List<String> = emptyList(),
     ) {
         /** The check started somewhere of its own: it went to look at a place rather than walk there. */
         val opened: Boolean get() = deeplink != null || entry != null
@@ -74,7 +78,7 @@ object Site {
 
     /**
      * A check that says something about another screen: its sentence — or its scenario's prose, for all the
-     * scenario's checks ([check] null) — mentions [to] (`[[화면]]`). It is written, run and counted on the screen
+     * scenario's checks ([check] null) — mentions [to] (`@화면`). It is written, run and counted on the screen
      * [from]; the report shows it on [to]'s page too. [look] tells the two kinds apart by how the check got there:
      * opened at a place of its own, it looked at what a change elsewhere left on [to]; on foot, it is a way to [to].
      */
@@ -85,8 +89,8 @@ object Site {
         screen.scenarios.flatMap { row ->
             val t = row.timeline
             val whole = when (row.kind) { Kind.FAILED -> "FAILED"; Kind.PASSED -> "PASSED"; Kind.SETUP -> "NONE" }
-            Mentions.of(t.description).map { Link(screen, row, null, it, t.description, whole, look = false) } +
-                row.checks.filter { it.title != null }.flatMap { c -> Mentions.of(c.description).map { Link(screen, row, c, it, c.description, c.status, c.opened) } }
+            t.mentions.map { Link(screen, row, null, it, t.description, whole, look = false) } +
+                row.checks.filter { it.title != null }.flatMap { c -> c.mentions.map { Link(screen, row, c, it, c.description, c.status, c.opened) } }
         }
     }
 
@@ -132,9 +136,9 @@ object Site {
         val checks: List<Check> get() {
             val t = timeline
             if (t.tests.isNotEmpty()) return t.tests.map { sec ->
-                Check(sec.title, sec.description, if (kind == Kind.SETUP) "NONE" else sec.status, t.steps.filter { it.n in sec.from..sec.to }, sec.deeplink, sec.entry)
+                Check(sec.title, sec.description, if (kind == Kind.SETUP) "NONE" else sec.status, t.steps.filter { it.n in sec.from..sec.to }, sec.deeplink, sec.entry, sec.appState, sec.mentions)
             }
-            return listOf(Check(null, t.description, when (kind) { Kind.FAILED -> "FAILED"; Kind.PASSED -> "PASSED"; Kind.SETUP -> "NONE" }, t.steps))
+            return listOf(Check(null, t.description, when (kind) { Kind.FAILED -> "FAILED"; Kind.PASSED -> "PASSED"; Kind.SETUP -> "NONE" }, t.steps, mentions = t.mentions))
         }
         /** The replay never ran this scenario (no trace, no steps) — there is nothing of it but the summary line. */
         val replayed get() = result.steps.isNotEmpty()

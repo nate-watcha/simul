@@ -36,6 +36,23 @@ import java.io.File
  * ## 팔로우 추가
  * 1. "팔로우"를 누른다
  * ```
+ *
+ * What is written where. The frontmatter is the file's: `name`, `tags`, `values`, `states`, and `setup` — as
+ * whom and where every section starts (`appState`, and one of `deeplink`, `launch`, `entry`). A section that
+ * starts otherwise says so in a `setup:` block of its own right under its heading, with the same keys
+ * (`appState`, `deeplink`, `entry`) and the same meaning, for that section alone:
+ *
+ * ```
+ * ## 다시 들어와도 유지
+ *
+ * setup:
+ *   entry: 나의왓챠-프로필헤더
+ *
+ * @나의왓챠-프로필헤더 링크가 저장한 주소로 바뀌어 있다.
+ * 1. "https://$link"가 보이는지 확인한다
+ * ```
+ *
+ * `@화면` in the prose or a section's sentence is a mention ([Mentions]) — the report's, not the runner's.
  */
 data class Scenario(
     val name: String,
@@ -65,6 +82,8 @@ data class Scenario(
      * opens the app by itself.
      */
     val via: String? = null,
+    /** The screens [description] mentions (`@화면`), as [SimulProject.load] resolved them against the project's screens. */
+    val mentions: List<String> = emptyList(),
 ) {
     /** The app state this scenario requires: appState name, "guest" for clearData, or null
      *  (undeclared — runs against whatever state the device happens to be in). */
@@ -105,6 +124,12 @@ data class Scenario(
          * baseline, applied before the launch and put back when the scenario ends (see DevicePins).
          */
         val device: DevicePins = DevicePins.NONE,
+        /**
+         * `entry: <화면>` — start from that screen's way in (its `_entry.md`) instead of an address of one's own.
+         * Left out, a scenario that opens nothing itself starts from the way in of its own directory when it has
+         * one ([SimulProject.load] resolves either into [Scenario.via] and the entry's address).
+         */
+        val entry: String? = null,
     )
 
     /** One numbered step: the command and its `::` criteria, each optionally bound to a state. */
@@ -141,23 +166,30 @@ data class Scenario(
      */
     data class Section(
         val title: String, val description: String, val first: Int, val size: Int, val preparation: Boolean = false,
-        /** Where this section starts when that is not the scenario's entry — the line under its heading. */
+        /** How this section starts when that is not as the scenario does — the `setup:` block under its heading. */
         val open: Open? = null,
+        /** The screens [description] mentions (`@화면`), as [SimulProject.load] resolved them. */
+        val mentions: List<String> = emptyList(),
     ) {
         val steps: IntRange get() = first until first + size
 
         /**
-         * The section is a look at another screen — it opens there, or its sentence mentions one (`[[화면]]`).
-         * What it finds says nothing about the sections after it, so they run even when it fails.
+         * The section is a look from somewhere else — it has a `setup:` of its own, or its sentence mentions
+         * another screen (`@화면`). What it finds says nothing about the sections after it, so they run even
+         * when it fails.
          */
-        val looksElsewhere: Boolean get() = open != null || Mentions.of(description).isNotEmpty()
+        val looksElsewhere: Boolean get() = open != null || Mentions.has(description)
     }
 
     /**
-     * Where a section starts instead of the scenario's entry: `deeplink: <address>` opens that address,
-     * `entry: <화면>` goes the way in of that screen (its `_entry.md`). One of the two.
+     * A section's own `setup:`: what it starts with instead of the scenario's. `deeplink: <address>` opens that
+     * address, `entry: <화면>` goes the way in of that screen (its `_entry.md`) — one of the two, or neither
+     * and the scenario's own place; `appState: <name>` is the account it runs as. A key left out is the scenario's.
      */
-    data class Open(val deeplink: String? = null, val screen: String? = null)
+    data class Open(val deeplink: String? = null, val screen: String? = null, val appState: String? = null) {
+        /** The section starts at a place of its own, not only as someone else. */
+        val elsewhere: Boolean get() = deeplink != null || screen != null
+    }
 
     companion object {
         /** The one state name that needs no snapshot: without `guest.tar` it means a fresh install. */
@@ -183,8 +215,13 @@ object ScenarioMd {
     /** The headings that make a section the scenario's preparation (see [Scenario.Section.preparation]). */
     private val PREPARATION_TITLES = listOf("준비", "Preparation")
 
-    /** `deeplink: <address>` / `entry: <화면>` right under a `## title`: where that section starts ([Scenario.Open]). */
-    private val openRegex = Regex("""^(deeplink|entry):\s*(\S.*)$""")
+    /** `setup:` right under a `## title` opens that section's own setup ([Scenario.Open]); its keys are the indented lines after it. */
+    private val setupKeyRegex = Regex("""^\s+([A-Za-z]+):\s*(.*)$""")
+    private val SECTION_SETUP_KEYS = listOf("entry", "deeplink", "appState")
+
+    /** How a section's start and a mention were written before `setup:` and `@화면`: said, so the file is not read as prose. */
+    private val oldOpenRegex = Regex("""^(deeplink|entry|appState):\s*\S.*$""")
+    private val oldMentionRegex = Regex("""\[\[([^\[\]]+)]]""")
 
     /** A continuation line under a step: `:: criterion` or `:: state → criterion`. */
     private val criterionLineRegex = Regex("""^\s*::\s*(.*)$""")
@@ -210,8 +247,12 @@ object ScenarioMd {
                 clearData = (setupMap["clearData"] as? String)?.equals("true", ignoreCase = true) == true,
                 appState = setupMap["appState"] as? String,
                 device = DevicePins.parse(setupMap["device"], "scenario '$name' setup"),
+                entry = (setupMap["entry"] as? String)?.let(Mentions::norm)?.takeIf { it.isNotEmpty() },
             )
         } else null
+        require(setup?.entry == null || (setup.deeplink == null && !setup.launch)) {
+            "scenario '$name': setup takes one of `entry`, `deeplink`, `launch` — `entry: ${setup?.entry}` already says where it starts"
+        }
         if (states.isNotEmpty()) {
             // the state IS the precondition — a second one in setup would be contradictory
             require(setup?.appState == null && setup?.clearData != true) {
@@ -269,14 +310,28 @@ object ScenarioMd {
     private fun parseBody(body: String, name: String, states: List<String>): Body {
         val steps = mutableListOf<Scenario.StepDef>()
         val prose = mutableListOf<String>()
-        class Open(val title: String, val first: Int) { val prose = mutableListOf<String>(); var open: Scenario.Open? = null }
+        class Open(val title: String, val first: Int) { val prose = mutableListOf<String>(); var setup: MutableMap<String, String>? = null }
         val opened = mutableListOf<Open>()
+        /** Inside the `setup:` block of the last heading: its indented `key: value` lines, up to a blank or an unindented one. */
+        var inSetup = false
         fun attach(raw: String) {
             require(steps.isNotEmpty()) { "scenario '$name': `:: $raw` must follow a numbered step" }
             val c = criterion(raw, name, states) ?: return
             steps[steps.lastIndex] = steps.last().let { it.copy(criteria = it.criteria + c) }
         }
         for (line in body.lines()) {
+            if (inSetup) {
+                val key = setupKeyRegex.matchEntire(line)
+                if (key != null) {
+                    val (k, v) = key.destructured
+                    val section = opened.last()
+                    require(k in SECTION_SETUP_KEYS) { "scenario '$name': section '${section.title}' setup takes ${SECTION_SETUP_KEYS.joinToString(", ")} — `$k` is the file's (frontmatter)" }
+                    require(v.isNotBlank()) { "scenario '$name': section '${section.title}' setup: `$k:` has no value" }
+                    require(section.setup!!.put(k, v.trim()) == null) { "scenario '$name': section '${section.title}' setup names `$k` twice" }
+                    continue
+                }
+                inSetup = false
+            }
             val heading = sectionRegex.matchEntire(line)
             if (heading != null) {
                 require(opened.isNotEmpty() || steps.isEmpty()) { "scenario '$name': steps ahead of the first `##` section belong to no section — give them a heading" }
@@ -296,20 +351,29 @@ object ScenarioMd {
             val open = opened.lastOrNull()
             if (open == null) { if (steps.isEmpty()) prose += text }
             else if (steps.size == open.first) {
-                val at = openRegex.matchEntire(text)?.takeIf { open.prose.isEmpty() && open.open == null }
-                if (at == null) open.prose += text
-                else {
-                    val value = Mentions.plain(at.groupValues[2]).trim()
-                    open.open = if (at.groupValues[1] == "deeplink") Scenario.Open(deeplink = value) else Scenario.Open(screen = Mentions.norm(value))
+                val first = open.prose.isEmpty() && open.setup == null
+                if (first && text == "setup:") { open.setup = mutableMapOf(); inSetup = true; continue }
+                require(!(first && oldOpenRegex.matches(text))) {
+                    "scenario '$name': section '${open.title}': `$text` goes in a `setup:` block under the heading — `setup:` and, indented under it, `$text`"
                 }
+                open.prose += text
             }
+        }
+        (prose + opened.flatMap { it.prose }).firstNotNullOfOrNull { oldMentionRegex.find(it) }?.let { m ->
+            throw IllegalArgumentException("scenario '$name': a mention is written `@${m.groupValues[1].trim()}`, not `${m.value}`")
         }
         val sections = opened.mapIndexed { i, o ->
             val size = (opened.getOrNull(i + 1)?.first ?: steps.size) - o.first
             require(size > 0) { "scenario '$name': section '${o.title}' has no steps" }
             val preparation = PREPARATION_TITLES.any { it.equals(o.title, ignoreCase = true) }
-            require(!preparation || o.open == null) { "scenario '$name': `## ${o.title}` prepares the scenario's own entry — it takes no `deeplink:`/`entry:` line" }
-            Scenario.Section(o.title, o.prose.joinToString(" "), o.first, size, preparation = preparation, open = o.open)
+            require(!preparation || o.setup == null) { "scenario '$name': `## ${o.title}` prepares the scenario's own entry — it takes no `setup:` of its own" }
+            val own = o.setup?.let { m ->
+                require(m.isNotEmpty()) { "scenario '$name': section '${o.title}' setup is empty — ${SECTION_SETUP_KEYS.joinToString(", ")} go indented under it" }
+                require(m["entry"] == null || m["deeplink"] == null) { "scenario '$name': section '${o.title}' setup takes `entry` or `deeplink`, not both" }
+                m["appState"]?.let { require(Scenario.isValidStateName(it)) { "scenario '$name': section '${o.title}' setup: appState '$it' must be [A-Za-z0-9._-]+" } }
+                Scenario.Open(deeplink = m["deeplink"], screen = m["entry"]?.let(Mentions::norm), appState = m["appState"])
+            }
+            Scenario.Section(o.title, o.prose.joinToString(" "), o.first, size, preparation = preparation, open = own)
         }
         val titles = sections.map { it.title }
         require(titles.distinct().size == titles.size) { "scenario '$name': two sections share a title (${titles.joinToString(", ")})" }
@@ -342,28 +406,46 @@ object ScenarioMd {
 }
 
 /**
- * `[[화면]]` in a scenario's prose or a section's sentence: the check is about that screen too. The scenario is
+ * `@화면` in a scenario's prose or a section's sentence: the check is about that screen too. The scenario is
  * written once, where the action happens; the report shows the check on the mentioned screen's page as well
  * (a screen is a group directory, named as the directory is). Only the report reads it — a step never does.
+ *
+ * A screen's name may hold spaces and a Korean particle may follow it unspaced (`@프로필 수정의 링크`), so where a
+ * mention ends is not in the text: it is the longest of the known screens' names the text goes on with.
+ * [SimulProject.load] resolves a scenario's mentions against the project's screens (and refuses an `@` that
+ * names none); a result carries them, and the report cuts the text by those.
  */
 object Mentions {
-    private val RE = Regex("""\[\[([^\[\]]+)]]""")
+    /** An `@` that starts a mention: not inside a word or an address (`simul201@watcha.com`). */
+    private val AT = Regex("""(?<![\p{L}\p{N}_.@])@(?=\S)""")
 
-    /** The screens [text] mentions, in order, each once. */
-    fun of(text: String): List<String> = RE.findAll(text).map { norm(it.groupValues[1]) }.distinct().toList()
+    /** Does [text] mention anything — by its writing alone, whatever the screens are. */
+    fun has(text: String): Boolean = AT.containsMatchIn(text)
 
-    /** [text] with each mention as its screen's name alone. */
-    fun plain(text: String): String = RE.replace(text) { it.groupValues[1].trim() }
-
-    /** [text] cut at its mentions: `(plain text, null)` and `(name as written, screen)` in turn. */
-    fun parts(text: String): List<Pair<String, String?>> = buildList {
+    /** [text] cut at its mentions of [screens]: `(text, null)` and `(the screen's name, screen)` in turn. An `@` that names none of them stays text. */
+    fun parts(text: String, screens: Collection<String>): List<Pair<String, String?>> = buildList {
+        val t = norm(text)
+        val names = screens.map(::norm).filter { it.isNotEmpty() }.distinct().sortedByDescending { it.length }
         var at = 0
-        for (m in RE.findAll(text)) {
-            if (m.range.first > at) add(text.substring(at, m.range.first) to null)
-            add(m.groupValues[1].trim() to norm(m.groupValues[1]))
-            at = m.range.last + 1
+        for (m in AT.findAll(t)) {
+            if (m.range.first < at) continue
+            val name = names.firstOrNull { t.startsWith(it, m.range.first + 1) } ?: continue
+            if (m.range.first > at) add(t.substring(at, m.range.first) to null)
+            add(name to name)
+            at = m.range.first + 1 + name.length
         }
-        if (at < text.length) add(text.substring(at) to null)
+        if (at < t.length) add(t.substring(at) to null)
+    }
+
+    /** The [screens] that [text] mentions, in order, each once. */
+    fun of(text: String, screens: Collection<String>): List<String> = parts(text, screens).mapNotNull { it.second }.distinct()
+
+    /** What follows each `@` of [text] that names none of [screens], up to the next space — a typo, or a screen that does not exist. */
+    fun unknown(text: String, screens: Collection<String>): List<String> {
+        val t = norm(text)
+        val names = screens.map(::norm).filter { it.isNotEmpty() }
+        return AT.findAll(t).filter { m -> names.none { t.startsWith(it, m.range.first + 1) } }
+            .map { m -> t.substring(m.range.first + 1).takeWhile { !it.isWhitespace() } }.toList()
     }
 
     /** A directory name read from disk and one typed in a file may differ in Unicode form (macOS hands out decomposed Hangul). */
