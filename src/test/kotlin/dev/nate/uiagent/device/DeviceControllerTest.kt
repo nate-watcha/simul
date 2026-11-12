@@ -118,6 +118,30 @@ class DeviceControllerTest {
     }
 
     @Test
+    fun `a tap on an element partly scrolled out of its list lands on the part the list shows`() {
+        // Compose keeps the unclipped bounds of a clickable that is partly scrolled out (stone owner-rewatch,
+        // 2026-11-12): the header reads y 200-284 under a pager that starts at 248, and its centre 242 is on the
+        // tab row above the pager. The tap goes to the centre of the visible slice, 248-284.
+        val pager = el(interactions = listOf("scrollable"), center = Point(360, 684), bounds = Bounds(0, 248, 720, 1120))
+        val list = el(interactions = listOf("scrollable"), center = Point(360, 684), bounds = Bounds(0, 248, 720, 1120), parentId = 0)
+        val header = el("재감상 전체 보기", interactions = listOf("clickable"), center = Point(360, 242), bounds = Bounds(30, 200, 690, 284), parentId = 1)
+        val screen = layout(pager, list, header)
+        val dev = FakeDevice(screen, screen)
+        val c = controller(dev)
+        c.fullLayout()
+
+        c.tap("재감상 전체 보기")
+
+        assertEquals(listOf("tap 360 266"), dev.gestures)
+
+        // No scrollable ancestor, or no bounds: the centre as reported.
+        val loose = el("닫기", interactions = listOf("clickable"), center = Point(50, 50), bounds = Bounds(0, 0, 100, 100))
+        assertEquals(Point(50, 50), c.visibleTapPoint(loose, listOf(loose)))
+        val noBounds = el("닫기", interactions = listOf("clickable"), center = Point(50, 50), parentId = 0)
+        assertEquals(Point(50, 50), c.visibleTapPoint(noBounds, listOf(pager, noBounds)))
+    }
+
+    @Test
     fun `synthetic handle taps the element at those coordinates`() {
         val l = layout(el(null, interactions = listOf("clickable"), center = Point(606, 104)))
         val dev = FakeDevice(l, l, l, l)

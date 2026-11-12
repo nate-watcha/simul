@@ -5,6 +5,7 @@ import dev.nate.uiagent.Origin
 import dev.nate.uiagent.ProcessFailure
 import dev.nate.uiagent.Trace
 import dev.nate.uiagent.LogicalElement
+import dev.nate.uiagent.Point
 import dev.nate.uiagent.LogicalLayout
 
 /**
@@ -224,10 +225,32 @@ class DeviceController(
      */
     private fun userTap(e: LogicalElement) {
         val pkgs = grounding?.packages
+        val p = visibleTapPoint(e, grounding?.elements ?: emptyList())
         gesture {
             if (app != null && pkgs != null && pkgs.isNotEmpty() && app !in pkgs) device.releaseAutomation()
-            device.tap(e.center.x, e.center.y)
+            device.tap(p.x, p.y)
         }
+    }
+
+    /**
+     * Where to tap [e]: the centre of the part of it that its scrolling container shows. Compose reports a
+     * clickable that is partly scrolled out of a list with its full, unclipped bounds (on purpose, for
+     * TalkBack — SemanticsOwner.addDescendantsOfMergingNodePartiallyVisibleInScrollParent), so its centre can
+     * sit above the list, on whatever is drawn there: a tab row, a sticky header (실측 2026-11-12, stone
+     * 나의왓챠-활동/owner-rewatch — "재감상 전체 보기" at y 200-284 under a pager that starts at 248, the tap at 242
+     * selected the calendar tab). The nearest scrollable ancestor (through [LogicalElement.parentId]) bounds the
+     * visible part; an element with no bounds or no such ancestor keeps its own centre.
+     */
+    internal fun visibleTapPoint(e: LogicalElement, all: List<LogicalElement>): Point {
+        val bounds = e.bounds ?: return e.center
+        val byId = all.associateBy { it.id }
+        var parent = e.parentId?.let(byId::get)
+        while (parent != null && ("scrollable" !in parent.interactions || parent.bounds == null)) parent = parent.parentId?.let(byId::get)
+        val clip = parent?.bounds ?: return e.center
+        val x0 = maxOf(bounds.x0, clip.x0); val x1 = minOf(bounds.x1, clip.x1)
+        val y0 = maxOf(bounds.y0, clip.y0); val y1 = minOf(bounds.y1, clip.y1)
+        if (x0 >= x1 || y0 >= y1) return e.center
+        return Point((x0 + x1) / 2, (y0 + y1) / 2)
     }
 
     /**
