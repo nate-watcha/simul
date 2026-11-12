@@ -58,8 +58,10 @@ data class SectionReport(
     val status: StepStatus,
     val steps: IntRange,
     val preparation: Boolean = false,
-    /** Where the section started when that was not the scenario's entry (its `deeplink:` / `entry:` line). */
+    /** How the section started when that was not as the scenario does (its own `setup:`). */
     val open: Scenario.Open? = null,
+    /** The screens its sentence mentions (`@화면`). */
+    val mentions: List<String> = emptyList(),
 )
 
 /** The screen recording of a run: where its t=0 lies on the wall clock, so steps can be seeked to. */
@@ -213,7 +215,7 @@ class ScenarioRunner(
             }
             return ScenarioRunResult(scenario.name, StepStatus.FAILED, steps, null,
                 System.currentTimeMillis() - t0, startedAtMs = t0, setupFailed = true,
-                sections = scenario.sections.map { SectionReport(it.title, it.description, StepStatus.SKIPPED, it.first + 1..it.first + it.size, it.preparation, it.open) })
+                sections = scenario.sections.map { SectionReport(it.title, it.description, StepStatus.SKIPPED, it.first + 1..it.first + it.size, it.preparation, it.open, it.mentions) })
         }
 
         // A trace replays coordinates and layouts of the display it was recorded on — if the
@@ -249,10 +251,12 @@ class ScenarioRunner(
         val newSteps = mutableListOf<TraceStep>()
         /** Did the part before this one touch the device? A preparation that found nothing to do leaves the entry screen as it was. */
         var touched = true
+        /** The account the app is in: the scenario's, until a section with an `appState` of its own restores another. */
+        var account = scenario.precondition
 
         for ((pi, part) in parts.withIndex()) {
             fun close(status: StepStatus) {
-                if (sectioned) sectionReports += SectionReport(part.title, picks.fill(part.description), status, part.first + 1..part.first + part.size, part.preparation, part.open)
+                if (sectioned) sectionReports += SectionReport(part.title, picks.fill(part.description), status, part.first + 1..part.first + part.size, part.preparation, part.open, part.mentions)
             }
             if (stop) {
                 part.steps.forEach { i ->
@@ -267,24 +271,27 @@ class ScenarioRunner(
             // Every section after the first starts the app over — stopped and opened again at the scenario's
             // entry, its data kept ([enter]): what the one before it changed has to be there in a new process
             // (it was saved, not just drawn), and no section depends on where another ended. The exception is
-            // a preparation that had nothing to do — the app still shows its entry. A section with a place of
-            // its own to start ([Scenario.Open]) is opened there, the first one too.
+            // a preparation that had nothing to do — the app still shows its entry. A section with a `setup:` of
+            // its own ([Scenario.Open]) starts as that says, the first one too: at its place, and as its account —
+            // which is restored, as the scenario's is again for the first section after it that runs as the scenario does.
             var entryFailure: String? = null
+            val runsAs = part.open?.appState ?: scenario.precondition
             if (pi > 0 || part.open != null) {
                 controller.forget()
-                if (touched || part.open != null) {
+                if (touched || part.open != null || runsAs != account) {
                     val s = System.currentTimeMillis()
                     try {
                         val (setup, via) = startOf(scenario, part)
-                        setup?.let { enter(it, wantLocale, again = true) }
-                        via?.let { walkIn(it, scenario.precondition) }
+                        setup?.let { enter(it, wantLocale, again = runsAs == account) }
+                        account = runsAs
+                        via?.let { walkIn(it, runsAs) }
                     } catch (ex: Exception) {
                         entryFailure = "setup failed: ${ex.message?.lineSequence()?.firstOrNull() ?: ex.toString()}"
                     }
                     setupMs += System.currentTimeMillis() - s
                 } else log("  setup: kept — the preparation changed nothing, the app is still on its entry screen")
             }
-            llm.newSession(preparation = part.preparation)
+            llm.newSession(preparation = part.preparation, account = part.open?.appState)
             // the one part of a replay that needs the model — say so instead of crashing on the missing key
             if (entryFailure == null && part.preparation) llm.unavailable()?.let { entryFailure = "the preparation needs the model — $it" }
 
@@ -397,14 +404,14 @@ class ScenarioRunner(
     }
 
     /**
-     * Where [part] starts: the address to open the app at and, when the way from there is a screen's, that
-     * screen. The scenario's own entry unless the section has an `deeplink:` / `entry:` line.
+     * How [part] starts: the account, the address to open the app at and, when the way from there is a
+     * screen's, that screen. The scenario's own, with what the section's `setup:` says in its place.
      */
     private fun startOf(scenario: Scenario, part: Scenario.Section): Pair<Scenario.Setup?, String?> {
         val open = part.open ?: return scenario.setup to scenario.via
-        val base = scenario.setup ?: Scenario.Setup(deeplink = null, launch = false)
+        val base = (scenario.setup ?: Scenario.Setup(deeplink = null, launch = false)).let { s -> open.appState?.let { s.copy(appState = it) } ?: s }
         open.deeplink?.let { return base.copy(deeplink = it, launch = false) to null }
-        val screen = open.screen!!
+        val screen = open.screen ?: return base to scenario.via
         val entry = entries(screen) ?: throw IllegalStateException("section '${part.title}' starts at screen '$screen', which has no ${SimulProject.ENTRY_FILE}")
         return base.copy(deeplink = entry.setup.deeplink, launch = entry.setup.launch) to screen
     }

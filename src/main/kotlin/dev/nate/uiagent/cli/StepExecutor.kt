@@ -24,8 +24,9 @@ interface StepExecutor {
      * The next step starts a conversation of its own: a scenario's section begins from a fresh setup,
      * and what the model saw of the screens before it no longer describes the app. [preparation] makes
      * it the conversation of the scenario's `## 준비` section, which prepares the app instead of testing it.
+     * [account] is the account state the section runs as when that is not the scenario's (its `setup.appState`).
      */
-    fun newSession(preparation: Boolean = false) {}
+    fun newSession(preparation: Boolean = false, account: String? = null) {}
 
     /**
      * Why the model cannot be consulted at all (no key in this environment); null when it can. A replay
@@ -54,22 +55,26 @@ class SessionStepExecutor(
     /** System-prompt background for the session: config `context:` and this scenario's account state (see [dev.nate.uiagent.agent.systemPrompt]). */
     private val appContext: String? = null,
     private val accountState: String? = null,
+    /** The ACCOUNT STATE line of another state than the scenario's, for a section that runs as it (see [SimulConfig.accountLine]). */
+    private val accountLine: (String) -> String? = { null },
     /** Why [executor] cannot be built, without building it ([LlmConfig.keyProblem]). */
     private val problem: () -> String? = { null },
 ) : StepExecutor {
 
     private var session: ScenarioSession? = null
     private var preparing = false
+    /** The account state of the section in progress, when it is not the scenario's. */
+    private var account: String? = null
     /** One client for the scenario, however many conversations its sections open. */
     private val client by lazy(executor)
 
     override fun runStep(stepText: String, initialLayout: String?, criterion: String?): ScenarioSession.Verdict {
-        val s = session ?: ScenarioSession(client, controller, maxIterations, log, model, appContext = appContext, accountState = accountState, preparation = preparing)
+        val s = session ?: ScenarioSession(client, controller, maxIterations, log, model, appContext = appContext, accountState = account?.let { accountLine(it) ?: it } ?: accountState, preparation = preparing)
             .also { session = it }
         return s.runStep(stepText, initialLayout, criterion)
     }
 
-    override fun newSession(preparation: Boolean) { session = null; preparing = preparation }
+    override fun newSession(preparation: Boolean, account: String?) { session = null; preparing = preparation; this.account = account }
 
     override fun unavailable(): String? = problem()
 }

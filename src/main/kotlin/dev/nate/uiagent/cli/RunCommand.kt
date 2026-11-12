@@ -135,7 +135,10 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
                 scenario.steps.forEachIndexed { idx, s ->
                     scenario.sections.firstOrNull { it.first == idx }?.let { sec ->
                         println("  ## ${sec.title}" + (if (sec.preparation) " — by the model, in every mode" else "") +
-                            (sec.open?.let { o -> " — starts at ${o.deeplink ?: "the way in to '${o.screen}'"}" } ?: ""))
+                            (sec.open?.let { o ->
+                                " — starts" + (o.appState?.let { " as '$it'" } ?: "") +
+                                    (if (o.elsewhere) " at ${o.deeplink ?: "the way in to '${o.screen}'"}" else "")
+                            } ?: ""))
                     }
                     println("  ${idx + 1}. $s")
                 }
@@ -272,7 +275,7 @@ internal fun executeScenario(
         // turn lines nest under the runner's step line in the live log
         // replay never builds a client — the key stays optional for CI that only replays
         val executor = SessionStepExecutor(stack.controller, { llm.client() }, llm.llmModel(), project.config.maxTurns,
-            log = { log("    $it") }, appContext = project.config.context, accountState = project.config.accountState(scenario),
+            log = { log("    $it") }, appContext = project.config.context, accountState = project.config.accountState(scenario), accountLine = project.config::accountLine,
             problem = { llm.keyProblem() })
         // The screen recording starts when setup is done (state restored, app cold-started) and
         // spans the steps — the journey itself, not the pm clear and the splash. It stops in
@@ -313,6 +316,7 @@ internal fun executeScenario(
         title = scenario.title ?: scenario.name,
         owner = scenario.owner,
         description = fillValues(scenario.description, result.values),
+        mentions = scenario.mentions,
         traceRecordedAt = traceRecordedAt(traceFile, project.appRoot),
         env = ResultJson.Env(ops.appVersionName(project.config.app), ops.deviceName(), ops.androidCliVersion()),
         setup = scenario.setup?.let { ResultJson.Setup(it.deeplink, it.launch, scenario.precondition, scenario.via) },

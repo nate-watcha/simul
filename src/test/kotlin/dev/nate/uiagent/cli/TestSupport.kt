@@ -73,7 +73,10 @@ internal class ScriptedExecutor(private val behavior: (String) -> ScenarioSessio
     /** Why the model cannot be consulted; null = it can. */
     var problem: String? = null
 
-    override fun newSession(preparation: Boolean) { sessions += preparation }
+    /** The account each conversation was told its section runs as; null = the scenario's. */
+    val accounts = mutableListOf<String?>()
+
+    override fun newSession(preparation: Boolean, account: String?) { sessions += preparation; accounts += account }
     override fun unavailable(): String? = problem
 
     override fun runStep(stepText: String, initialLayout: String?, criterion: String?): ScenarioSession.Verdict {
