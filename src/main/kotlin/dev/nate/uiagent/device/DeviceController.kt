@@ -311,11 +311,30 @@ class DeviceController(
         "Scrolled $direction.\n" + settleAndDiff("scroll $scrollable $direction")
     }
 
+    /**
+     * A scroll container is handed over by its centre (`@x360y684`), and a container moves: a
+     * collapsing header leaves the tab content taller on one run than on another, so the centre
+     * a recording wrote is nowhere near any element on replay (실측 2026-11-12, stone 나의 왓챠 활동
+     * 탭 빈 계정: recorded at 684 with the header collapsed, 988 on replay, 50px radius, replay
+     * broken at the first scroll). What the handle meant is "the scrollable here", so when
+     * nothing is at the point the nearest scrollable is the container — a named target
+     * resolves as before.
+     */
+    private fun resolveScrollable(scrollable: String): Resolution {
+        val r = resolve(scrollable)
+        if (r !is Resolution.NotFound) return r
+        val p = parseSyntheticHandle(scrollable.trim()) ?: return r
+        return grounding?.elements.orEmpty()
+            .filter { "scrollable" in it.interactions }
+            .minByOrNull { it.center.dist2(p) }
+            ?.let { Resolution.Match(it) } ?: r
+    }
+
     /** Perform one scroll gesture. Returns an error message, or null on success. */
     private fun scrollOnce(scrollable: String, direction: String): String? {
         if (direction !in setOf("up", "down", "left", "right"))
             return "ERROR: invalid direction '$direction' (use up|down|left|right)."
-        return when (val r = resolve(scrollable)) {
+        return when (val r = resolveScrollable(scrollable)) {
             is Resolution.NotFound -> notFoundMsg(scrollable)
             is Resolution.Ambiguous -> ambiguousMsg(scrollable, r.candidates)
             is Resolution.Match -> {
@@ -346,7 +365,7 @@ class DeviceController(
                 is Resolution.NotFound -> null
             }
             fun inView(found: List<LogicalElement>): Boolean {
-                val box = (resolve(scrollable) as? Resolution.Match)?.element
+                val box = (resolveScrollable(scrollable) as? Resolution.Match)?.element
                 return found.any { !cutOff(it, box, direction) }
             }
             fun after(rounds: Int) = if (rounds == 0) "without scrolling" else "after $rounds scroll(s) $direction"
