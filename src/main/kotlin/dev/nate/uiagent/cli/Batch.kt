@@ -37,6 +37,9 @@ class BatchSession(
     var deviceDown: String? = null
         private set
 
+    /** The ways in that failed in this batch, by screen, with why — see [run]. */
+    private val brokenEntries = mutableMapOf<String, String>()
+
     /**
      * Ask the device whether it still answers. A second look after a pause, when [recheck]: an adb
      * reconnect heals by itself, a hung emulator does not.
@@ -101,6 +104,13 @@ class BatchSession(
             log("CRASH ${scenario.name}: not run — $why")
             return BatchResult(outcomeWithout(project, md, scenario, "CRASH", "not run — $why"), null)
         }
+        // a way in that failed in this batch fails once: the scenarios that start from it are not run to fail the same way
+        scenario.via?.let { screen ->
+            brokenEntries[screen]?.let { why ->
+                log("SKIPPED ${scenario.name}: not run — the way in to '$screen' failed")
+                return BatchResult(outcomeWithout(project, md, scenario, "SKIPPED", "${Site.WAY_IN_FAILED} '$screen' failed: $why"), null)
+            }
+        }
         if (scenario.precondition == null) {
             log("note: ${scenario.name} declares no appState/clearData — runs against the device's current state")
         }
@@ -118,6 +128,11 @@ class BatchSession(
         }
         // a scenario that did not pass may be the device's doing — and then so would every one after it
         if (!result.passed) checkDevice(recheck = true)
+        if (md.name == SimulProject.ENTRY_FILE) {
+            val screen = project.screenOf(md)
+            if (result.passed) brokenEntries -= screen
+            else brokenEntries[screen] = result.steps.firstOrNull { it.status == StepStatus.FAILED }?.let { "step ${it.index} — ${it.reason ?: "failed"}" } ?: "failed"
+        }
         return BatchResult(outcomeOf(project, md, scenario, result), result)
     }
 

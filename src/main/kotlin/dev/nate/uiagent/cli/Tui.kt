@@ -358,7 +358,7 @@ class Tui(private val project: SimulProject) {
                     targets.forEachIndexed { i, st ->
                         idx.set(i)
                         val md = File(project.scenariosDir, st.relPath)
-                        val scenario = ScenarioMd.parse(md).variant(st.state)
+                        val scenario = project.load(md).variant(st.state)
                         cur.set(scenario.name to scenario.description)
                         val r = batch.run(md, scenario, mode, project.config.llm, video, log::add)
                         results.add(scenario.name to when (r.outcome.status) {

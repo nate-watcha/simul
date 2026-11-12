@@ -58,6 +58,8 @@ data class SectionReport(
     val status: StepStatus,
     val steps: IntRange,
     val preparation: Boolean = false,
+    /** Where the section started when that was not the scenario's entry (its `deeplink:` / `entry:` line). */
+    val open: Scenario.Open? = null,
 )
 
 /** The screen recording of a run: where its t=0 lies on the wall clock, so steps can be seeked to. */
@@ -107,6 +109,13 @@ data class ScenarioRunResult(
  * bringing the app to the state the other sections start from is the one thing a replay asks the
  * model for. Its steps are never traced; everything after it replays without a model as before.
  *
+ * A scenario that starts from its screen's way in ([Scenario.via]) gets there before its first step and
+ * before each section: the app is opened as that screen's `_entry.md` says and the entry's steps are played
+ * from the entry's trace ([walkIn]) — no model in any mode, and none of it among the scenario's steps. A
+ * section may start somewhere else ([Scenario.Open]): at an address, or at another screen by its way in.
+ * Such a section, or one whose sentence mentions another screen, is a look at that screen: when it fails the
+ * sections after it still run — they do not start from what it did — and the scenario has failed all the same.
+ *
  * Every executed step leaves what the report needs in [reportDir]: `steps/NN.png` (the screen
  * when the step ended) and `layout/NN.json` (its layout tree); the scenario leaves `logcat.txt`
  * for its whole span. The CLI adds the recording and writes `result.json` (see ResultJson).
@@ -133,6 +142,8 @@ class ScenarioRunner(
     private val onSetupDone: () -> Unit = {},
     /** How a run picks among the candidates of a scenario's `values:` entry that are not on screen. */
     private val chooseValue: (List<String>) -> String = { it.random() },
+    /** A screen's way in by the screen's name ([SimulProject.entryOf]) — read when it is needed, so one recorded earlier in this run is found. */
+    private val entries: (String) -> ScreenEntry? = { null },
 ) {
     private val replayer by lazy { Replayer(controller, log = log) }
 
@@ -188,6 +199,7 @@ class ScenarioRunner(
                 }
                 enter(it, wantLocale)
             }
+            scenario.via?.let { walkIn(it, scenario.precondition) }
             setupMs = System.currentTimeMillis() - t0
             // whatever this controller saw before, the app has just been brought to the scenario's entry
             controller.forget()
@@ -201,7 +213,7 @@ class ScenarioRunner(
             }
             return ScenarioRunResult(scenario.name, StepStatus.FAILED, steps, null,
                 System.currentTimeMillis() - t0, startedAtMs = t0, setupFailed = true,
-                sections = scenario.sections.map { SectionReport(it.title, it.description, StepStatus.SKIPPED, it.first + 1..it.first + it.size, it.preparation) })
+                sections = scenario.sections.map { SectionReport(it.title, it.description, StepStatus.SKIPPED, it.first + 1..it.first + it.size, it.preparation, it.open) })
         }
 
         // A trace replays coordinates and layouts of the display it was recorded on — if the
@@ -224,6 +236,8 @@ class ScenarioRunner(
         val reports = mutableListOf<StepReport>()
         var coordDirty = false
         var failedAt: Int? = null
+        /** A section failed that the ones after it build on: they are skipped. A failed look at another screen does not set it. */
+        var stop = false
         val modeName = if (mode == RunMode.LLM) "llm" else "replay"
 
         // A scenario without `##` headings is one unnamed part, run from the setup above.
@@ -238,9 +252,9 @@ class ScenarioRunner(
 
         for ((pi, part) in parts.withIndex()) {
             fun close(status: StepStatus) {
-                if (sectioned) sectionReports += SectionReport(part.title, picks.fill(part.description), status, part.first + 1..part.first + part.size, part.preparation)
+                if (sectioned) sectionReports += SectionReport(part.title, picks.fill(part.description), status, part.first + 1..part.first + part.size, part.preparation, part.open)
             }
-            if (failedAt != null) {
+            if (stop) {
                 part.steps.forEach { i ->
                     reports += StepReport(i + 1, picks.fill(scenario.steps[i]), StepStatus.SKIPPED, null, emptyList(), emptyList(), null, 0, emptyList())
                     log("  step ${i + 1}: SKIPPED")
@@ -253,13 +267,18 @@ class ScenarioRunner(
             // Every section after the first starts the app over — stopped and opened again at the scenario's
             // entry, its data kept ([enter]): what the one before it changed has to be there in a new process
             // (it was saved, not just drawn), and no section depends on where another ended. The exception is
-            // a preparation that had nothing to do — the app still shows its entry.
+            // a preparation that had nothing to do — the app still shows its entry. A section with a place of
+            // its own to start ([Scenario.Open]) is opened there, the first one too.
             var entryFailure: String? = null
-            if (pi > 0) {
+            if (pi > 0 || part.open != null) {
                 controller.forget()
-                if (touched) {
+                if (touched || part.open != null) {
                     val s = System.currentTimeMillis()
-                    try { scenario.setup?.let { enter(it, wantLocale, again = true) } } catch (ex: Exception) {
+                    try {
+                        val (setup, via) = startOf(scenario, part)
+                        setup?.let { enter(it, wantLocale, again = true) }
+                        via?.let { walkIn(it, scenario.precondition) }
+                    } catch (ex: Exception) {
                         entryFailure = "setup failed: ${ex.message?.lineSequence()?.firstOrNull() ?: ex.toString()}"
                     }
                     setupMs += System.currentTimeMillis() - s
@@ -271,10 +290,11 @@ class ScenarioRunner(
 
             val old = (if (sectioned) oldBySection?.get(part.title) else trace?.steps) ?: emptyList()
             val gestures0 = controller.meter.cost.gestures
+            var broke = false
             for (i in part.steps) {
                 val text = scenario.steps[i]
                 val n = i + 1
-                if (failedAt != null) {
+                if (broke) {
                     reports += StepReport(n, picks.fill(text), StepStatus.SKIPPED, null, emptyList(), emptyList(), null, 0, emptyList())
                     log("  step $n: SKIPPED")
                     continue
@@ -314,7 +334,7 @@ class ScenarioRunner(
                 }
                 reports += done
                 log("  step $n: ${renderResult(done, controller.meter.cost - stepCost0)}")
-                if (done.status == StepStatus.FAILED) failedAt = n
+                if (done.status == StepStatus.FAILED) { broke = true; if (failedAt == null) failedAt = n }
                 else if (!part.preparation) {
                     if (done.mode == "replay" && n in coordDirtySteps) coordDirty = true
                     // the trace keeps the step as the scenario wrote it — `$name`, not the value this run picked
@@ -322,7 +342,11 @@ class ScenarioRunner(
                 }
             }
             touched = !part.preparation || controller.meter.cost.gestures > gestures0
-            close(if (failedAt == null) StepStatus.PASSED else StepStatus.FAILED)
+            close(if (broke) StepStatus.FAILED else StepStatus.PASSED)
+            if (broke) {
+                if (!part.looksElsewhere) stop = true
+                else if (pi < parts.lastIndex) log("  section '${part.title}' looked at another screen and failed — the sections after it run")
+            }
         }
 
         val status = if (failedAt != null) StepStatus.FAILED else StepStatus.PASSED
@@ -369,6 +393,51 @@ class ScenarioRunner(
             // grounded as the scroll container, 실측) — the fix is in the app's entry screen.
             log("  setup: app did not report fully drawn within ${AdbOps.FULLY_DRAWN_TIMEOUT_MS / 1000}s — " +
                 "the destination activity should call reportFullyDrawn() on its first frame (only the first call per launch counts)")
+        }
+    }
+
+    /**
+     * Where [part] starts: the address to open the app at and, when the way from there is a screen's, that
+     * screen. The scenario's own entry unless the section has an `deeplink:` / `entry:` line.
+     */
+    private fun startOf(scenario: Scenario, part: Scenario.Section): Pair<Scenario.Setup?, String?> {
+        val open = part.open ?: return scenario.setup to scenario.via
+        val base = scenario.setup ?: Scenario.Setup(deeplink = null, launch = false)
+        open.deeplink?.let { return base.copy(deeplink = it, launch = false) to null }
+        val screen = open.screen!!
+        val entry = entries(screen) ?: throw IllegalStateException("section '${part.title}' starts at screen '$screen', which has no ${SimulProject.ENTRY_FILE}")
+        return base.copy(deeplink = entry.setup.deeplink, launch = entry.setup.launch) to screen
+    }
+
+    /**
+     * The rest of the way in to [screen] once the app is open at its entry's address: the steps of the screen's
+     * `_entry.md`, played from that file's trace. The model is not asked in any mode — the entry is recorded
+     * and judged as a scenario of its own, here it is only how one gets to where the scenario starts — and
+     * nothing of it is among the scenario's steps or in its recording. In another account than the entry was
+     * recorded in ([account]) the labels a step saw appear are that account's data: its actions and the states
+     * it left (a tab selected) are still held to, the labels are not. Anything that does not play is a failed setup.
+     */
+    private fun walkIn(screen: String, account: String?) {
+        val entry = entries(screen) ?: throw IllegalStateException("screen '$screen' has no ${SimulProject.ENTRY_FILE}")
+        val trace = entry.trace ?: throw IllegalStateException("the way in to '$screen' is not recorded — run ${entry.file} with --mode llm")
+        val otherAccount = account != entry.precondition
+        log("  setup: the way in to '$screen' — ${entry.steps.size} step(s) from ${entry.file}" +
+            if (otherAccount) " (recorded as ${entry.precondition ?: "no account"}: its labels are not asked for)" else "")
+        controller.forget()
+        controller.fastObserve = true
+        try {
+            firstObservation()
+            entry.steps.forEachIndexed { i, text ->
+                val recorded = trace.steps.getOrNull(i)?.takeIf { it.text == text }
+                    ?: throw IllegalStateException("the way in to '$screen' changed since it was recorded — run ${entry.file} with --mode llm")
+                val played = replayer.replayStep(if (otherAccount) recorded.copy(evidence = emptyList()) else recorded)
+                played.broken?.let { throw IllegalStateException("the way in to '$screen' broke at its step ${i + 1} \"$text\": ${it.why}") }
+            }
+        } finally {
+            controller.fastObserve = false
+            // What the walk saw were single fast frames, the last of them possibly mid-transition. Whoever comes next
+            // looks again: the model is handed the screen it starts from, and a step's evidence is what appeared since then.
+            controller.forget()
         }
     }
 

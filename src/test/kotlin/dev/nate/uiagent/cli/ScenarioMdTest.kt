@@ -286,4 +286,42 @@ class ScenarioMdTest {
         assertEquals(s.sections.map { it.description }, memo.sections.map { it.description })
         assertEquals("스펙 한 줄.", ScenarioMd.parse("스펙 한 줄.\n\n1. 스텝\n\n메모: 왜 이 경우만 쓰는지.").description)
     }
+
+    @Test
+    fun `a section may start somewhere of its own, and a sentence may mention another screen`() {
+        val s = ScenarioMd.parse("""
+            작품 상세에서 코멘트를 쓰고 지우기.
+
+            ## 추가
+            코멘트를 써서 등록하면 작품 상세에 보인다.
+            1. "등록"을 누른다
+
+            ## 추가 뒤 활동 탭
+            entry: 나의왓챠-활동
+            [[나의왓챠-활동]] 코멘트 영역 맨 앞에 나온다.
+            1. "방금 쓴 코멘트"가 보이는지 확인한다
+
+            ## 추가 뒤 코멘트 목록
+            deeplink: app://users/1/comments
+            [[활동상세]] 코멘트 목록 맨 위에 나온다.
+            1. "방금 쓴 코멘트"가 보이는지 확인한다
+
+            ## 헤더
+            헤더를 누르면 [[활동상세]]로 간다.
+            1. "전체 보기"를 누른다
+        """.trimIndent())
+
+        assertEquals(listOf(null, Scenario.Open(screen = "나의왓챠-활동"), Scenario.Open(deeplink = "app://users/1/comments"), null), s.sections.map { it.open })
+        assertEquals("[[나의왓챠-활동]] 코멘트 영역 맨 앞에 나온다.", s.sections[1].description, "the line that says where it starts is no part of its sentence")
+        assertEquals(listOf(false, true, true, true), s.sections.map { it.looksElsewhere }, "a place of its own or a mention makes it a look at another screen")
+
+        assertEquals(listOf("나의왓챠-활동", "활동상세"), Mentions.of("[[나의왓챠-활동]]과 [[ 활동상세 ]], 다시 [[활동상세]]"))
+        assertEquals("헤더를 누르면 활동상세로 간다.", Mentions.plain(s.sections[3].description))
+        assertEquals(listOf("헤더를 누르면 " to null, "활동상세" to "활동상세", "로 간다." to null), Mentions.parts(s.sections[3].description))
+        assertEquals(Mentions.norm("활동상세"), Mentions.norm(java.text.Normalizer.normalize("활동상세", java.text.Normalizer.Form.NFD)), "a directory name as macOS hands it out is the same screen")
+
+        // the line is the first under the heading; later it is prose. The preparation is the scenario's own entry's.
+        assertEquals(null, ScenarioMd.parse("## 가\n설명.\ndeeplink: app://x\n1. 스텝").sections[0].open)
+        assertFailsWith<IllegalArgumentException> { ScenarioMd.parse("## 준비\nentry: 다른화면\n1. 지운다\n\n## 가\n1. 스텝") }
+    }
 }

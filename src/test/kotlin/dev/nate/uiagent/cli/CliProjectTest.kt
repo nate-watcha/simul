@@ -5,6 +5,7 @@ import dev.nate.uiagent.tempDir
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -162,5 +163,44 @@ class CliProjectTest {
         File(root, ".simul/scenarios/bad.md").writeText("---\nname: bad\n---\n1. Tap \"a\"\n   :: member → \"b\"\n")
         assertEquals(2, cliMain(arrayOf("run", "--all", "--dry-run"), root))
         assertEquals(2, cliMain(arrayOf("run", "bad.md", "--dry-run"), root))
+    }
+
+    @Test
+    fun `a scenario beside its screen's way in starts from it, and the way in runs ahead of it`() {
+        val root = makeProject()
+        val dir = File(root, ".simul/scenarios/나의왓챠-활동").also { it.mkdirs() }
+        File(dir, "_entry.md").writeText("---\nsetup:\n  appState: member\n  deeplink: app://my\n---\n나의 왓챠에서 \"활동\" 탭을 누르면 열린다.\n1. \"활동\" 탭을 누른다\n")
+        File(dir, "posters.md").writeText("---\nname: 포스터\n---\n1. \"재혼 황후\" 포스터를 누른다\n")
+        File(dir, "empty.md").writeText("---\nname: 빈 계정\nsetup:\n  appState: member-empty\n---\n1. \"아직 평가한 작품이 없어요\"가 보이는지 확인한다\n")
+        File(dir, "other.md").writeText("---\nname: 타인\nsetup:\n  appState: member\n  deeplink: app://users/1\n---\n1. \"활동\" 탭을 누른다\n")
+        File(dir, "0-first.md").writeText("1. 스텝\n")
+        val p = SimulProject(root)
+
+        val posters = p.load(File(dir, "posters.md"))
+        assertEquals("나의왓챠-활동", posters.via)
+        assertEquals(Scenario.Setup(deeplink = "app://my", launch = false, appState = "member"), posters.setup, "it opens what the way in opens, as the account the way in names")
+        assertEquals("member-empty", p.load(File(dir, "empty.md")).setup?.appState, "an account of its own is kept")
+        assertEquals("app://my", p.load(File(dir, "empty.md")).setup?.deeplink)
+        val other = p.load(File(dir, "other.md"))
+        assertEquals(null to "app://users/1", other.via to other.setup?.deeplink, "a scenario with its own address opens the app itself")
+        assertEquals(null to "나의왓챠-활동 진입", p.load(File(dir, "_entry.md")).let { it.via to it.name }, "unnamed, a way in is called by its screen")
+        assertEquals(listOf("_entry.md", "0-first.md"), p.scenarios().filter { it.parentFile == dir }.take(2).map { it.name }, "the way in is first in its directory")
+
+        val entry = p.entryOf("나의왓챠-활동")!!
+        assertEquals(listOf("\"활동\" 탭을 누른다"), entry.steps)
+        assertEquals("member" to null, entry.precondition to entry.trace, "not recorded yet")
+        assertNull(p.entryOf("billing"), "a screen without the file has no way in of its own")
+
+        // a recording of one scenario records the way in first when its trace is missing; a replay leaves it to fail by itself
+        val target = listOf(File(dir, "posters.md") to posters)
+        assertEquals(listOf("_entry.md", "posters.md"), withEntries(p, target, RunMode.LLM).map { it.first.name })
+        assertEquals(listOf("posters.md"), withEntries(p, target, RunMode.REPLAY).map { it.first.name })
+        assertEquals(0, cliMain(arrayOf("run", "나의왓챠-활동/posters.md", "--dry-run"), root))
+
+        // a way in opens the app and is plain steps
+        File(dir, "_entry.md").writeText("1. \"활동\" 탭을 누른다\n")
+        assertFailsWith<IllegalArgumentException> { p.load(File(dir, "posters.md")) }
+        File(dir, "_entry.md").writeText("---\nsetup:\n  deeplink: app://my\n---\n## 가\n1. 스텝\n")
+        assertFailsWith<IllegalArgumentException> { p.load(File(dir, "_entry.md")) }
     }
 }

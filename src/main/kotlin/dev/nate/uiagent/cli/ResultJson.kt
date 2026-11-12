@@ -76,8 +76,12 @@ object ResultJson {
         val setup: Setup? = null,
     )
 
-    /** A scenario's way in: the [deeplink] it opens or a plain [launch], from the account state [appState]. */
-    data class Setup(val deeplink: String?, val launch: Boolean, val appState: String?) {
+    /**
+     * A scenario's way in: the [deeplink] it opens or a plain [launch], from the account state [appState].
+     * [via] is the screen whose way in (`_entry.md`) it started from: the address is that entry's, and the
+     * entry's steps were played before the scenario's own.
+     */
+    data class Setup(val deeplink: String?, val launch: Boolean, val appState: String?, val via: String? = null) {
         /** `watcha://my`, or `앱 실행` for a plain launch; null when the scenario names neither. */
         val entry: String? get() = deeplink ?: if (launch) "앱 실행" else null
     }
@@ -116,6 +120,7 @@ object ResultJson {
                     s.deeplink?.let { put("deeplink", it) }
                     if (s.launch) put("launch", true)
                     s.appState?.let { put("app_state", it) }
+                    s.via?.let { put("via", it) }
                 })
             }
             // the scenario's `values:` as this run picked them — absent when it declares none
@@ -151,6 +156,9 @@ object ResultJson {
                         put("title", sec.title)
                         put("description", fillValues(sec.description, r.values))
                         if (sec.preparation) put("preparation", true)
+                        // where the section started when that was not the scenario's entry
+                        sec.open?.deeplink?.let { put("deeplink", it) }
+                        sec.open?.screen?.let { put("entry", it) }
                         put("status", sec.status.name)
                         put("from", sec.steps.first)
                         put("to", sec.steps.last)
@@ -249,7 +257,16 @@ object ResultJson {
      * One `## title` section of a run: [status] PASSED | FAILED | SKIPPED (not reached), owning the steps
      * [from]..[to]. [preparation] is the `## 준비` section: done by the model, a test of nothing.
      */
-    data class Section(val title: String, val description: String, val preparation: Boolean, val status: String, val from: Int, val to: Int)
+    data class Section(
+        val title: String, val description: String, val preparation: Boolean, val status: String, val from: Int, val to: Int,
+        /** The address the section was opened at instead of the scenario's entry (`deeplink:` under its heading). */
+        val deeplink: String? = null,
+        /** The screen whose way in the section started from instead of the scenario's entry (`entry:` under its heading). */
+        val entry: String? = null,
+    ) {
+        /** The section started somewhere of its own: it went to look at another place rather than walk there. */
+        val opened: Boolean get() = deeplink != null || entry != null
+    }
 
     data class Video(val file: String, val durationMs: Long?)
 
@@ -341,11 +358,11 @@ object ResultJson {
                 )
             } ?: emptyList(),
             setupEvents = events(o, "setup_events"),
-            setup = o.obj("setup")?.let { s -> Setup(s.str("deeplink"), s.bool("launch") == true, s.str("app_state")) },
+            setup = o.obj("setup")?.let { s -> Setup(s.str("deeplink"), s.bool("launch") == true, s.str("app_state"), s.str("via")) },
             sections = o.arr("sections")?.mapNotNull { el ->
                 val sec = el as? JsonObject ?: return@mapNotNull null
                 Section(sec.str("title") ?: return@mapNotNull null, sec.str("description") ?: "", sec.bool("preparation") == true,
-                    sec.str("status") ?: "SKIPPED", sec.int("from") ?: 0, sec.int("to") ?: 0)
+                    sec.str("status") ?: "SKIPPED", sec.int("from") ?: 0, sec.int("to") ?: 0, sec.str("deeplink"), sec.str("entry"))
             } ?: emptyList(),
         )
     }

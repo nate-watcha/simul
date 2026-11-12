@@ -58,6 +58,13 @@ data class Scenario(
     val values: Map<String, List<String>> = emptyMap(),
     /** The `## title` sections [steps] is split into, in file order; empty for a scenario without headings. */
     val sections: List<Section> = emptyList(),
+    /**
+     * The screen (group directory) whose way in this scenario starts from: its `_entry.md` says where the app
+     * is opened and the steps from there, and the runner plays them from that file's trace before this
+     * scenario's first step ([SimulProject.load] sets it, and [setup] to the entry's). Null for a scenario that
+     * opens the app by itself.
+     */
+    val via: String? = null,
 ) {
     /** The app state this scenario requires: appState name, "guest" for clearData, or null
      *  (undeclared — runs against whatever state the device happens to be in). */
@@ -132,9 +139,25 @@ data class Scenario(
      * The [preparation] section (`## 준비`, always the first) is not a test: its steps go to the model in
      * every mode, are never traced, and bring the app to the state the sections after it start from.
      */
-    data class Section(val title: String, val description: String, val first: Int, val size: Int, val preparation: Boolean = false) {
+    data class Section(
+        val title: String, val description: String, val first: Int, val size: Int, val preparation: Boolean = false,
+        /** Where this section starts when that is not the scenario's entry — the line under its heading. */
+        val open: Open? = null,
+    ) {
         val steps: IntRange get() = first until first + size
+
+        /**
+         * The section is a look at another screen — it opens there, or its sentence mentions one (`[[화면]]`).
+         * What it finds says nothing about the sections after it, so they run even when it fails.
+         */
+        val looksElsewhere: Boolean get() = open != null || Mentions.of(description).isNotEmpty()
     }
+
+    /**
+     * Where a section starts instead of the scenario's entry: `deeplink: <address>` opens that address,
+     * `entry: <화면>` goes the way in of that screen (its `_entry.md`). One of the two.
+     */
+    data class Open(val deeplink: String? = null, val screen: String? = null)
 
     companion object {
         /** The one state name that needs no snapshot: without `guest.tar` it means a fresh install. */
@@ -159,6 +182,9 @@ object ScenarioMd {
 
     /** The headings that make a section the scenario's preparation (see [Scenario.Section.preparation]). */
     private val PREPARATION_TITLES = listOf("준비", "Preparation")
+
+    /** `deeplink: <address>` / `entry: <화면>` right under a `## title`: where that section starts ([Scenario.Open]). */
+    private val openRegex = Regex("""^(deeplink|entry):\s*(\S.*)$""")
 
     /** A continuation line under a step: `:: criterion` or `:: state → criterion`. */
     private val criterionLineRegex = Regex("""^\s*::\s*(.*)$""")
@@ -243,7 +269,7 @@ object ScenarioMd {
     private fun parseBody(body: String, name: String, states: List<String>): Body {
         val steps = mutableListOf<Scenario.StepDef>()
         val prose = mutableListOf<String>()
-        class Open(val title: String, val first: Int) { val prose = mutableListOf<String>() }
+        class Open(val title: String, val first: Int) { val prose = mutableListOf<String>(); var open: Scenario.Open? = null }
         val opened = mutableListOf<Open>()
         fun attach(raw: String) {
             require(steps.isNotEmpty()) { "scenario '$name': `:: $raw` must follow a numbered step" }
@@ -269,12 +295,21 @@ object ScenarioMd {
             val text = line.trim().takeIf { it.isNotEmpty() && !it.startsWith("#") } ?: continue
             val open = opened.lastOrNull()
             if (open == null) { if (steps.isEmpty()) prose += text }
-            else if (steps.size == open.first) open.prose += text
+            else if (steps.size == open.first) {
+                val at = openRegex.matchEntire(text)?.takeIf { open.prose.isEmpty() && open.open == null }
+                if (at == null) open.prose += text
+                else {
+                    val value = Mentions.plain(at.groupValues[2]).trim()
+                    open.open = if (at.groupValues[1] == "deeplink") Scenario.Open(deeplink = value) else Scenario.Open(screen = Mentions.norm(value))
+                }
+            }
         }
         val sections = opened.mapIndexed { i, o ->
             val size = (opened.getOrNull(i + 1)?.first ?: steps.size) - o.first
             require(size > 0) { "scenario '$name': section '${o.title}' has no steps" }
-            Scenario.Section(o.title, o.prose.joinToString(" "), o.first, size, preparation = PREPARATION_TITLES.any { it.equals(o.title, ignoreCase = true) })
+            val preparation = PREPARATION_TITLES.any { it.equals(o.title, ignoreCase = true) }
+            require(!preparation || o.open == null) { "scenario '$name': `## ${o.title}` prepares the scenario's own entry — it takes no `deeplink:`/`entry:` line" }
+            Scenario.Section(o.title, o.prose.joinToString(" "), o.first, size, preparation = preparation, open = o.open)
         }
         val titles = sections.map { it.title }
         require(titles.distinct().size == titles.size) { "scenario '$name': two sections share a title (${titles.joinToString(", ")})" }
@@ -304,4 +339,33 @@ object ScenarioMd {
         val body = lines.subList(end + 2, lines.size).joinToString("\n")
         return front to body
     }
+}
+
+/**
+ * `[[화면]]` in a scenario's prose or a section's sentence: the check is about that screen too. The scenario is
+ * written once, where the action happens; the report shows the check on the mentioned screen's page as well
+ * (a screen is a group directory, named as the directory is). Only the report reads it — a step never does.
+ */
+object Mentions {
+    private val RE = Regex("""\[\[([^\[\]]+)]]""")
+
+    /** The screens [text] mentions, in order, each once. */
+    fun of(text: String): List<String> = RE.findAll(text).map { norm(it.groupValues[1]) }.distinct().toList()
+
+    /** [text] with each mention as its screen's name alone. */
+    fun plain(text: String): String = RE.replace(text) { it.groupValues[1].trim() }
+
+    /** [text] cut at its mentions: `(plain text, null)` and `(name as written, screen)` in turn. */
+    fun parts(text: String): List<Pair<String, String?>> = buildList {
+        var at = 0
+        for (m in RE.findAll(text)) {
+            if (m.range.first > at) add(text.substring(at, m.range.first) to null)
+            add(m.groupValues[1].trim() to norm(m.groupValues[1]))
+            at = m.range.last + 1
+        }
+        if (at < text.length) add(text.substring(at) to null)
+    }
+
+    /** A directory name read from disk and one typed in a file may differ in Unicode form (macOS hands out decomposed Hangul). */
+    fun norm(name: String): String = java.text.Normalizer.normalize(name.trim(), java.text.Normalizer.Form.NFC)
 }
