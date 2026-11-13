@@ -76,6 +76,8 @@ object ResultJson {
         val setup: Setup? = null,
         /** The screens [description] mentions (`@화면`). */
         val mentions: List<String> = emptyList(),
+        /** A way in's `tabs:` — the directories under its screen that are the screen's tabs, in order. */
+        val tabs: List<String> = emptyList(),
     )
 
     /**
@@ -118,6 +120,7 @@ object ResultJson {
             put("owner", meta.owner?.let(::JsonPrimitive) ?: JsonNull)
             put("description", meta.description)
             if (meta.mentions.isNotEmpty()) put("mentions", buildJsonArray { meta.mentions.forEach { add(JsonPrimitive(it)) } })
+            if (meta.tabs.isNotEmpty()) put("tabs", buildJsonArray { meta.tabs.forEach { add(JsonPrimitive(it)) } })
             meta.setup?.let { s ->
                 put("setup", buildJsonObject {
                     s.deeplink?.let { put("deeplink", it) }
@@ -226,6 +229,8 @@ object ResultJson {
         val description: String,
         /** The screens [description] mentions (`@화면`). */
         val mentions: List<String> = emptyList(),
+        /** A way in's `tabs:` — the directories under its screen that are the screen's tabs, in order. */
+        val tabs: List<String> = emptyList(),
         val traceRecordedAt: String?,
         /** PASSED | FAILED | SKIPPED_SETUP */
         val status: String,
@@ -332,6 +337,7 @@ object ResultJson {
             owner = o.str("owner"),
             description = o.str("description") ?: "",
             mentions = o.strList("mentions"),
+            tabs = o.strList("tabs"),
             traceRecordedAt = o.str("trace_recorded_at"),
             status = o.str("status") ?: "FAILED",
             failedStep = o.int("failed_step"),

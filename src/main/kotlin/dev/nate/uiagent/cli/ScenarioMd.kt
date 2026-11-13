@@ -84,6 +84,13 @@ data class Scenario(
     val via: String? = null,
     /** The screens [description] mentions (`@화면`), as [SimulProject.load] resolved them against the project's screens. */
     val mentions: List<String> = emptyList(),
+    /**
+     * `tabs: [홈, 활동, …]` in a screen's `_entry.md`: which of the directories under that screen's are its tabs,
+     * in the order the app shows them. A screen is a directory and screens nest as directories do; what a nested
+     * one is to the one above — a part of it, a tab of it, a screen opened from it — the report reads from this
+     * line and from whether it has a way in of its own ([Site.Place]). The runner does not read it.
+     */
+    val tabs: List<String> = emptyList(),
 ) {
     /** The app state this scenario requires: appState name, "guest" for clearData, or null
      *  (undeclared — runs against whatever state the device happens to be in). */
@@ -280,6 +287,7 @@ object ScenarioMd {
             stepDefs = stepDefs,
             values = values,
             sections = sections,
+            tabs = MiniYaml.list(y, "tabs").map(Mentions::norm),
         )
     }
 

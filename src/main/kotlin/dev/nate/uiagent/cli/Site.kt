@@ -98,18 +98,50 @@ object Site {
     class Entry(val entry: String, val states: Map<String, Int>)
 
     /**
+     * What a nested screen is to the one its directory is in — read from the files, not written anywhere as a word:
+     * a [TAB] is named in the upper screen's `tabs:` line; a screen with a way in of its own (`_entry.md`) is one that
+     * [OPENS] from the upper one; one without is a [PART] of it, there as soon as the upper screen is open. A screen
+     * with nothing above it is a [ROOT].
+     */
+    enum class Place { ROOT, PART, TAB, OPENS }
+
+    /**
      * The scenarios of one group directory: a screen of the app (or an issue), which is what the report is organised
-     * by — the first page lists screens, and each has a page that reads as its spec.
+     * by — the first page lists screens, and each has a page that reads as its spec. Screens nest as their directories
+     * do ([children], [place]): a part and a tab are drawn on the page of the screen they belong to, a screen that
+     * opens from another has a page of its own under it.
      */
     class Screen(val feature: String, val rows: List<Row>) {
         val name: String get() = feature.ifEmpty { "(root)" }
+        /** Its own name, without the screens above it: `활동` of `나의 왓챠/활동`. */
+        val label: String get() = feature.substringAfterLast('/').ifEmpty { "(root)" }
+        var parent: Screen? = null
+            internal set
+        var place: Place = Place.ROOT
+            internal set
+        /** The screens nested in this one: its tabs in the order the app shows them, then the others by name. */
+        var children: List<Screen> = emptyList()
+            internal set
+        val parts: List<Screen> get() = children.filter { it.place == Place.PART }
+        val tabs: List<Screen> get() = children.filter { it.place == Place.TAB }
+        val opens: List<Screen> get() = children.filter { it.place == Place.OPENS }
+        /** The screen whose page this one is read on: itself, or the one it is a part or a tab of. */
+        val page: Screen get() = if (place == Place.ROOT || place == Place.OPENS) this else parent!!.page
+        /** The screens drawn on this one's page: itself, its parts and tabs, and theirs. */
+        val onPage: List<Screen> get() = listOf(this) + children.filter { it.place == Place.PART || it.place == Place.TAB }.flatMap { it.onPage }
+        /** This screen and every one nested in it. */
+        val subtree: List<Screen> get() = listOf(this) + children.flatMap { it.subtree }
+        /** The topmost screen it is nested in (itself for a root). */
+        val root: Screen get() = parent?.root ?: this
         /** The screen's way in (`_entry.md`), when its directory has one and it ran. */
         val entry: Row? get() = rows.firstOrNull { it.isEntry }
+        /** It is entered by a way of its own: its directory has one, or a scenario of it says it started from it. */
+        val hasOwnWayIn: Boolean get() = entry != null || rows.any { r -> r.result.setup?.via?.let(Mentions::norm) == Mentions.norm(feature) }
         /** The scenarios that test the screen: all but its way in. */
         val scenarios: List<Row> get() = rows.filterNot { it.isEntry }
         val checks: List<Check> get() = rows.flatMap { it.checks }
         /** The worst of its scenarios. */
-        val kind: Kind get() = rows.minOf { it.kind }
+        val kind: Kind get() = kindOf(rows)
         val durationMs: Long get() = rows.sumOf { it.timeline.durationMs }
         /** The ways in its scenarios declare (`setup:`), most used first; empty for results that recorded none. */
         val entries: List<Entry> get() = rows.mapNotNull { r -> r.result.setup?.let { s -> s.entry?.let { it to (s.appState ?: r.result.state ?: "") } } }
@@ -118,9 +150,54 @@ object Site {
             .sortedByDescending { it.states.values.sum() }
     }
 
-    /** The screens of a run, those with a failure first, then by name. */
-    fun screens(rows: List<Row>): List<Screen> = rows.groupBy { it.result.feature }.map { Screen(it.key, it.value) }
-        .sortedWith(compareBy({ it.kind.ordinal }, { it.feature }))
+    /** The worst of [rows]; a screen that only holds other screens has none and nothing against it. */
+    fun kindOf(rows: List<Row>): Kind = rows.minOfOrNull { it.kind } ?: Kind.PASSED
+
+    /** The rows of [screens] together. */
+    fun rowsOf(screens: List<Screen>): List<Row> = screens.flatMap { it.rows }
+
+    /**
+     * Every screen of a run, those with a failure first, then by name — each knowing the screen it is nested in and
+     * what it is to it ([Place]). A directory that holds only other screens' directories is a screen too: the one
+     * they are parts of.
+     */
+    fun screens(rows: List<Row>): List<Screen> {
+        val by = LinkedHashMap<String, Screen>()
+        rows.groupBy { it.result.feature }.forEach { (feature, its) -> by[Mentions.norm(feature)] = Screen(feature, its) }
+        for (feature in by.values.map { it.feature }) {
+            var up = feature
+            while ('/' in up) { up = up.substringBeforeLast('/'); by.getOrPut(Mentions.norm(up)) { Screen(up, emptyList()) } }
+        }
+        val kids = by.values.filter { '/' in it.feature }.groupBy { by.getValue(Mentions.norm(it.feature.substringBeforeLast('/'))) }
+        for ((parent, children) in kids) {
+            val tabs = parent.entry?.result?.tabs.orEmpty().map(Mentions::norm)
+            for (c in children) {
+                c.parent = parent
+                c.place = when {
+                    Mentions.norm(c.label) in tabs -> Place.TAB
+                    c.hasOwnWayIn -> Place.OPENS
+                    else -> Place.PART
+                }
+            }
+            parent.children = children.sortedWith(compareBy({ tabs.indexOf(Mentions.norm(it.label)).let { i -> if (i < 0) Int.MAX_VALUE else i } }, { it.feature }))
+        }
+        return by.values.sortedWith(compareBy({ it.kind.ordinal }, { it.feature }))
+    }
+
+    /**
+     * The screens that have a page, in the order the report lists them: the roots — one with a failure anywhere in it
+     * first, then by name — each followed by the screens that open from it, and from those.
+     */
+    fun pages(screens: List<Screen>): List<Screen> {
+        fun under(s: Screen): List<Screen> = listOf(s) + s.onPage.flatMap { it.opens }.flatMap(::under)
+        return screens.filter { it.parent == null }
+            .sortedWith(compareBy({ kindOf(rowsOf(it.subtree)).ordinal }, { it.feature }))
+            .flatMap(::under)
+    }
+
+    /** [row] was not run because the way in of [screen] had failed. */
+    fun waitsFor(row: Row, screen: String): Boolean =
+        row.waitsForEntry && row.result.reason?.let(Mentions::norm)?.contains("'${Mentions.norm(screen)}'") == true
 
     class Row(val result: ResultJson.Result, val kind: Kind, val record: ScenarioOutcome? = null, val recording: ResultJson.Result? = null) {
         val id get() = result.id
@@ -181,9 +258,9 @@ object Site {
         )
     }
 
-    /** Every result.json under [dir] (at most three levels deep, `record/` aside). */
+    /** Every result.json under [dir] (`record/` aside): `<screen>/<scenario>/result.json`, the screen a path of nested directories. */
     private fun resultsUnder(dir: File, skip: File? = null): List<ResultJson.Result> =
-        dir.walkTopDown().onEnter { it != skip }.maxDepth(3)
+        dir.walkTopDown().onEnter { it != skip && !File(it.parentFile, ResultJson.FILE).isFile }
             .filter { it.isFile && it.name == ResultJson.FILE }
             .mapNotNull(ResultJson::read)
             .toList()

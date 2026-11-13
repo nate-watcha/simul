@@ -254,4 +254,50 @@ class CliProjectTest {
         File(issue, "typo.md").writeText("---\nsetup:\n  entry: 프로필 수정\n---\n1. 스텝\n")
         assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(issue, "typo.md")) }.message!!, "has no _entry.md")
     }
+
+    @Test
+    fun `screens nest as directories do - a part starts from the screen's way in, and the way in says which are tabs`() {
+        val root = makeProject()
+        val my = File(root, ".simul/scenarios/나의 왓챠")
+        for (d in listOf("프로필 헤더", "홈", "활동", "프로필 수정")) File(my, d).mkdirs()
+        File(my, "_entry.md").writeText("---\ntabs: [홈, 활동]\nsetup:\n  appState: member\n  deeplink: app://my\n---\n1. \"프로필 수정\"이 보이는지 확인한다\n")
+        File(my, "tabs.md").writeText("---\nname: 탭 이동\n---\n누르면 그 탭(@나의 왓챠/활동)으로 바뀐다.\n\n1. \"활동\" 탭을 누른다\n")
+        // a part: no way in of its own
+        File(my, "프로필 헤더/link.md").writeText("---\nname: 링크 열기\n---\n1. 링크를 누른다\n")
+        // a tab that is open at once, and one that is a tap away
+        File(my, "홈/empty.md").writeText("---\nname: 빈 계정\nsetup:\n  appState: member-empty\n---\n1. 안내가 보이는지 확인한다\n")
+        File(my, "활동/_entry.md").writeText("---\nsetup:\n  appState: member\n  deeplink: app://my\n---\n1. \"활동\" 탭을 누른다\n")
+        File(my, "활동/posters.md").writeText("---\nname: 포스터\n---\n1. 포스터를 누른다\n")
+        // a screen that opens from it, looking back at a part of it
+        File(my, "프로필 수정/_entry.md").writeText("---\nsetup:\n  appState: member\n  deeplink: app://my\n---\n1. \"프로필 수정\"을 누른다\n")
+        File(my, "프로필 수정/link.md").writeText("---\nname: 링크\n---\n## 저장\n1. \"완료\"를 누른다\n\n## 다시 들어와도 유지\n\nsetup:\n  entry: 나의 왓챠/프로필 헤더\n\n@나의 왓챠/프로필 헤더의 링크가 바뀌어 있다.\n1. 링크가 보이는지 확인한다\n")
+        val p = SimulProject(root)
+
+        assertEquals(listOf("나의 왓챠", "나의 왓챠/프로필 수정", "나의 왓챠/프로필 헤더", "나의 왓챠/홈", "나의 왓챠/활동").sorted(), p.screens().filter { it.startsWith("나의 왓챠") }.sorted())
+        assertEquals(listOf("홈", "활동"), p.load(File(my, "_entry.md")).tabs)
+
+        val part = p.load(File(my, "프로필 헤더/link.md"))
+        assertEquals("나의 왓챠" to "app://my", part.via to part.setup?.deeplink, "a part has no way in to write: it starts from the screen's")
+        val home = p.load(File(my, "홈/empty.md"))
+        assertEquals("나의 왓챠" to "member-empty", home.via to home.setup?.appState, "the way in of the nearest screen above, as its own account")
+        assertEquals("나의 왓챠/활동", p.load(File(my, "활동/posters.md")).via, "its own way in comes first")
+        assertEquals(listOf("나의 왓챠/활동"), p.load(File(my, "tabs.md")).mentions, "a nested screen is named by its path")
+
+        // a section may start from a nested screen: its way in is the one that screen starts from
+        val link = p.load(File(my, "프로필 수정/link.md"))
+        assertEquals(Scenario.Open(screen = "나의 왓챠/프로필 헤더"), link.sections[1].open)
+        assertEquals(listOf("나의 왓챠/프로필 헤더"), link.sections[1].mentions)
+        assertEquals("app://my", p.entryOf("나의 왓챠/활동")?.setup?.deeplink)
+        assertEquals("나의 왓챠" to "나의 왓챠/_entry.md", p.entryOf("나의 왓챠/프로필 헤더")?.let { it.screen to it.file }, "the way in to a part is its screen's")
+        assertNull(p.entryOf("나의 왓챠/없는 화면"))
+        assertEquals(listOf("_entry.md", "_entry.md", "link.md"), withEntries(p, listOf(File(my, "프로필 수정/link.md") to link), RunMode.LLM).map { it.first.name },
+            "its own way in and the one its section starts from are recorded first")
+        assertEquals(0, cliMain(arrayOf("run", "나의 왓챠/홈/empty.md", "--dry-run"), root))
+
+        // a tab is a directory under the screen; the line is the way in's
+        File(my, "_entry.md").writeText("---\ntabs: [홈, 좋아요]\nsetup:\n  deeplink: app://my\n---\n1. 스텝\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(my, "_entry.md")) }.message!!, "tabs 좋아요")
+        File(my, "tabs.md").writeText("---\ntabs: [홈]\n---\n1. 스텝\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(my, "tabs.md")) }.message!!, "_entry.md")
+    }
 }
