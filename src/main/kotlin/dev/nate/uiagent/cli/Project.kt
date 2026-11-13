@@ -26,15 +26,33 @@ class SimulProject(val appRoot: File) {
             .sortedWith(compareBy({ it.parentFile.relativeTo(scenariosDir).path }, { it.name != ENTRY_FILE }, { it.name }))
             .toList()
 
-    /** The screen a scenario file belongs to: its group directory under `scenarios/` ("" for a file at the root). */
+    /**
+     * The screen a scenario file belongs to: its directory under `scenarios/`, as a path ("" for a file at the root).
+     * Screens nest as directories do — `나의 왓챠/활동` is the 활동 of 나의 왓챠 — and that path is the screen's name
+     * everywhere: in a mention, in `setup.entry`, in the report.
+     */
     fun screenOf(md: File): String = Mentions.norm(areaOf(md.absoluteFile.relativeTo(scenariosDir.absoluteFile).path))
 
-    /** The file that says how [md]'s screen is entered, when its directory has one and [md] is not that file. */
-    fun entryFileOf(md: File): File? =
-        File(md.absoluteFile.parentFile, ENTRY_FILE).takeIf { it.isFile && md.name != ENTRY_FILE && screenOf(md).isNotEmpty() }
+    /**
+     * The file that says how [md]'s screen is entered, when [md] is not that file: the `_entry.md` of its own
+     * directory, else of the nearest directory above that has one — a part of a screen is there as soon as the
+     * screen is open, so it has no way in to write and starts from the screen's.
+     */
+    fun entryFileOf(md: File): File? {
+        if (md.name == ENTRY_FILE || screenOf(md).isEmpty()) return null
+        val top = scenariosDir.absoluteFile
+        return generateSequence(md.absoluteFile.parentFile) { it.parentFile }.takeWhile { it != top }
+            .map { File(it, ENTRY_FILE) }.firstOrNull { it.isFile }
+    }
 
-    /** Every screen of the project: the group directories that hold a scenario, named as [screenOf] names them. */
-    fun screens(): List<String> = scenarios().map(::screenOf).filter { it.isNotEmpty() }.distinct()
+    /** Every screen of the project: the directories that hold a scenario, in themselves or below, named as [screenOf] names them. */
+    fun screens(): List<String> = scenarios().map(::screenOf).filter { it.isNotEmpty() }
+        .flatMap { path -> path.split('/').let { seg -> seg.indices.map { i -> seg.subList(0, i + 1).joinToString("/") } } }.distinct()
+
+    /** The directory of [screen] (a path of directory names, compared in one Unicode form); null when there is none. */
+    private fun dirOf(screen: String): File? = screen.split('/').fold(scenariosDir as File?) { dir, name ->
+        dir?.listFiles { f -> f.isDirectory && Mentions.norm(f.name) == Mentions.norm(name) }?.firstOrNull()
+    }
 
     /**
      * [md] as it runs. A screen's directory may hold `_entry.md` — where the app is opened to get to that
@@ -49,15 +67,17 @@ class SimulProject(val appRoot: File) {
     fun load(md: File): Scenario {
         val scenario = mentioned(ScenarioMd.parse(md))
         // every screen's way in is the same file name: unnamed, it is called by its screen in logs, summaries and report directories
-        if (md.name == ENTRY_FILE) return scenario.also(::checkEntry).let { if (it.name == md.nameWithoutExtension) it.copy(name = entryName(screenOf(md))) else it }
+        if (md.name == ENTRY_FILE) return scenario.also { checkEntry(it, md) }.let { if (it.name == md.nameWithoutExtension) it.copy(name = entryName(screenOf(md))) else it }
+        require(scenario.tabs.isEmpty()) { "scenario '${scenario.name}': `tabs:` says which directories under a screen are its tabs — it goes in that screen's $ENTRY_FILE" }
         val own = scenario.setup
         val screen = own?.entry
-            ?: entryFileOf(md)?.takeIf { own?.deeplink == null && own?.launch != true }?.let { screenOf(md) }
+            ?: entryFileOf(md)?.takeIf { own?.deeplink == null && own?.launch != true }?.let(::screenOf)
             ?: return scenario
-        val entry = (entryOf(screen) ?: throw IllegalArgumentException("scenario '${scenario.name}': setup.entry '$screen' — that screen has no $ENTRY_FILE")).setup
+        val way = entryOf(screen) ?: throw IllegalArgumentException("scenario '${scenario.name}': setup.entry '$screen' — that screen has no $ENTRY_FILE, nor has a screen above it")
+        val entry = way.setup
         val ownAccount = own?.appState != null || own?.clearData == true || scenario.states.isNotEmpty()
         return scenario.copy(
-            via = screen,
+            via = way.screen,
             setup = Scenario.Setup(
                 deeplink = entry.deeplink, launch = entry.launch,
                 clearData = if (ownAccount) own?.clearData == true else entry.clearData,
@@ -82,19 +102,29 @@ class SimulProject(val appRoot: File) {
         )
     }
 
-    private fun checkEntry(entry: Scenario) {
+    private fun checkEntry(entry: Scenario, md: File) {
         val name = "$ENTRY_FILE '${entry.name}'"
+        val under = md.absoluteFile.parentFile.listFiles { f -> f.isDirectory }?.map { Mentions.norm(it.name) }.orEmpty()
+        (entry.tabs - under.toSet()).let { missing ->
+            require(missing.isEmpty()) { "$name: tabs ${missing.joinToString(", ")} — a tab is a directory under this screen's (there: ${under.joinToString(", ").ifEmpty { "none" }})" }
+        }
         require(entry.setup?.deeplink != null || entry.setup?.launch == true) { "$name: a way in opens the app — give it `setup.deeplink` or `setup.launch: true`" }
         require(entry.sections.isEmpty() && entry.values.isEmpty() && entry.states.isEmpty()) { "$name: a way in is plain steps — no `##` sections, `values:` or `states:`" }
     }
 
-    /** The way in of [screen] with the trace that plays it (null until it is recorded); null when the screen has no `_entry.md`. */
+    /**
+     * The way in of [screen] with the trace that plays it (null until it is recorded): its own `_entry.md`, or — for a
+     * part of a screen, which has none — that of the nearest screen above ([ScreenEntry.screen] is the one whose file
+     * it is). Null when there is no such screen, or no way in on the way up.
+     */
     fun entryOf(screen: String): ScreenEntry? {
-        val dir = scenariosDir.listFiles { f -> f.isDirectory && Mentions.norm(f.name) == Mentions.norm(screen) }?.firstOrNull() ?: return null
-        val md = File(dir, ENTRY_FILE).takeIf { it.isFile } ?: return null
+        if (dirOf(screen) == null) return null
+        val owner = generateSequence(Mentions.norm(screen)) { at -> at.substringBeforeLast('/', "").ifEmpty { null } }
+            .firstOrNull { at -> dirOf(at)?.let { File(it, ENTRY_FILE).isFile } == true } ?: return null
+        val md = File(dirOf(owner)!!, ENTRY_FILE)
         val entry = load(md)
         val trace = traceFileFor(md).takeIf { it.isFile }?.let { runCatching { TraceJson.read(it) }.getOrNull() }
-        return ScreenEntry(Mentions.norm(screen), entry.setup!!, entry.steps, entry.precondition, trace, md.relativeTo(scenariosDir).path)
+        return ScreenEntry(owner, entry.setup!!, entry.steps, entry.precondition, trace, md.relativeTo(scenariosDir).path)
     }
 
     /**
