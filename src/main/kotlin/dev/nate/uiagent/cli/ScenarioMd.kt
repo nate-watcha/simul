@@ -84,13 +84,6 @@ data class Scenario(
     val via: String? = null,
     /** The screens [description] mentions (`@화면`), as [SimulProject.load] resolved them against the project's screens. */
     val mentions: List<String> = emptyList(),
-    /**
-     * `tabs: [홈, 활동, …]` in a screen's `_entry.md`: which of the directories under that screen's are its tabs,
-     * in the order the app shows them. A screen is a directory and screens nest as directories do; what a nested
-     * one is to the one above — a part of it, a tab of it, a screen opened from it — the report reads from this
-     * line and from whether it has a way in of its own ([Site.Place]). The runner does not read it.
-     */
-    val tabs: List<String> = emptyList(),
 ) {
     /** The app state this scenario requires: appState name, "guest" for clearData, or null
      *  (undeclared — runs against whatever state the device happens to be in). */
@@ -242,6 +235,8 @@ object ScenarioMd {
         require(states.distinct().size == states.size) { "scenario '$name': duplicate entries in states: $states" }
         require(states.all(Scenario::isValidStateName)) { "scenario '$name': state names must be [A-Za-z0-9._-]+ (states: $states)" }
 
+        // where the tabs of a screen were written before `_screen.md`: said, so the line is not dropped unread
+        require(y["tabs"] == null) { "scenario '$name': a screen's tabs are the bracketed row of `parts:` in its ${ScreenMd.FILE} — `parts: [상단 바, [홈, 활동]]`" }
         val parsed = parseBody(body, name, states)
         val stepDefs = parsed.steps
         val description = parsed.description
@@ -287,7 +282,6 @@ object ScenarioMd {
             stepDefs = stepDefs,
             values = values,
             sections = sections,
-            tabs = MiniYaml.list(y, "tabs").map(Mentions::norm),
         )
     }
 

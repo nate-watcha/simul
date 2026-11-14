@@ -12,9 +12,11 @@ import dev.nate.uiagent.obj
 import dev.nate.uiagent.prettyJson
 import dev.nate.uiagent.str
 import dev.nate.uiagent.strList
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -76,8 +78,8 @@ object ResultJson {
         val setup: Setup? = null,
         /** The screens [description] mentions (`@화면`). */
         val mentions: List<String> = emptyList(),
-        /** A way in's `tabs:` — the directories under its screen that are the screen's tabs, in order. */
-        val tabs: List<String> = emptyList(),
+        /** What the scenario's screen and the screens above it are made of (their `_screen.md`), by screen. */
+        val screens: Map<String, ScreenLayout> = emptyMap(),
     )
 
     /**
@@ -120,7 +122,14 @@ object ResultJson {
             put("owner", meta.owner?.let(::JsonPrimitive) ?: JsonNull)
             put("description", meta.description)
             if (meta.mentions.isNotEmpty()) put("mentions", buildJsonArray { meta.mentions.forEach { add(JsonPrimitive(it)) } })
-            if (meta.tabs.isNotEmpty()) put("tabs", buildJsonArray { meta.tabs.forEach { add(JsonPrimitive(it)) } })
+            // a screen's layout top to bottom: a name is a part, an array is the row of tabs
+            if (meta.screens.isNotEmpty()) put("screens", buildJsonObject {
+                meta.screens.forEach { (screen, layout) ->
+                    put(screen, buildJsonArray {
+                        layout.slots.forEach { slot -> if (slot.part != null) add(JsonPrimitive(slot.part)) else add(buildJsonArray { slot.tabs.forEach { add(JsonPrimitive(it)) } }) }
+                    })
+                }
+            })
             meta.setup?.let { s ->
                 put("setup", buildJsonObject {
                     s.deeplink?.let { put("deeplink", it) }
@@ -229,8 +238,8 @@ object ResultJson {
         val description: String,
         /** The screens [description] mentions (`@화면`). */
         val mentions: List<String> = emptyList(),
-        /** A way in's `tabs:` — the directories under its screen that are the screen's tabs, in order. */
-        val tabs: List<String> = emptyList(),
+        /** What the scenario's screen and the screens above it are made of (their `_screen.md`), by screen. */
+        val screens: Map<String, ScreenLayout> = emptyMap(),
         val traceRecordedAt: String?,
         /** PASSED | FAILED | SKIPPED_SETUP */
         val status: String,
@@ -337,7 +346,17 @@ object ResultJson {
             owner = o.str("owner"),
             description = o.str("description") ?: "",
             mentions = o.strList("mentions"),
-            tabs = o.strList("tabs"),
+            screens = o.obj("screens")?.mapNotNull { (screen, v) ->
+                (v as? JsonArray)?.let { arr ->
+                    screen to ScreenLayout(arr.mapNotNull { item ->
+                        when (item) {
+                            is JsonArray -> ScreenLayout.Slot(tabs = item.mapNotNull { (it as? JsonPrimitive)?.contentOrNull })
+                            is JsonPrimitive -> item.contentOrNull?.let { ScreenLayout.Slot(part = it) }
+                            else -> null
+                        }
+                    })
+                }
+            }?.toMap() ?: emptyMap(),
             traceRecordedAt = o.str("trace_recorded_at"),
             status = o.str("status") ?: "FAILED",
             failedStep = o.int("failed_step"),
