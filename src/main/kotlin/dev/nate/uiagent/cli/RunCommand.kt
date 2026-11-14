@@ -317,7 +317,7 @@ internal fun executeScenario(
         owner = scenario.owner,
         description = fillValues(scenario.description, result.values),
         mentions = scenario.mentions,
-        tabs = scenario.tabs,
+        screens = project.layoutsFor(project.screenOf(md)),
         traceRecordedAt = traceRecordedAt(traceFile, project.appRoot),
         env = ResultJson.Env(ops.appVersionName(project.config.app), ops.deviceName(), ops.androidCliVersion()),
         setup = scenario.setup?.let { ResultJson.Setup(it.deeplink, it.launch, scenario.precondition, scenario.via) },

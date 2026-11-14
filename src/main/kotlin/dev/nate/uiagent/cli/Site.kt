@@ -98,10 +98,11 @@ object Site {
     class Entry(val entry: String, val states: Map<String, Int>)
 
     /**
-     * What a nested screen is to the one its directory is in — read from the files, not written anywhere as a word:
-     * a [TAB] is named in the upper screen's `tabs:` line; a screen with a way in of its own (`_entry.md`) is one that
-     * [OPENS] from the upper one; one without is a [PART] of it, there as soon as the upper screen is open. A screen
-     * with nothing above it is a [ROOT].
+     * What a nested screen is to the one its directory is in. The upper screen's `_screen.md` says what it is made of,
+     * top to bottom ([ScreenLayout]): a name there is a [PART] of it, a name in the bracketed row a [TAB], and a
+     * directory it does not name a screen that [OPENS] from it. Where the upper screen has no such file the files are
+     * read instead: a screen with a way in of its own (`_entry.md`) opens from it, one without is a part of it, by
+     * name. A screen with nothing above it is a [ROOT].
      */
     enum class Place { ROOT, PART, TAB, OPENS }
 
@@ -119,8 +120,11 @@ object Site {
             internal set
         var place: Place = Place.ROOT
             internal set
-        /** The screens nested in this one: its tabs in the order the app shows them, then the others by name. */
+        /** The screens nested in this one: those drawn on it in the order they are drawn, then the ones that open from it by name. */
         var children: List<Screen> = emptyList()
+            internal set
+        /** What is drawn on this screen, top to bottom: a part, or the row of tabs ([Slot]). */
+        var slots: List<Slot> = emptyList()
             internal set
         val parts: List<Screen> get() = children.filter { it.place == Place.PART }
         val tabs: List<Screen> get() = children.filter { it.place == Place.TAB }
@@ -150,6 +154,9 @@ object Site {
             .sortedByDescending { it.states.values.sum() }
     }
 
+    /** One place down a screen's page: a [part] of it, or the row of its [tabs]. */
+    class Slot(val part: Screen? = null, val tabs: List<Screen> = emptyList())
+
     /** The worst of [rows]; a screen that only holds other screens has none and nothing against it. */
     fun kindOf(rows: List<Row>): Kind = rows.minOfOrNull { it.kind } ?: Kind.PASSED
 
@@ -168,18 +175,27 @@ object Site {
             var up = feature
             while ('/' in up) { up = up.substringBeforeLast('/'); by.getOrPut(Mentions.norm(up)) { Screen(up, emptyList()) } }
         }
+        // what each screen is made of, as any of the run's results carries it
+        val layouts = rows.flatMap { it.result.screens.entries }.associate { (screen, layout) -> Mentions.norm(screen) to layout }
         val kids = by.values.filter { '/' in it.feature }.groupBy { by.getValue(Mentions.norm(it.feature.substringBeforeLast('/'))) }
         for ((parent, children) in kids) {
-            val tabs = parent.entry?.result?.tabs.orEmpty().map(Mentions::norm)
+            val under = children.associateBy { Mentions.norm(it.label) }
+            val layout = layouts[Mentions.norm(parent.feature)]
             for (c in children) {
                 c.parent = parent
+                val name = Mentions.norm(c.label)
                 c.place = when {
-                    Mentions.norm(c.label) in tabs -> Place.TAB
+                    layout != null -> if (name in layout.tabs) Place.TAB else if (name in layout.parts) Place.PART else Place.OPENS
                     c.hasOwnWayIn -> Place.OPENS
                     else -> Place.PART
                 }
             }
-            parent.children = children.sortedWith(compareBy({ tabs.indexOf(Mentions.norm(it.label)).let { i -> if (i < 0) Int.MAX_VALUE else i } }, { it.feature }))
+            // a named directory none of whose scenarios ran tonight is not there to draw
+            parent.slots = layout?.slots?.mapNotNull { slot ->
+                if (slot.part != null) under[slot.part]?.let { Slot(part = it) }
+                else slot.tabs.mapNotNull(under::get).takeIf { it.isNotEmpty() }?.let { Slot(tabs = it) }
+            } ?: children.filter { it.place == Place.PART }.sortedBy { it.feature }.map { Slot(part = it) }
+            parent.children = parent.slots.flatMap { listOfNotNull(it.part) + it.tabs } + children.filter { it.place == Place.OPENS }.sortedBy { it.feature }
         }
         return by.values.sortedWith(compareBy({ it.kind.ordinal }, { it.feature }))
     }

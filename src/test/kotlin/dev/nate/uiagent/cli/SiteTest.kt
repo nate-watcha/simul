@@ -417,15 +417,18 @@ class SiteTest {
         fun st(n: Int, text: String, status: StepStatus = StepStatus.PASSED, reason: String? = null) =
             StepReport(n, text, status, "replay", emptyList(), emptyList(), reason, 500, emptyList(), startedMs = n * 1000L)
         fun write(feature: String, name: String, title: String, prose: String, via: String?, steps: List<StepReport>, sections: List<SectionReport> = emptyList(),
-                  mentions: List<String> = emptyList(), tabs: List<String> = emptyList(), state: String = "member") {
+                  mentions: List<String> = emptyList(), state: String = "member") {
+            // what `나의 왓챠/_screen.md` says: a part, the row of tabs, a part under it — every result under the screen carries it
+            val my = ScreenLayout(listOf(ScreenLayout.Slot(part = "프로필 헤더"), ScreenLayout.Slot(tabs = listOf("홈", "활동")), ScreenLayout.Slot(part = "하단 바")))
             val dir = File(day, "$feature/$name").apply { mkdirs() }
             val status = if (steps.any { it.status == StepStatus.FAILED }) StepStatus.FAILED else StepStatus.PASSED
             ResultJson.write(ScenarioRunResult(title, status, steps, null, 5000, startedAtMs = 1_794_000_000_000L, reportDir = dir, sections = sections), "replay",
                 ResultJson.Meta(feature, name, null, "$feature/$name.md", title, null, prose, "2026-11-13", ResultJson.Env("6.4.0", "sdk", "1.1"),
-                    setup = ResultJson.Setup("app://my", false, state, via = via), mentions = mentions, tabs = tabs), dir)
+                    setup = ResultJson.Setup("app://my", false, state, via = via), mentions = mentions,
+                    screens = if (feature.startsWith("나의 왓챠")) mapOf("나의 왓챠" to my) else emptyMap()), dir)
         }
-        // 나의 왓챠: its way in says which of the screens under it are tabs
-        write("나의 왓챠", "_entry", "_entry", "나의 왓챠 주소로 바로 열린다.", null, listOf(st(1, "\"프로필 수정\"이 보이는지 확인한다")), tabs = listOf("홈", "활동"))
+        // 나의 왓챠: its `_screen.md` says what it is made of, top to bottom
+        write("나의 왓챠", "_entry", "_entry", "나의 왓챠 주소로 바로 열린다.", null, listOf(st(1, "\"프로필 수정\"이 보이는지 확인한다")))
         write("나의 왓챠", "tabs", "탭 이동", "누르면 그 탭(@나의 왓챠/활동)으로 바뀐다.", "나의 왓챠", listOf(st(1, "\"활동\" 탭을 누른다")), mentions = listOf("나의 왓챠/활동"))
         // a part: no way in of its own, it starts from the screen's
         write("나의 왓챠/프로필 헤더", "link", "링크 열기", "누르면 브라우저로 열린다.", "나의 왓챠", listOf(st(1, "링크를 누른다")))
@@ -441,6 +444,9 @@ class SiteTest {
             listOf(SectionReport("저장", "완료하면 저장된다.", StepStatus.PASSED, 1..1),
                 SectionReport("다시 들어와도 유지", "@나의 왓챠/프로필 헤더의 링크가 바뀌어 있다.", StepStatus.PASSED, 2..2,
                     open = Scenario.Open(screen = "나의 왓챠/프로필 헤더"), mentions = listOf("나의 왓챠/프로필 헤더"))))
+        // a part drawn under the tabs; and a directory the line does not name, though it has no way in of its own
+        write("나의 왓챠/하단 바", "nav", "하단 내비", "다른 탭으로 간다.", "나의 왓챠", listOf(st(1, "\"홈\"을 누른다")))
+        write("나의 왓챠/설정", "open", "설정", "설정이 열린다.", "나의 왓챠", listOf(st(1, "\"설정\"을 누른다")))
         // a screen by itself, as before
         write("작품상세", "rating", "평가", "별을 누르면 저장된다.", null, listOf(st(1, "\"4점\"을 누른다")))
 
@@ -448,17 +454,20 @@ class SiteTest {
         val by = screens.associateBy { it.feature }
         assertEquals(
             mapOf("나의 왓챠" to Site.Place.ROOT, "나의 왓챠/프로필 헤더" to Site.Place.PART, "나의 왓챠/홈" to Site.Place.TAB, "나의 왓챠/활동" to Site.Place.TAB,
-                "나의 왓챠/프로필 수정" to Site.Place.OPENS, "작품상세" to Site.Place.ROOT),
-            screens.associate { it.feature to it.place }, "named in `tabs:`, a tab; with a way in of its own, opened from it; with neither, a part")
-        assertEquals(listOf("홈", "활동"), by.getValue("나의 왓챠").tabs.map { it.label }, "tabs in the order the app shows them")
-        assertEquals(listOf("나의 왓챠", "나의 왓챠/프로필 수정", "작품상세"), Site.pages(screens).map { it.feature }, "the root with a failure in it first, then what opens from it")
+                "나의 왓챠/하단 바" to Site.Place.PART, "나의 왓챠/프로필 수정" to Site.Place.OPENS, "나의 왓챠/설정" to Site.Place.OPENS, "작품상세" to Site.Place.ROOT),
+            screens.associate { it.feature to it.place }, "named in the line, a part; in its bracketed row, a tab; not named, a screen that opens from it")
+        assertEquals(listOf("프로필 헤더", listOf("홈", "활동"), "하단 바"), by.getValue("나의 왓챠").slots.map { it.part?.label ?: it.tabs.map { t -> t.label } }, "top to bottom as the line says")
+        assertEquals(listOf("나의 왓챠", "나의 왓챠/설정", "나의 왓챠/프로필 수정", "작품상세"), Site.pages(screens).map { it.feature }, "the root with a failure in it first, then what opens from it")
 
         SitePages.build(day, day)
         assertTrue(File(day, "나의 왓챠/프로필 수정/_screen.html").isFile && !File(day, "나의 왓챠/활동/_screen.html").exists() && !File(day, "나의 왓챠/프로필 헤더/_screen.html").exists(),
             "a part and a tab are read on the screen's page")
         val my = File(day, "나의 왓챠/_screen.html").readText()
-        assertTrue("시나리오 4 · 확인 6 · <b class=bad>실패 1</b>" in my && " · 부분 1 · 탭 2 · 여기서 열리는 화면 1</span>" in my, my.substringAfter("<h1>").take(400))
-        assertTrue("이 화면의 시나리오 3개가 여기서 시작한다" in my, "the part's and the first tab's scenarios start from the screen's way in too")
+        assertTrue("시나리오 5 · 확인 7 · <b class=bad>실패 1</b>" in my && " · 부분 2 · 탭 2 · 여기서 열리는 화면 2</span>" in my, my.substringAfter("<h1>").take(400))
+        assertTrue("이 화면의 시나리오 5개가 여기서 시작한다" in my, "the parts', the first tab's and the unnamed screen's scenarios start from the screen's way in too")
+        // drawn in the order the line gives: the part, the screen's own scenarios right above the tabs, the tabs, the part under them
+        val order = listOf("id=\"s:프로필_헤더\"", "<h3>이 화면에서</h3>", "<section class=\"part tabpart\">", "id=\"s:하단_바\"", "<h3>여기서 열리는 화면</h3>").map { my.indexOf(it) }
+        assertTrue(order.all { it > 0 } && order == order.sorted(), "$order")
         // the part, read as a screen is — with what another screen changed that shows on it
         val part = my.substringAfter("<section class=part id=\"s:프로필_헤더\">").substringBefore("<section class=\"part tabpart\">")
         assertTrue("<span class=pk>부분</span><h2>프로필 헤더</h2>" in part && "<h3>다른 화면에서 바꾸면" in part && "<h3>이 부분에서</h3>" in part, part.take(600))
@@ -475,12 +484,13 @@ class SiteTest {
         assertTrue("id=\"홈/empty\"" in tabs && "id=\"활동/empty\"" in tabs && "<h3>이 탭에서</h3>" in tabs, "two scenarios from files of one name are two places on the page")
         assertTrue("나의 왓챠 › 탭 이동</a><span class=it>누르면 그 탭(<b class=\"mn here\">활동</b>)으로 바뀐다." in tabs.substringAfter("id=\"s:활동\""), "the walk to a tab is one of the tab's ways in")
         // the screen that opens from it: a card here, a page there
-        assertTrue("<h3>여기서 열리는 화면</h3><div class=opens><a class=\"oc passed\" href=\"../나의 왓챠/프로필 수정/_screen.html\"><i class=\"ic passed\">✓</i><b>프로필 수정</b><span class=\"c\">3/3</span>" +
-            "<span class=oh>프로필 헤더의 &quot;프로필 수정&quot;을 누르면 열린다.</span><span class=on>링크</span></a>" in my, my.substringAfter("여기서 열리는 화면").take(500))
+        assertTrue("<a class=\"oc passed\" href=\"../나의 왓챠/프로필 수정/_screen.html\"><i class=\"ic passed\">✓</i><b>프로필 수정</b><span class=\"c\">3/3</span>" +
+            "<span class=oh>프로필 헤더의 &quot;프로필 수정&quot;을 누르면 열린다.</span><span class=on>링크</span></a>" in my.substringAfter("<h3>여기서 열리는 화면</h3>"), my.substringAfter("여기서 열리는 화면").take(700))
         // the list of screens: the roots, and under this one what is nested in it
         val nav = my.substringAfter("<nav class=snav").substringBefore("</nav>")
-        assertTrue("<span class=nm>나의 왓챠</span><span class=\"c bad\">8/9</span></a><div class=kids><a class=\"k\" href=\"../나의 왓챠/_screen.html#s:프로필_헤더\"" in nav, nav.take(900))
+        assertTrue("<span class=nm>나의 왓챠</span><span class=\"c bad\">10/11</span></a><div class=kids><a class=\"k\" href=\"../나의 왓챠/_screen.html#s:프로필_헤더\"" in nav, nav.take(900))
         assertTrue("<div class=tg><span class=tgl>탭</span><a class=\"k tab\" href=\"../나의 왓챠/_screen.html#s:홈\"" in nav && "<a class=\"k open\" href=\"../나의 왓챠/프로필 수정/_screen.html\"" in nav)
+        assertTrue(nav.indexOf("#s:프로필_헤더") < nav.indexOf("<div class=tg>") && nav.indexOf("<div class=tg>") < nav.indexOf("#s:하단_바"), "the list follows the same order")
         assertTrue("<span class=nm>작품상세</span><span class=\"c\">1/1</span></a></nav>" in my.substringAfter("<nav class=snav").substringBefore("<div class=doc>"), "another root's line is closed")
 
         val edit = File(day, "나의 왓챠/프로필 수정/_screen.html").readText()
@@ -489,10 +499,10 @@ class SiteTest {
         assertTrue("<span class=to>프로필 헤더의 진입으로 연다</span>" in edit && "<span class=to>→ 프로필 헤더</span>" in edit)
 
         val home = File(day, "index.html").readText()
-        assertTrue("화면 3 · 총 소요" in home, "a page is a screen: the root with its parts and tabs, and the one that opens from it")
+        assertTrue("화면 4 · 총 소요" in home, "a page is a screen: the root with its parts and tabs, and the one that opens from it")
         assertTrue("<a href=\"나의 왓챠/_screen.html#활동/empty\">나의 왓챠 › 활동</a><span>›</span><a class=title href=\"나의 왓챠/활동/empty.html\">빈 계정</a>" in home, home.substringAfter("봐야 할 것").take(900))
         val line = home.split("<tbody").first { "\"나의 왓챠/_screen.html\"" in it }
-        assertTrue("<td class=r>4</td><td class=r><b class=\"bad\">5/6</b></td>" in line && "<span class=dim>활동 › </span><a href=\"나의 왓챠/활동/empty.html\">빈 계정</a>" in line, line.take(900))
+        assertTrue("<td class=r>5</td><td class=r><b class=\"bad\">6/7</b></td>" in line && "<span class=dim>활동 › </span><a href=\"나의 왓챠/활동/empty.html\">빈 계정</a>" in line, line.take(900))
         assertTrue("<td class=r>1</td><td class=r><span class=dim>–</span></td>" in line, "the look from the screen it opens is another page's; the walk between its own tabs is not counted as leaving")
         assertTrue("<span class=sub2>↳</span><a href=\"나의 왓챠/프로필 수정/_screen.html\">나의 왓챠 › 프로필 수정</a>" in home)
         val steps = File(day, "나의 왓챠/활동/empty.html").readText()

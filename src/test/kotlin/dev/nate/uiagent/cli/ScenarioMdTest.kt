@@ -371,4 +371,23 @@ class ScenarioMdTest {
         assertEquals(listOf("없는화면에도" to null).map { it.first }, Mentions.unknown("@없는화면에도 @활동상세에도 보인다", screens))
         assertEquals(listOf("@없는화면 그대로" to null), Mentions.parts("@없는화면 그대로", screens))
     }
+
+    @Test
+    fun `a screen's parts line reads top to bottom - a name is a part, a bracketed row the tabs`() {
+        fun slots(text: String) = ScreenMd.parse(text, "나의 왓챠/_screen.md")?.slots?.map { it.part ?: it.tabs }
+        val expected = listOf("상단 바", "프로필 헤더", listOf("홈", "활동", "좋아요", "캘린더"), "하단 바")
+        assertEquals(expected, slots("---\nparts: [상단 바, 프로필 헤더, [홈, 활동, 좋아요, 캘린더], 하단 바]\n---\n\n내 프로필.\n"))
+        assertEquals(expected, slots("---\nparts:\n  - 상단 바\n  - 프로필 헤더\n  - [홈, 활동, 좋아요, 캘린더]\n  - 하단 바\n---\n"), "one a line reads the same")
+        assertEquals(null, ScreenMd.parse("---\n---\n화면 설명만.\n", "x"), "a file without the line says nothing of the order")
+        val layout = ScreenMd.parse("---\nparts: [상단 바, [홈, 활동]]\n---", "x")!!
+        assertEquals(listOf("상단 바") to listOf("홈", "활동"), layout.parts to layout.tabs)
+
+        for (bad in listOf(
+            "---\nparts: 상단 바\n---",                         // not a list
+            "---\nparts: [상단 바, [홈, 활동], [a, b]]\n---",     // one row of tabs
+            "---\nparts: [상단 바, 상단 바]\n---",               // twice
+            "---\nparts: [상단 바, [홈, [활동]]]\n---",          // a row inside a row
+            "---\nparts: [상단 바, [홈, 활동]\n---",             // unclosed
+        )) assertFailsWith<IllegalArgumentException>(bad) { ScreenMd.parse(bad, "x") }
+    }
 }

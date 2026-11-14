@@ -507,10 +507,10 @@ object SitePages {
             if (c.children.isNotEmpty() && (c.place != Site.Place.OPENS || c.subtree.contains(current))) navKids(sb, c, current, u)
         }
         sb.append("<div class=kids>")
-        for (c in s.parts) line(c, "")
-        if (s.tabs.isNotEmpty()) {
+        for (slot in s.slots) {
+            if (slot.part != null) { line(slot.part, ""); continue }
             sb.append("<div class=tg><span class=tgl>탭</span>")
-            for (c in s.tabs) line(c, " tab")
+            for (c in slot.tabs) line(c, " tab")
             sb.append("</div>")
         }
         for (c in s.opens) line(c, " open")
@@ -541,27 +541,33 @@ object SitePages {
             sb.append("</div></section>")
         }
 
-        // ---- its parts, in the order they are drawn: each read as a screen is
-        for (part in screen.parts) {
-            sb.append("<section class=part id=\"${attr(sid(part))}\"><div class=ph><span class=pk>부분</span><h2>${esc(part.label)}</h2><span class=dim>${tally(Site.rowsOf(part.onPage))}</span></div>")
-            screenBody(sb, part, u, pages, links)
-            sb.append("</section>")
-        }
-
         // ---- the screen's own scenarios: those of the account most of them run in, then each other account's
-        val byState = screen.scenarios.groupBy { stateOf(it.result) }
-        val main = screen.entry?.let { stateOf(it.result) }?.takeIf { it in byState } ?: byState.maxByOrNull { it.value.size }?.key
-        val own = when (screen.place) { Site.Place.TAB -> "이 탭에서"; Site.Place.PART -> "이 부분에서"; else -> "이 화면에서" }
-        for ((state, rows) in byState.entries.sortedBy { it.key != main }) {
-            val title = if (state == main) own else "다른 계정으로 보면 <code class=e>${esc(state.ifEmpty { "계정 없음" })}</code>"
-            sb.append("<section class=blk><h3>$title</h3><div class=fl>")
-            for (row in rows) scenarioLine(sb, row, u, pages)
-            sb.append("</div></section>")
+        fun ownScenarios() {
+            val byState = screen.scenarios.groupBy { stateOf(it.result) }
+            val main = screen.entry?.let { stateOf(it.result) }?.takeIf { it in byState } ?: byState.maxByOrNull { it.value.size }?.key
+            val own = when (screen.place) { Site.Place.TAB -> "이 탭에서"; Site.Place.PART -> "이 부분에서"; else -> "이 화면에서" }
+            for ((state, rows) in byState.entries.sortedBy { it.key != main }) {
+                val title = if (state == main) own else "다른 계정으로 보면 <code class=e>${esc(state.ifEmpty { "계정 없음" })}</code>"
+                sb.append("<section class=blk><h3>$title</h3><div class=fl>")
+                for (row in rows) scenarioLine(sb, row, u, pages)
+                sb.append("</div></section>")
+            }
         }
 
-        // ---- its tabs, as tabs: the one with a failure is the one open
-        val tabs = screen.tabs
-        if (tabs.isNotEmpty()) {
+        // ---- what it is made of, top to bottom as it is drawn: a part is read as a screen is, the tabs as tabs — the
+        // one with a failure open. The screen's own scenarios (moving between its tabs, …) sit right above the row of
+        // tabs, and after its parts when it has none.
+        val tabsAt = screen.slots.indexOfFirst { it.tabs.isNotEmpty() }
+        for ((i, slot) in screen.slots.withIndex()) {
+            if (i == tabsAt) ownScenarios()
+            val part = slot.part
+            if (part != null) {
+                sb.append("<section class=part id=\"${attr(sid(part))}\"><div class=ph><span class=pk>부분</span><h2>${esc(part.label)}</h2><span class=dim>${tally(Site.rowsOf(part.onPage))}</span></div>")
+                screenBody(sb, part, u, pages, links)
+                sb.append("</section>")
+                continue
+            }
+            val tabs = slot.tabs
             val open = tabs.firstOrNull { Site.kindOf(Site.rowsOf(it.onPage)) == Site.Kind.FAILED } ?: tabs.first()
             sb.append("<section class=\"part tabpart\"><div class=ph><span class=pk>탭</span><h2>${tabs.joinToString(" / ") { esc(it.label) }}</h2><span class=dim>${tally(Site.rowsOf(tabs.flatMap { it.onPage }))}</span></div>")
             sb.append("<div class=tabrow role=tablist aria-label=\"${attr(screen.label)}의 탭\">")
@@ -578,6 +584,7 @@ object SitePages {
             }
             sb.append("</section>")
         }
+        if (tabsAt < 0) ownScenarios()
 
         // ---- the screens that open from it: each has a page of its own
         val opens = screen.opens

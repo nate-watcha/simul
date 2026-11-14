@@ -256,11 +256,13 @@ class CliProjectTest {
     }
 
     @Test
-    fun `screens nest as directories do - a part starts from the screen's way in, and the way in says which are tabs`() {
+    fun `screens nest as directories do - a part starts from the screen's way in, and the screen's own file says what it is made of`() {
         val root = makeProject()
         val my = File(root, ".simul/scenarios/나의 왓챠")
         for (d in listOf("프로필 헤더", "홈", "활동", "프로필 수정")) File(my, d).mkdirs()
-        File(my, "_entry.md").writeText("---\ntabs: [홈, 활동]\nsetup:\n  appState: member\n  deeplink: app://my\n---\n1. \"프로필 수정\"이 보이는지 확인한다\n")
+        File(my, "_entry.md").writeText("---\nsetup:\n  appState: member\n  deeplink: app://my\n---\n1. \"프로필 수정\"이 보이는지 확인한다\n")
+        // what the screen is made of, top to bottom: not a scenario
+        File(my, "_screen.md").writeText("---\nparts: [프로필 헤더, [홈, 활동]]\n---\n")
         File(my, "tabs.md").writeText("---\nname: 탭 이동\n---\n누르면 그 탭(@나의 왓챠/활동)으로 바뀐다.\n\n1. \"활동\" 탭을 누른다\n")
         // a part: no way in of its own
         File(my, "프로필 헤더/link.md").writeText("---\nname: 링크 열기\n---\n1. 링크를 누른다\n")
@@ -274,7 +276,10 @@ class CliProjectTest {
         val p = SimulProject(root)
 
         assertEquals(listOf("나의 왓챠", "나의 왓챠/프로필 수정", "나의 왓챠/프로필 헤더", "나의 왓챠/홈", "나의 왓챠/활동").sorted(), p.screens().filter { it.startsWith("나의 왓챠") }.sorted())
-        assertEquals(listOf("홈", "활동"), p.load(File(my, "_entry.md")).tabs)
+        assertEquals(ScreenLayout(listOf(ScreenLayout.Slot(part = "프로필 헤더"), ScreenLayout.Slot(tabs = listOf("홈", "활동")))), p.layoutOf("나의 왓챠"))
+        assertEquals(mapOf("나의 왓챠" to p.layoutOf("나의 왓챠")), p.layoutsFor("나의 왓챠/활동"), "a result carries the layouts of the screens above its own")
+        assertTrue(p.scenarios().none { it.name == "_screen.md" }, "it is not a scenario")
+        assertNull(p.layoutOf("나의 왓챠/활동"))
 
         val part = p.load(File(my, "프로필 헤더/link.md"))
         assertEquals("나의 왓챠" to "app://my", part.via to part.setup?.deeplink, "a part has no way in to write: it starts from the screen's")
@@ -294,10 +299,12 @@ class CliProjectTest {
             "its own way in and the one its section starts from are recorded first")
         assertEquals(0, cliMain(arrayOf("run", "나의 왓챠/홈/empty.md", "--dry-run"), root))
 
-        // a tab is a directory under the screen; the line is the way in's
-        File(my, "_entry.md").writeText("---\ntabs: [홈, 좋아요]\nsetup:\n  deeplink: app://my\n---\n1. 스텝\n")
-        assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(my, "_entry.md")) }.message!!, "tabs 좋아요")
-        File(my, "tabs.md").writeText("---\ntabs: [홈]\n---\n1. 스텝\n")
-        assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(my, "tabs.md")) }.message!!, "_entry.md")
+        // a part or a tab is a directory under the screen; the file is not run; the line is no longer the way in's
+        File(my, "_screen.md").writeText("---\nparts: [프로필 헤더, [홈, 좋아요]]\n---\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(my, "홈/empty.md")) }.message!!, "parts 좋아요")
+        File(my, "_screen.md").writeText("---\nparts: [프로필 헤더, [홈, 활동]]\n---\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(my, "_screen.md")) }.message!!, "not a scenario")
+        File(my, "_entry.md").writeText("---\ntabs: [홈, 활동]\nsetup:\n  deeplink: app://my\n---\n1. 스텝\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(my, "_entry.md")) }.message!!, "_screen.md")
     }
 }

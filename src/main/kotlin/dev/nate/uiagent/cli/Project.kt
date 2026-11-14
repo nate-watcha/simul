@@ -22,7 +22,7 @@ class SimulProject(val appRoot: File) {
     /** All scenario markdown files, sorted for stable ordering — a screen's way in (`_entry.md`) ahead of the scenarios that start from it. */
     fun scenarios(): List<File> =
         scenariosDir.walkTopDown()
-            .filter { it.isFile && it.extension == "md" }
+            .filter { it.isFile && it.extension == "md" && it.name != ScreenMd.FILE }
             .sortedWith(compareBy({ it.parentFile.relativeTo(scenariosDir).path }, { it.name != ENTRY_FILE }, { it.name }))
             .toList()
 
@@ -49,6 +49,27 @@ class SimulProject(val appRoot: File) {
     fun screens(): List<String> = scenarios().map(::screenOf).filter { it.isNotEmpty() }
         .flatMap { path -> path.split('/').let { seg -> seg.indices.map { i -> seg.subList(0, i + 1).joinToString("/") } } }.distinct()
 
+    /**
+     * What [screen] is made of, as its `_screen.md` says ([ScreenLayout]); null when its directory has none. A name
+     * in it is a directory under the screen's.
+     */
+    fun layoutOf(screen: String): ScreenLayout? {
+        val dir = dirOf(screen) ?: return null
+        val file = File(dir, ScreenMd.FILE).takeIf { it.isFile } ?: return null
+        val where = file.relativeTo(scenariosDir).path
+        val layout = ScreenMd.parse(file.readText(), where) ?: return null
+        val under = dir.listFiles { f -> f.isDirectory }?.map { Mentions.norm(it.name) }.orEmpty()
+        (layout.names - under.toSet()).let { missing ->
+            require(missing.isEmpty()) { "$where: parts ${missing.joinToString(", ")} — a part or a tab is a directory under this screen's (there: ${under.joinToString(", ").ifEmpty { "none" }})" }
+        }
+        return layout
+    }
+
+    /** The layouts of [screen] and of every screen above it that has one, by screen — what a result carries for the report. */
+    fun layoutsFor(screen: String): Map<String, ScreenLayout> =
+        generateSequence(Mentions.norm(screen).ifEmpty { null }) { at -> at.substringBeforeLast('/', "").ifEmpty { null } }
+            .mapNotNull { at -> layoutOf(at)?.let { at to it } }.toMap()
+
     /** The directory of [screen] (a path of directory names, compared in one Unicode form); null when there is none. */
     private fun dirOf(screen: String): File? = screen.split('/').fold(scenariosDir as File?) { dir, name ->
         dir?.listFiles { f -> f.isDirectory && Mentions.norm(f.name) == Mentions.norm(name) }?.firstOrNull()
@@ -65,10 +86,11 @@ class SimulProject(val appRoot: File) {
      * Its `@화면` mentions are resolved here, against the project's screens: one that names none is refused.
      */
     fun load(md: File): Scenario {
+        require(md.name != ScreenMd.FILE) { "${ScreenMd.FILE} says what a screen is made of — it is not a scenario and is not run" }
+        layoutsFor(screenOf(md)) // read here so a line that names no directory is refused with the scenario, not found in the report
         val scenario = mentioned(ScenarioMd.parse(md))
         // every screen's way in is the same file name: unnamed, it is called by its screen in logs, summaries and report directories
-        if (md.name == ENTRY_FILE) return scenario.also { checkEntry(it, md) }.let { if (it.name == md.nameWithoutExtension) it.copy(name = entryName(screenOf(md))) else it }
-        require(scenario.tabs.isEmpty()) { "scenario '${scenario.name}': `tabs:` says which directories under a screen are its tabs — it goes in that screen's $ENTRY_FILE" }
+        if (md.name == ENTRY_FILE) return scenario.also(::checkEntry).let { if (it.name == md.nameWithoutExtension) it.copy(name = entryName(screenOf(md))) else it }
         val own = scenario.setup
         val screen = own?.entry
             ?: entryFileOf(md)?.takeIf { own?.deeplink == null && own?.launch != true }?.let(::screenOf)
@@ -102,12 +124,8 @@ class SimulProject(val appRoot: File) {
         )
     }
 
-    private fun checkEntry(entry: Scenario, md: File) {
+    private fun checkEntry(entry: Scenario) {
         val name = "$ENTRY_FILE '${entry.name}'"
-        val under = md.absoluteFile.parentFile.listFiles { f -> f.isDirectory }?.map { Mentions.norm(it.name) }.orEmpty()
-        (entry.tabs - under.toSet()).let { missing ->
-            require(missing.isEmpty()) { "$name: tabs ${missing.joinToString(", ")} — a tab is a directory under this screen's (there: ${under.joinToString(", ").ifEmpty { "none" }})" }
-        }
         require(entry.setup?.deeplink != null || entry.setup?.launch == true) { "$name: a way in opens the app — give it `setup.deeplink` or `setup.launch: true`" }
         require(entry.sections.isEmpty() && entry.values.isEmpty() && entry.states.isEmpty()) { "$name: a way in is plain steps — no `##` sections, `values:` or `states:`" }
     }
