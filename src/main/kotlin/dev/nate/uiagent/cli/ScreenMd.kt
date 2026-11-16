@@ -10,9 +10,8 @@ package dev.nate.uiagent.cli
  * ---
  * ```
  *
- * Top to bottom as the screen is: a name is a part of it — the directory of that name under the screen's, or the
- * scenario file of that name in it, when the part's checks are one scenario's sections — and a bracketed row is
- * its tabs. A directory under the screen that the line does not name is a screen that opens from
+ * Top to bottom as the screen is: a name is a part of it (the directory of that name under the screen's), a
+ * bracketed row is its tabs. A directory under the screen that the line does not name is a screen that opens from
  * it. The file says what the screen is; how it is entered is `_entry.md`'s. It is not a scenario and is never run —
  * only the report reads it, to draw the screen's page in that order ([Site.Place]).
  */

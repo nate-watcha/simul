@@ -73,17 +73,10 @@ object SitePages {
     /** The run's screens by name, each knowing where it is nested ([Site.screens]) — what a link to a screen or to a scenario is made from. */
     private var tree: Map<String, Site.Screen> = emptyMap()
 
-    /** The run's parts that are one scenario, by the name a mention calls them ([Site.partName]). */
-    private var partRows: Map<String, Site.Row> = emptyMap()
-
     /** The screens of [rows], remembered for the links the pages draw. */
     private fun plant(rows: List<Site.Row>): List<Site.Screen> {
         known = rows.flatMap { r -> listOf(Mentions.norm(r.result.feature)) + r.timeline.mentions + r.timeline.tests.flatMap { it.mentions } }.toSet()
-        return Site.screens(rows).also { all ->
-            tree = all.associateBy { Mentions.norm(it.feature) }
-            partRows = all.flatMap { s -> s.slots.flatMap { it.rows }.map { Site.partName(s, it) to it } }.toMap()
-            known = known + tree.keys + partRows.keys
-        }
+        return Site.screens(rows).also { all -> tree = all.associateBy { Mentions.norm(it.feature) }; known = known + tree.keys }
     }
 
     fun build(runDir: File, out: File, opts: Options = Options()): Built {
@@ -286,7 +279,6 @@ object SitePages {
                 screen == null -> esc(t)
                 screen == here -> "<b class=\"mn here\">${esc(leaf(t))}</b>"
                 pages[screen] != null -> "<a class=mn href=\"${attr(u + screenHref(pages.getValue(screen)))}\">${esc(leaf(t))}</a>"
-                partRows[screen] != null -> "<a class=mn href=\"${attr(u + scenarioHref(partRows.getValue(screen).result))}\">${esc(leaf(t))}</a>"
                 else -> "<span class=mn>${esc(leaf(t))}</span>"
             }
         }
@@ -365,7 +357,7 @@ object SitePages {
                 ?: s.entries.firstOrNull()?.let { e -> "<code class=e>${esc(e.entry)}</code>" + if (s.entries.size > 1) " <span class=dim>외 ${s.entries.size - 1}</span>" else "" }
             sb.append("<td>${way ?: "<span class=dim>–</span>"}</td>")
             sb.append("<td class=r>${on.count { !it.isEntry }}</td><td class=r>${if (p < n) "<b class=\"${if (kind == Site.Kind.FAILED) "bad" else "dim"}\">$p/$n</b>" else "$n"}</td>")
-            val here = s.onPage.flatMap { on -> listOf(Mentions.norm(on.feature)) + on.slots.flatMap { it.rows }.map { Site.partName(on, it) } }.toSet()
+            val here = s.onPage.map { Mentions.norm(it.feature) }.toSet()
             val from = links.filter { it.to in here && it.from.page !== s }
             val to = links.count { it.from.page === s && it.to !in here }
             val fromFailed = from.count { it.status == "FAILED" }
@@ -488,7 +480,7 @@ object SitePages {
         // without a way in of its own, where its scenarios start is all there is to say about getting here
         if (screen.entry == null && screen.entries.isNotEmpty()) sb.append("<div class=ents>${screen.entries.joinToString("") { entryLine(it) }}</div>")
         val nested = listOfNotNull(
-            screen.slots.count { it.tabs.isEmpty() }.takeIf { it > 0 }?.let { "부분 $it" }, screen.tabs.size.takeIf { it > 0 }?.let { "탭 $it" },
+            screen.parts.size.takeIf { it > 0 }?.let { "부분 $it" }, screen.tabs.size.takeIf { it > 0 }?.let { "탭 $it" },
             screen.opens.size.takeIf { it > 0 }?.let { "여기서 열리는 화면 $it" },
         ).joinToString("") { " · $it" }
         sb.append("<span class=dim>${tally(on)} · ${esc(humanDuration(on.sumOf { it.timeline.durationMs }))}$nested</span></div></header>")
@@ -517,13 +509,6 @@ object SitePages {
         sb.append("<div class=kids>")
         for (slot in s.slots) {
             if (slot.part != null) { line(slot.part, ""); continue }
-            if (slot.rows.isNotEmpty()) {
-                for (row in slot.rows) {
-                    val (p, n) = passedOf(listOf(row))
-                    sb.append("<a class=k href=\"${attr(u + scenarioHref(row.result))}\" data-q=\"${attr(row.title.lowercase())}\"><i class=\"dot ${row.kind.cls}\"></i><span class=nm>${esc(row.title)}</span><span class=\"c${if (row.kind == Site.Kind.FAILED) " bad" else ""}\">$p/$n</span></a>")
-                }
-                continue
-            }
             sb.append("<div class=tg><span class=tgl>탭</span>")
             for (c in slot.tabs) line(c, " tab")
             sb.append("</div>")
@@ -545,7 +530,7 @@ object SitePages {
 
         // ---- the screen's own scenarios: those of the account most of them run in, then each other account's
         fun ownScenarios() {
-            val byState = screen.loose.groupBy { stateOf(it.result) }
+            val byState = screen.scenarios.groupBy { stateOf(it.result) }
             val main = screen.entry?.let { stateOf(it.result) }?.takeIf { it in byState } ?: byState.maxByOrNull { it.value.size }?.key
             val own = when (screen.place) { Site.Place.TAB -> "이 탭에서"; Site.Place.PART -> "이 부분에서"; else -> "이 화면에서" }
             for ((state, rows) in byState.entries.sortedBy { it.key != main }) {
@@ -567,11 +552,6 @@ object SitePages {
                 sb.append("<section class=part id=\"${attr(sid(part))}\"><div class=ph><span class=pk>부분</span><h2>${esc(part.label)}</h2><span class=dim>${tally(Site.rowsOf(part.onPage))}</span></div>")
                 screenBody(sb, part, u, pages, links)
                 sb.append("</section>")
-                continue
-            }
-            if (slot.rows.isNotEmpty()) {
-                for (row in slot.rows) scenarioPart(sb, row, u, pages, several = slot.rows.size > 1,
-                    name = Site.partName(screen, row), incoming = links.filter { it.to == Site.partName(screen, row) && it.row !== row })
                 continue
             }
             val tabs = slot.tabs
@@ -612,7 +592,7 @@ object SitePages {
     }
 
     /**
-     * The lines other screens' checks leave on [here] — a screen, or a part of one that is a scenario: the ones that
+     * The lines other screens' checks leave on the screen [here] — a part of another is one: the ones that
      * walked here under 들어오는 길 ([entry] draws the place's own way in ahead of them, when it has one), the ones
      * that opened it to look under 다른 화면의 변경 반영.
      */
@@ -681,27 +661,6 @@ object SitePages {
         sb.append("</span></div>")
     }
 
-    /**
-     * A part of a screen that is one scenario (`parts:` names its file): the scenario's name is the part's, and each
-     * of its checks a line under it — its title, its sentence, its steps on demand — where a part that is a directory
-     * lists scenarios. The part is where links to the scenario land, and a mention of it by [name] (`@나의 왓챠/활동/평가`)
-     * shows its line here ([incoming]).
-     */
-    private fun scenarioPart(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>, several: Boolean, name: String, incoming: List<Site.Link>) {
-        val r = row.result
-        val t = row.timeline
-        val mark = if (row.recordFailed) " " + chip(Site.Kind.FAILED, "녹화 실패") else if (row.kind == Site.Kind.SETUP) " " + chip(Site.Kind.SETUP) else ""
-        // the same scenario under several accounts (`states:`) is told apart by the account
-        val whose = if (several) " <code class=e>${esc(stateOf(r))}</code>" else ""
-        sb.append("<section class=part id=\"${attr(anchorOf(r))}\"><div class=ph><span class=pk>부분</span><h2>${esc(row.title)}</h2>$whose")
-        sb.append("<span class=dim>${checkTally(row)}</span>$mark</div>")
-        scenarioNotes(sb, row, u, pages)
-        // what other screens' checks say of this component: shown here, counted where they are written
-        incomingBlocks(sb, incoming, name, u, pages) {}
-        checkLines(sb, row, u, pages)
-        sb.append("${scenarioMeta(row, u)}</section>")
-    }
-
     /** What a scenario of several checks says ahead of them: its prose, its preparation, and why it did not run or failed outside a check. */
     private fun scenarioNotes(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>) {
         val r = row.result
@@ -716,15 +675,17 @@ object SitePages {
 
     /**
      * A scenario's checks, a line each: the check's title, its sentence, how it started when that was not as the
-     * scenario does (its place, its account), and its steps on demand — a failed one open.
+     * scenario does (its place, its account), and its steps on demand — a failed one open. Each carries its number:
+     * sections are the steps of one flow and run in that order, each building on the one before, so the order is
+     * part of what the group says.
      */
     private fun checkLines(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>) {
         sb.append("<div class=fl>")
-        for (c in row.checks) {
+        for ((i, c) in row.checks.withIndex()) {
             val at = (c.deeplink?.let { " <code class=\"e dl\">${esc(it)}</code>" } ?: c.entry?.let { " <span class=to>${esc(leaf(it))}의 진입으로 연다</span>" } ?: "") +
                 (c.appState?.let { " <span class=to>${esc(it)} 계정으로</span>" } ?: "")
             val why = whyNot(row, c)?.takeIf { c.status == "FAILED" && c.steps.none { st -> st.status == "FAILED" } }?.let { "<br><span class=reason>${esc(it)}</span>" } ?: ""
-            sb.append("<details class=\"ft ${cls(c.status)}\"${if (c.status == "FAILED") " open" else ""}><summary>${icon(c.status)}<b class=fn>${esc(c.title ?: row.title)}</b>")
+            sb.append("<details class=\"ft ${cls(c.status)}\"${if (c.status == "FAILED") " open" else ""}><summary>${icon(c.status)}<b class=fn><span class=no>${i + 1}</span>${esc(c.title ?: row.title)}</b>")
             sb.append("<span class=fs>${mentions(c.description, u, pages)}$at$why</span><span class=ckn>${if (c.steps.isEmpty()) "" else "${c.steps.size}스텝"}</span></summary><div class=fb>")
             if (c.steps.isNotEmpty()) stepList(sb, c.steps)
             sb.append("</div></details>")
@@ -746,7 +707,6 @@ object SitePages {
     /**
      * A scenario of several checks (`##` sections) on its screen's page: a block of its own — its name and how its
      * checks stand, its prose, then every check as a line, read without opening anything. A check opens to its steps.
-     * It is a group, and reads as one: the same shape a part of the screen has, under the scenario's name.
      */
     private fun scenarioGroup(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>) {
         val t = row.timeline
@@ -1283,6 +1243,8 @@ object SitePages {
         ol.st .why{display:inline-block;font-weight:400;font-size:12.5px;background:var(--failbg);border-radius:4px;padding:2px 8px;margin-top:2px}
         .grp{border-top:1px solid var(--line);padding:10px 0 12px;display:flex;flex-direction:column;gap:6px;min-width:0;scroll-margin-top:12px}.grp:first-child{border-top:0}
         .gh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}.gh .ic{align-self:center}.gh .gt{font-size:13px;color:var(--dim)}.grp.failed>.gh .fn{color:var(--failfg)}
+        .no{display:inline-block;min-width:19px;height:19px;line-height:19px;margin-right:8px;padding:0 5px;border-radius:10px;background:var(--chipbg);color:var(--ink2);font-size:11.5px;font-weight:600;text-align:center;font-variant-numeric:tabular-nums;vertical-align:1px}
+        .ft.failed .no{background:var(--failbg);color:var(--failfg)}.ft.skipped .no{color:var(--faint)}
         .grp>.spd,.grp>.prep,.grp>p,.grp>.fl,.grp>.fm{margin-left:30px}.grp>.fl{border-top-color:var(--line);border-bottom:0}.grp>.fm{margin-top:0}
         .snav .kids{display:flex;flex-direction:column;gap:1px;margin:0 0 6px 11px;padding-left:10px;border-left:1px solid var(--line2)}
         .snav a.k{font-size:13px;color:var(--ink2);padding:4px 8px}.snav a.k .dot{width:6px;height:6px;margin-right:6px}.snav a.k.open .nm::before{content:'↳ ';color:var(--faint)}

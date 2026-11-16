@@ -143,8 +143,6 @@ object Site {
         val hasOwnWayIn: Boolean get() = entry != null || rows.any { r -> r.result.setup?.via?.let(Mentions::norm) == Mentions.norm(feature) }
         /** The scenarios that test the screen: all but its way in. */
         val scenarios: List<Row> get() = rows.filterNot { it.isEntry }
-        /** Its scenarios that are not a part of it by themselves ([Slot.rows]): the ones listed under the screen's own heading. */
-        val loose: List<Row> get() = slots.flatMap { it.rows }.let { placed -> scenarios.filterNot { it in placed } }
         val checks: List<Check> get() = rows.flatMap { it.checks }
         /** The worst of its scenarios. */
         val kind: Kind get() = kindOf(rows)
@@ -156,14 +154,8 @@ object Site {
             .sortedByDescending { it.states.values.sum() }
     }
 
-    /**
-     * One place down a screen's page: a [part] of it that is a screen of its own (a directory), a part that is one
-     * scenario ([rows]: the scenario, or its `states:` variants — its checks are the part's lines), or the row of its [tabs].
-     */
-    class Slot(val part: Screen? = null, val tabs: List<Screen> = emptyList(), val rows: List<Row> = emptyList())
-
-    /** What a mention calls a part of [screen] that is the scenario [row]: the screen's path and the scenario's file name. */
-    fun partName(screen: Screen, row: Row): String = Mentions.norm((if (screen.feature.isEmpty()) "" else screen.feature + "/") + row.result.name)
+    /** One place down a screen's page: a [part] of it, or the row of its [tabs]. */
+    class Slot(val part: Screen? = null, val tabs: List<Screen> = emptyList())
 
     /** The worst of [rows]; a screen that only holds other screens has none and nothing against it. */
     fun kindOf(rows: List<Row>): Kind = rows.minOfOrNull { it.kind } ?: Kind.PASSED
@@ -200,10 +192,9 @@ object Site {
                     else -> Place.PART
                 }
             }
-            // a name is a directory under the screen, else a scenario file in it; one none of whose scenarios ran tonight is not there to draw
+            // a named directory none of whose scenarios ran tonight is not there to draw
             screen.slots = layout?.slots?.mapNotNull { slot ->
                 if (slot.part != null) under[slot.part]?.let { Slot(part = it) }
-                    ?: screen.scenarios.filter { Mentions.norm(it.result.name) == slot.part }.takeIf { it.isNotEmpty() }?.let { Slot(rows = it) }
                 else slot.tabs.mapNotNull(under::get).takeIf { it.isNotEmpty() }?.let { Slot(tabs = it) }
             } ?: children.filter { it.place == Place.PART }.sortedBy { it.feature }.map { Slot(part = it) }
             screen.children = screen.slots.flatMap { listOfNotNull(it.part) + it.tabs } + children.filter { it.place == Place.OPENS }.sortedBy { it.feature }
