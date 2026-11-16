@@ -302,6 +302,13 @@ class CliProjectTest {
         // a part may be one scenario: the file of that name in the screen's directory — its sections are the part's checks
         File(my, "_screen.md").writeText("---\nparts: [tabs, 프로필 헤더, [홈, 활동]]\n---\n")
         assertEquals(listOf("tabs", "프로필 헤더"), p.layoutOf("나의 왓챠")?.parts)
+        // and it can be mentioned, as a screen can: by the screen's path and its own name
+        assertTrue("나의 왓챠/tabs" in p.mentionables() && "나의 왓챠/프로필 헤더" in p.mentionables())
+        File(my, "홈/look.md").writeText("---\nname: 둘러보기\n---\n@나의 왓챠/tabs의 순서대로 넘어간다.\n\n1. 스텝\n")
+        assertEquals(listOf("나의 왓챠/tabs"), p.load(File(my, "홈/look.md")).mentions)
+        File(my, "홈/look.md").writeText("---\nname: 둘러보기\n---\n@나의 왓챠/tab-entry 로도 온다.\n\n1. 스텝\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(my, "홈/look.md")) }.message!!, "@나의 왓챠/tab-entry names no screen, nor a part of one")
+        File(my, "홈/look.md").delete()
         assertEquals(0, cliMain(arrayOf("run", "나의 왓챠/tabs.md", "--dry-run"), root))
         // a tab is a directory, never a file; and a name that is both a directory and a file names neither
         File(my, "_screen.md").writeText("---\nparts: [프로필 헤더, [홈, tabs]]\n---\n")

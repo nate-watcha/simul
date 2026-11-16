@@ -81,6 +81,20 @@ class SimulProject(val appRoot: File) {
         generateSequence(Mentions.norm(screen).ifEmpty { null }) { at -> at.substringBeforeLast('/', "").ifEmpty { null } }
             .mapNotNull { at -> layoutOf(at)?.let { at to it } }.toMap()
 
+    /**
+     * What a mention can name: every screen, and every part of a screen that is a scenario file (`나의 왓챠/활동/평가` —
+     * the 평가 that `활동/_screen.md` lists and `활동/평가.md` is). A component drawn as a part is a place a change
+     * elsewhere shows in, whether it is a directory or one scenario.
+     */
+    fun mentionables(): List<String> {
+        val screens = screens()
+        val parts = screens.flatMap { screen ->
+            val layout = runCatching { layoutOf(screen) }.getOrNull() ?: return@flatMap emptyList()
+            layout.parts.map { "$screen/$it" }.filter { it !in screens }
+        }
+        return screens + parts
+    }
+
     /** The directory of [screen] (a path of directory names, compared in one Unicode form); null when there is none. */
     private fun dirOf(screen: String): File? = screen.split('/').fold(scenariosDir as File?) { dir, name ->
         dir?.listFiles { f -> f.isDirectory && Mentions.norm(f.name) == Mentions.norm(name) }?.firstOrNull()
@@ -94,7 +108,8 @@ class SimulProject(val appRoot: File) {
      * own when it names one — and the runner plays the entry's steps from the entry's trace before the
      * scenario's first step. A scenario with its own address runs as it always did.
      *
-     * Its `@화면` mentions are resolved here, against the project's screens: one that names none is refused.
+     * Its `@화면` mentions are resolved here, against the project's screens and their parts ([mentionables]): one
+     * that names none is refused.
      */
     fun load(md: File): Scenario {
         require(md.name != ScreenMd.FILE) { "${ScreenMd.FILE} says what a screen is made of — it is not a scenario and is not run" }
@@ -124,10 +139,10 @@ class SimulProject(val appRoot: File) {
     private fun mentioned(scenario: Scenario): Scenario {
         val written = listOf(scenario.description) + scenario.sections.map { it.description }
         if (written.none(Mentions::has)) return scenario
-        val screens = screens()
+        val screens = mentionables()
         val unknown = written.flatMap { Mentions.unknown(it, screens) }.distinct()
         require(unknown.isEmpty()) {
-            "scenario '${scenario.name}': ${unknown.joinToString(", ") { "@$it" }} names no screen (screens: ${screens.joinToString(", ")})"
+            "scenario '${scenario.name}': ${unknown.joinToString(", ") { "@$it" }} names no screen, nor a part of one (there: ${screens.joinToString(", ")})"
         }
         return scenario.copy(
             mentions = Mentions.of(scenario.description, screens),
