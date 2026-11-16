@@ -442,12 +442,23 @@ object Mentions {
     /** The [screens] that [text] mentions, in order, each once. */
     fun of(text: String, screens: Collection<String>): List<String> = parts(text, screens).mapNotNull { it.second }.distinct()
 
-    /** What follows each `@` of [text] that names none of [screens], up to the next space — a typo, or a screen that does not exist. */
+    /**
+     * What follows each `@` of [text] that names none of [screens], up to the next space — a typo, or a screen that
+     * does not exist. A path that goes on past the longest name it starts with (`@나의 왓챠/없는 곳`) names nothing
+     * either: it is not a mention of the screen above.
+     */
     fun unknown(text: String, screens: Collection<String>): List<String> {
         val t = norm(text)
         val names = screens.map(::norm).filter { it.isNotEmpty() }
-        return AT.findAll(t).filter { m -> names.none { t.startsWith(it, m.range.first + 1) } }
-            .map { m -> t.substring(m.range.first + 1).takeWhile { !it.isWhitespace() } }.toList()
+        return AT.findAll(t).mapNotNull { m ->
+            val at = m.range.first + 1
+            val name = names.filter { t.startsWith(it, at) }.maxByOrNull { it.length }
+            when {
+                name == null -> t.substring(at).takeWhile { !it.isWhitespace() }
+                t.getOrNull(at + name.length) == '/' -> name + t.substring(at + name.length).takeWhile { !it.isWhitespace() }
+                else -> null
+            }
+        }.toList()
     }
 
     /** A directory name read from disk and one typed in a file may differ in Unicode form (macOS hands out decomposed Hangul). */

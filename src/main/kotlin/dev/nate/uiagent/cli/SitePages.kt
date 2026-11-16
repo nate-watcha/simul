@@ -73,10 +73,17 @@ object SitePages {
     /** The run's screens by name, each knowing where it is nested ([Site.screens]) — what a link to a screen or to a scenario is made from. */
     private var tree: Map<String, Site.Screen> = emptyMap()
 
+    /** The run's parts that are one scenario, by the name a mention calls them ([Site.partName]). */
+    private var partRows: Map<String, Site.Row> = emptyMap()
+
     /** The screens of [rows], remembered for the links the pages draw. */
     private fun plant(rows: List<Site.Row>): List<Site.Screen> {
         known = rows.flatMap { r -> listOf(Mentions.norm(r.result.feature)) + r.timeline.mentions + r.timeline.tests.flatMap { it.mentions } }.toSet()
-        return Site.screens(rows).also { all -> tree = all.associateBy { Mentions.norm(it.feature) }; known = known + tree.keys }
+        return Site.screens(rows).also { all ->
+            tree = all.associateBy { Mentions.norm(it.feature) }
+            partRows = all.flatMap { s -> s.slots.flatMap { it.rows }.map { Site.partName(s, it) to it } }.toMap()
+            known = known + tree.keys + partRows.keys
+        }
     }
 
     fun build(runDir: File, out: File, opts: Options = Options()): Built {
@@ -279,6 +286,7 @@ object SitePages {
                 screen == null -> esc(t)
                 screen == here -> "<b class=\"mn here\">${esc(leaf(t))}</b>"
                 pages[screen] != null -> "<a class=mn href=\"${attr(u + screenHref(pages.getValue(screen)))}\">${esc(leaf(t))}</a>"
+                partRows[screen] != null -> "<a class=mn href=\"${attr(u + scenarioHref(partRows.getValue(screen).result))}\">${esc(leaf(t))}</a>"
                 else -> "<span class=mn>${esc(leaf(t))}</span>"
             }
         }
@@ -357,7 +365,7 @@ object SitePages {
                 ?: s.entries.firstOrNull()?.let { e -> "<code class=e>${esc(e.entry)}</code>" + if (s.entries.size > 1) " <span class=dim>외 ${s.entries.size - 1}</span>" else "" }
             sb.append("<td>${way ?: "<span class=dim>–</span>"}</td>")
             sb.append("<td class=r>${on.count { !it.isEntry }}</td><td class=r>${if (p < n) "<b class=\"${if (kind == Site.Kind.FAILED) "bad" else "dim"}\">$p/$n</b>" else "$n"}</td>")
-            val here = s.onPage.map { Mentions.norm(it.feature) }.toSet()
+            val here = s.onPage.flatMap { on -> listOf(Mentions.norm(on.feature)) + on.slots.flatMap { it.rows }.map { Site.partName(on, it) } }.toSet()
             val from = links.filter { it.to in here && it.from.page !== s }
             val to = links.count { it.from.page === s && it.to !in here }
             val fromFailed = from.count { it.status == "FAILED" }
@@ -533,20 +541,7 @@ object SitePages {
         val here = Mentions.norm(screen.feature)
 
         // ---- how one gets here, and what other screens change that shows here
-        val incoming = links.filter { it.to == here && it.from !== screen }
-        val ways = incoming.filterNot { it.look }
-        val looks = incoming.filter { it.look }
-        if (screen.entry != null || ways.isNotEmpty()) {
-            sb.append("<section class=blk>${blockHead("들어오는 길", ways)}<div class=ways>")
-            screen.entry?.let { entryRows(sb, screen, it, u) }
-            for (l in ways) linkRow(sb, l, u, pages, here)
-            sb.append("</div></section>")
-        }
-        if (looks.isNotEmpty()) {
-            sb.append("<section class=blk>${blockHead("다른 화면의 변경 반영", looks, "이 화면 집계에서 제외")}<div class=ways>")
-            for (l in looks) linkRow(sb, l, u, pages, here)
-            sb.append("</div></section>")
-        }
+        incomingBlocks(sb, links.filter { it.to == here && it.from !== screen }, here, u, pages) { screen.entry?.let { entryRows(sb, screen, it, u) } }
 
         // ---- the screen's own scenarios: those of the account most of them run in, then each other account's
         fun ownScenarios() {
@@ -575,7 +570,8 @@ object SitePages {
                 continue
             }
             if (slot.rows.isNotEmpty()) {
-                for (row in slot.rows) scenarioPart(sb, row, u, pages, several = slot.rows.size > 1)
+                for (row in slot.rows) scenarioPart(sb, row, u, pages, several = slot.rows.size > 1,
+                    name = Site.partName(screen, row), incoming = links.filter { it.to == Site.partName(screen, row) && it.row !== row })
                 continue
             }
             val tabs = slot.tabs
@@ -611,6 +607,27 @@ object SitePages {
                 val what = Site.rowsOf(o.onPage).filterNot { it.isEntry }.joinToString(" · ") { esc(it.title) }
                 sb.append("<a class=\"oc ${kind.cls}\" href=\"${attr(u + screenPageOf(o.feature))}\">${icon(status)}<b>${esc(o.label)}</b><span class=\"c${if (kind == Site.Kind.FAILED) " bad" else ""}\">$p/$n</span>$how<span class=on>$what</span></a>")
             }
+            sb.append("</div></section>")
+        }
+    }
+
+    /**
+     * The lines other screens' checks leave on [here] — a screen, or a part of one that is a scenario: the ones that
+     * walked here under 들어오는 길 ([entry] draws the place's own way in ahead of them, when it has one), the ones
+     * that opened it to look under 다른 화면의 변경 반영.
+     */
+    private fun incomingBlocks(sb: StringBuilder, incoming: List<Site.Link>, here: String, u: String, pages: Map<String, String>, entry: () -> Unit) {
+        val ways = incoming.filterNot { it.look }
+        val looks = incoming.filter { it.look }
+        val own = StringBuilder().also { mark -> val at = sb.length; entry(); mark.append(sb.substring(at)); sb.setLength(at) }
+        if (own.isNotEmpty() || ways.isNotEmpty()) {
+            sb.append("<section class=blk>${blockHead("들어오는 길", ways)}<div class=ways>").append(own)
+            for (l in ways) linkRow(sb, l, u, pages, here)
+            sb.append("</div></section>")
+        }
+        if (looks.isNotEmpty()) {
+            sb.append("<section class=blk>${blockHead("다른 화면의 변경 반영", looks, "이 화면 집계에서 제외")}<div class=ways>")
+            for (l in looks) linkRow(sb, l, u, pages, here)
             sb.append("</div></section>")
         }
     }
@@ -667,28 +684,43 @@ object SitePages {
     /**
      * A part of a screen that is one scenario (`parts:` names its file): the scenario's name is the part's, and each
      * of its checks a line under it — its title, its sentence, its steps on demand — where a part that is a directory
-     * lists scenarios. The part is where links to the scenario land.
+     * lists scenarios. The part is where links to the scenario land, and a mention of it by [name] (`@나의 왓챠/활동/평가`)
+     * shows its line here ([incoming]).
      */
-    private fun scenarioPart(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>, several: Boolean) {
+    private fun scenarioPart(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>, several: Boolean, name: String, incoming: List<Site.Link>) {
         val r = row.result
         val t = row.timeline
-        val checks = row.checks
-        val (p, n) = passedOf(listOf(row))
-        val failed = checks.count { it.status == "FAILED" }
         val mark = if (row.recordFailed) " " + chip(Site.Kind.FAILED, "녹화 실패") else if (row.kind == Site.Kind.SETUP) " " + chip(Site.Kind.SETUP) else ""
         // the same scenario under several accounts (`states:`) is told apart by the account
         val whose = if (several) " <code class=e>${esc(stateOf(r))}</code>" else ""
         sb.append("<section class=part id=\"${attr(anchorOf(r))}\"><div class=ph><span class=pk>부분</span><h2>${esc(row.title)}</h2>$whose")
-        sb.append("<span class=dim>확인 $n · ${if (failed > 0) "<b class=bad>실패 $failed</b>" else if (p == n) "전부 통과" else "통과 $p"}</span>$mark</div>")
-        val sectioned = checks.any { it.title != null }
-        if (sectioned && t.description.isNotEmpty()) sb.append("<p class=spd>${mentions(t.description, u, pages)}</p>")
+        sb.append("<span class=dim>${checkTally(row)}</span>$mark</div>")
+        scenarioNotes(sb, row, u, pages)
+        // what other screens' checks say of this component: shown here, counted where they are written
+        incomingBlocks(sb, incoming, name, u, pages) {}
+        checkLines(sb, row, u, pages)
+        sb.append("${scenarioMeta(row, u)}</section>")
+    }
+
+    /** What a scenario of several checks says ahead of them: its prose, its preparation, and why it did not run or failed outside a check. */
+    private fun scenarioNotes(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>) {
+        val r = row.result
+        val t = row.timeline
+        if (row.checks.any { it.title != null } && t.description.isNotEmpty()) sb.append("<p class=spd>${mentions(t.description, u, pages)}</p>")
         t.sections.firstOrNull { it.preparation }?.let { prep ->
             sb.append("<p class=prep>준비 · ${t.steps.filter { it.n in prep.from..prep.to }.joinToString(" / ") { stepText(it.text) }}</p>")
         }
         if (row.kind == Site.Kind.SETUP) sb.append("<p class=dim>${esc(r.reason ?: "돌지 않음")}</p>")
         orphanFailure(row)?.let { sb.append("<p class=reason>${esc(it)}</p>") }
+    }
+
+    /**
+     * A scenario's checks, a line each: the check's title, its sentence, how it started when that was not as the
+     * scenario does (its place, its account), and its steps on demand — a failed one open.
+     */
+    private fun checkLines(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>) {
         sb.append("<div class=fl>")
-        for (c in checks) {
+        for (c in row.checks) {
             val at = (c.deeplink?.let { " <code class=\"e dl\">${esc(it)}</code>" } ?: c.entry?.let { " <span class=to>${esc(leaf(it))}의 진입으로 연다</span>" } ?: "") +
                 (c.appState?.let { " <span class=to>${esc(it)} 계정으로</span>" } ?: "")
             val why = whyNot(row, c)?.takeIf { c.status == "FAILED" && c.steps.none { st -> st.status == "FAILED" } }?.let { "<br><span class=reason>${esc(it)}</span>" } ?: ""
@@ -697,51 +729,54 @@ object SitePages {
             if (c.steps.isNotEmpty()) stepList(sb, c.steps)
             sb.append("</div></details>")
         }
-        sb.append("</div><span class=fm>${esc(listOf(stateOf(r), humanDuration(t.durationMs)).filter { it.isNotEmpty() }.joinToString(" · "))} · <a class=more href=\"${attr(u + pageOf(r))}\">스텝·영상 ›</a></span></section>")
+        sb.append("</div>")
+    }
+
+    /** The account a scenario ran as, how long it took, and the way to its steps and video. */
+    private fun scenarioMeta(row: Site.Row, u: String): String =
+        "<span class=fm>${esc(listOf(stateOf(row.result), humanDuration(row.timeline.durationMs)).filter { it.isNotEmpty() }.joinToString(" · "))} · <a class=more href=\"${attr(u + pageOf(row.result))}\">스텝·영상 ›</a></span>"
+
+    /** `확인 3 · 실패 1` of one scenario. */
+    private fun checkTally(row: Site.Row): String {
+        val (p, n) = passedOf(listOf(row))
+        val failed = row.checks.count { it.status == "FAILED" }
+        return "확인 $n · ${if (failed > 0) "<b class=bad>실패 $failed</b>" else if (p == n) "전부 통과" else "통과 $p"}"
     }
 
     /**
-     * One scenario on its screen's page, as a line that opens: its name, then its sentence when it confirms one thing,
-     * or its sections' titles and the screens they mention when it confirms several. Opened: its prose, its
-     * preparation, each check with its sentence and — a click further — its steps. A scenario that did not pass is open.
+     * A scenario of several checks (`##` sections) on its screen's page: a block of its own — its name and how its
+     * checks stand, its prose, then every check as a line, read without opening anything. A check opens to its steps.
+     * It is a group, and reads as one: the same shape a part of the screen has, under the scenario's name.
+     */
+    private fun scenarioGroup(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>) {
+        val t = row.timeline
+        val status = when (row.kind) { Site.Kind.FAILED -> "FAILED"; Site.Kind.PASSED -> "PASSED"; Site.Kind.SETUP -> "NONE" }
+        val mark = if (row.recordFailed) " " + chip(Site.Kind.FAILED, "녹화 실패") else if (row.kind == Site.Kind.SETUP) " " + chip(Site.Kind.SETUP) else ""
+        // the screens its checks are about: they show on those screens' pages too
+        val to = (t.mentions + row.checks.flatMap { it.mentions }).distinct().joinToString("") { "<span class=to>→ ${esc(leaf(it))}</span>" }
+        sb.append("<div class=\"grp ${row.kind.cls}\" id=\"${attr(anchorOf(row.result))}\"><div class=gh>${icon(status)}<b class=fn>${esc(row.title)}</b><span class=gt>${checkTally(row)}</span>$to$mark</div>")
+        scenarioNotes(sb, row, u, pages)
+        checkLines(sb, row, u, pages)
+        sb.append("${scenarioMeta(row, u)}</div>")
+    }
+
+    /**
+     * One scenario on its screen's page. One that confirms one thing is a line that opens: its name, its sentence, and
+     * opened, its steps. One that confirms several (`##` sections) is a group ([scenarioGroup]). A scenario that did
+     * not pass is open.
      */
     private fun scenarioLine(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>) {
         val r = row.result
-        val t = row.timeline
         val checks = row.checks
+        if (!(checks.size == 1 && checks[0].title == null)) return scenarioGroup(sb, row, u, pages)
+        val c = checks[0]
         val status = when (row.kind) { Site.Kind.FAILED -> "FAILED"; Site.Kind.PASSED -> "PASSED"; Site.Kind.SETUP -> "NONE" }
         val mark = if (row.recordFailed) chip(Site.Kind.FAILED, "녹화 실패") else if (row.kind == Site.Kind.SETUP) chip(Site.Kind.SETUP) else ""
-        val single = checks.size == 1 && checks[0].title == null
         sb.append("<details class=\"ft ${row.kind.cls}\" id=\"${attr(anchorOf(r))}\"${if (row.kind != Site.Kind.PASSED) " open" else ""}><summary>${icon(status)}<b class=fn>${esc(row.title)}</b>")
-        if (single) {
-            val c = checks[0]
-            sb.append("<span class=fs>${mentions(c.description, u, pages)}$mark</span><span class=ckn>${if (c.steps.isEmpty()) "" else "${c.steps.size}스텝"}</span></summary><div class=fb>")
-        } else {
-            val to = (t.mentions + checks.flatMap { it.mentions }).distinct()
-            sb.append("<span class=\"fs titles\">${checks.joinToString(" · ") { "<span class=${cls(it.status)}>${esc(it.title ?: "")}</span>" }}${to.joinToString("") { "<span class=to>→ ${esc(leaf(it))}</span>" }}$mark</span>")
-            sb.append("<span class=ckn>확인 ${checks.size}</span></summary><div class=fb>")
-            if (t.description.isNotEmpty()) sb.append("<p class=spd>${mentions(t.description, u, pages)}</p>")
-        }
-        t.sections.firstOrNull { it.preparation }?.let { prep ->
-            sb.append("<p class=prep>준비 · ${t.steps.filter { it.n in prep.from..prep.to }.joinToString(" / ") { stepText(it.text) }}</p>")
-        }
-        if (row.kind == Site.Kind.SETUP) sb.append("<p class=dim>${esc(r.reason ?: "돌지 않음")}</p>")
-        orphanFailure(row)?.let { sb.append("<p class=reason>${esc(it)}</p>") }
-        if (single) { if (checks[0].steps.isNotEmpty()) stepList(sb, checks[0].steps) }
-        else for (c in checks) checkLine(sb, row, c, u, pages)
-        sb.append("<span class=fm>${esc(listOf(stateOf(r), humanDuration(t.durationMs)).filter { it.isNotEmpty() }.joinToString(" · "))} · <a class=more href=\"${attr(u + pageOf(r))}\">스텝·영상 ›</a></span></div></details>")
-    }
-
-    /** One check of a scenario with sections: its title and sentence, how it started when that was not as the scenario does (its place, its account), and its steps on demand. */
-    private fun checkLine(sb: StringBuilder, row: Site.Row, c: Site.Check, u: String, pages: Map<String, String>) {
-        val at = (c.deeplink?.let { " <code class=\"e dl\">${esc(it)}</code>" } ?: c.entry?.let { " <span class=to>${esc(leaf(it))}의 진입으로 연다</span>" } ?: "") +
-            (c.appState?.let { " <span class=to>${esc(it)} 계정으로</span>" } ?: "")
-        val why = whyNot(row, c)?.takeIf { c.status == "FAILED" && c.steps.none { s -> s.status == "FAILED" } }?.let { "<br><span class=reason>${esc(it)}</span>" } ?: ""
-        val head = "${icon(c.status)}<span class=ckt>${c.title?.let { "<b>${esc(it)}</b>" } ?: ""}${mentions(c.description, u, pages)}$at$why</span>"
-        if (c.steps.isEmpty()) { sb.append("<div class=\"ck flat ${cls(c.status)}\">$head</div>"); return }
-        sb.append("<details class=\"ck ${cls(c.status)}\"${if (c.status == "FAILED") " open" else ""}><summary>$head<span class=ckn>${c.steps.size}스텝</span></summary>")
-        stepList(sb, c.steps)
-        sb.append("</details>")
+        sb.append("<span class=fs>${mentions(c.description, u, pages)}$mark</span><span class=ckn>${if (c.steps.isEmpty()) "" else "${c.steps.size}스텝"}</span></summary><div class=fb>")
+        scenarioNotes(sb, row, u, pages)
+        if (c.steps.isNotEmpty()) stepList(sb, c.steps)
+        sb.append("${scenarioMeta(row, u)}</div></details>")
     }
 
     /** A check's steps: the ones that check set apart from the ones that get there, the failed one with why. */
@@ -1238,15 +1273,17 @@ object SitePages {
         .mn{font-weight:500;text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:3px;white-space:nowrap}a.mn:hover{text-decoration-color:var(--fg)}.mn.here{text-decoration:none;font-weight:600}
         .to{display:inline-block;margin-left:8px;font-size:12px;font-weight:400;color:var(--dim);background:var(--chipbg);border-radius:4px;padding:1px 7px;white-space:nowrap}code.dl{margin-left:6px;color:var(--dim)}
         .fl{border-top:1px solid var(--line2);border-bottom:1px solid var(--line2)}details.ft{border-top:1px solid var(--line);scroll-margin-top:12px}details.ft:first-child{border-top:0}
-        details.ft>summary,details.ck>summary{cursor:pointer;list-style:none}details.ft>summary::-webkit-details-marker,details.ck>summary::-webkit-details-marker{display:none}
+        details.ft>summary{cursor:pointer;list-style:none}details.ft>summary::-webkit-details-marker{display:none}
         details.ft>summary{display:grid;grid-template-columns:18px 160px minmax(0,1fr) auto;gap:6px 12px;align-items:start;padding:10px 0}.fn{font-size:14.5px;font-weight:600;min-width:0}.ft.failed .fn{color:var(--failfg)}
         .fs{color:var(--ink2);max-width:64ch;min-width:0}.fs.titles{color:var(--dim)}.fs.titles .failed{color:var(--failfg);font-weight:600}.fs.titles .skipped{color:var(--faint)}.fs .chip{margin-left:8px}
         .fb{padding:0 0 12px 30px;display:flex;flex-direction:column;gap:2px}.fb>ol.st{margin-left:0}.fb p.reason,.fb p.dim{margin:0 0 4px}.fm{font-size:12px;color:var(--faint);margin-top:4px}
         .spd{margin:0 0 4px;color:var(--ink2);max-width:70ch;line-height:1.65}.prep{margin:0 0 4px;font-size:12.5px;color:var(--faint);border-left:2px dashed var(--line2);padding-left:10px}
-        details.ck>summary,.ck.flat{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:10px;align-items:start;padding:4px 0}
-        .ckt{max-width:68ch}.ckt b{font-weight:600;margin-right:8px}.ck.failed .ckt b{color:var(--failfg)}.ck.skipped .ckt{color:var(--dim)}.ckn{font-size:12px;color:var(--faint);white-space:nowrap}.ckn::after{content:' ▸'}details[open]>summary>.ckn::after{content:' ▾'}
+        .ft.skipped .fn,.ft.skipped .fs{color:var(--dim)}.ckn{font-size:12px;color:var(--faint);white-space:nowrap}.ckn::after{content:' ▸'}details[open]>summary>.ckn::after{content:' ▾'}
         ol.st{margin:4px 0 10px 28px;padding:10px 12px 10px 34px;background:var(--panel);border-radius:8px;font-size:13px;color:var(--dim);display:flex;flex-direction:column;gap:3px}ol.st li.v{color:var(--fg);font-weight:500}ol.st li.failed{color:var(--failfg)}ol.st li.skipped{color:var(--faint)}
         ol.st .why{display:inline-block;font-weight:400;font-size:12.5px;background:var(--failbg);border-radius:4px;padding:2px 8px;margin-top:2px}
+        .grp{border-top:1px solid var(--line);padding:10px 0 12px;display:flex;flex-direction:column;gap:6px;min-width:0;scroll-margin-top:12px}.grp:first-child{border-top:0}
+        .gh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}.gh .ic{align-self:center}.gh .gt{font-size:13px;color:var(--dim)}.grp.failed>.gh .fn{color:var(--failfg)}
+        .grp>.spd,.grp>.prep,.grp>p,.grp>.fl,.grp>.fm{margin-left:30px}.grp>.fl{border-top-color:var(--line);border-bottom:0}.grp>.fm{margin-top:0}
         .snav .kids{display:flex;flex-direction:column;gap:1px;margin:0 0 6px 11px;padding-left:10px;border-left:1px solid var(--line2)}
         .snav a.k{font-size:13px;color:var(--ink2);padding:4px 8px}.snav a.k .dot{width:6px;height:6px;margin-right:6px}.snav a.k.open .nm::before{content:'↳ ';color:var(--faint)}
         .snav a.k.cur{background:var(--card);box-shadow:inset 0 0 0 1px var(--line2);color:var(--fg)}
@@ -1269,6 +1306,6 @@ object SitePages {
         .sub2{color:var(--faint);margin-right:6px}
         @media(max-width:900px){aside.replay{position:static}main.screen{grid-template-columns:minmax(0,1fr)}.snav{position:static;max-height:none}.frow{grid-template-columns:52px minmax(0,1fr)}.frow .side{grid-column:2;align-items:flex-start;text-align:left}.tools{margin-left:0}}
         @media(max-width:640px){main{padding:20px 16px 40px}.cols2{grid-template-columns:1fr}.in{grid-template-columns:18px minmax(0,1fr)}.in .it{grid-column:2}
-          details.ft>summary{grid-template-columns:18px minmax(0,1fr) auto}details.ft>summary>.fs{grid-column:2/-1;grid-row:2}.fb{padding-left:0}ol.st{margin-left:0}}
+          details.ft>summary{grid-template-columns:18px minmax(0,1fr) auto}details.ft>summary>.fs{grid-column:2/-1;grid-row:2}.fb{padding-left:0}ol.st{margin-left:0}.grp>.spd,.grp>.prep,.grp>p,.grp>.fl,.grp>.fm{margin-left:0}}
     """.trimIndent()
 }

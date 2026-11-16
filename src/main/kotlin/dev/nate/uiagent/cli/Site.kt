@@ -162,6 +162,9 @@ object Site {
      */
     class Slot(val part: Screen? = null, val tabs: List<Screen> = emptyList(), val rows: List<Row> = emptyList())
 
+    /** What a mention calls a part of [screen] that is the scenario [row]: the screen's path and the scenario's file name. */
+    fun partName(screen: Screen, row: Row): String = Mentions.norm((if (screen.feature.isEmpty()) "" else screen.feature + "/") + row.result.name)
+
     /** The worst of [rows]; a screen that only holds other screens has none and nothing against it. */
     fun kindOf(rows: List<Row>): Kind = rows.minOfOrNull { it.kind } ?: Kind.PASSED
 
