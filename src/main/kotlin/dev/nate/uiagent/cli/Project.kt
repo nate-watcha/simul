@@ -51,8 +51,8 @@ class SimulProject(val appRoot: File) {
 
     /**
      * What [screen] is made of, as its `_screen.md` says ([ScreenLayout]); null when its directory has none. A part
-     * it names is a directory under the screen's — a piece with scenarios of its own — or a scenario file in it,
-     * `<name>.md`: a piece whose checks are that one scenario's sections. A tab is a directory.
+     * or a tab it names is a directory under the screen's: a directory is a place — a screen, a piece of one — and
+     * a file in it a scenario. A piece with one check is still a directory, with that one scenario in it.
      */
     fun layoutOf(screen: String): ScreenLayout? {
         val dir = dirOf(screen) ?: return null
@@ -60,18 +60,13 @@ class SimulProject(val appRoot: File) {
         val where = file.relativeTo(scenariosDir).path
         val layout = ScreenMd.parse(file.readText(), where) ?: return null
         val under = dir.listFiles { f -> f.isDirectory }?.map { Mentions.norm(it.name) }.orEmpty().toSet()
-        val files = dir.listFiles { f -> f.isFile && f.extension == "md" && f.name != ENTRY_FILE && f.name != ScreenMd.FILE }?.map { Mentions.norm(it.nameWithoutExtension) }.orEmpty().toSet()
-        (layout.parts.toSet() - under - files).let { missing ->
-            require(missing.isEmpty()) {
-                "$where: parts ${missing.joinToString(", ")} — a part is a directory under this screen's or a scenario file in it " +
-                    "(directories: ${under.joinToString(", ").ifEmpty { "none" }}; files: ${files.joinToString(", ").ifEmpty { "none" }})"
-            }
-        }
-        (layout.tabs.toSet() - under).let { missing ->
-            require(missing.isEmpty()) { "$where: tabs ${missing.joinToString(", ")} — a tab is a directory under this screen's (there: ${under.joinToString(", ").ifEmpty { "none" }})" }
-        }
-        (layout.parts.toSet() intersect under intersect files).let { both ->
-            require(both.isEmpty()) { "$where: ${both.joinToString(", ")} is both a directory and a scenario file here — the line cannot tell which it names" }
+        val missing = layout.names.toSet() - under
+        if (missing.isNotEmpty()) {
+            // a scenario file of that name is the likeliest slip: say where it goes
+            val files = dir.listFiles { f -> f.isFile && f.extension == "md" }?.map { Mentions.norm(it.nameWithoutExtension) }.orEmpty().toSet()
+            val hint = (missing intersect files).takeIf { it.isNotEmpty() }
+                ?.let { " — ${it.joinToString(", ") { n -> "$n.md" }} is a scenario: a part is a directory, put it in one (${it.first()}/…)" } ?: ""
+            throw IllegalArgumentException("$where: parts ${missing.joinToString(", ")} — a part or a tab is a directory under this screen's (there: ${under.joinToString(", ").ifEmpty { "none" }})$hint")
         }
         return layout
     }
@@ -80,20 +75,6 @@ class SimulProject(val appRoot: File) {
     fun layoutsFor(screen: String): Map<String, ScreenLayout> =
         generateSequence(Mentions.norm(screen).ifEmpty { null }) { at -> at.substringBeforeLast('/', "").ifEmpty { null } }
             .mapNotNull { at -> layoutOf(at)?.let { at to it } }.toMap()
-
-    /**
-     * What a mention can name: every screen, and every part of a screen that is a scenario file (`나의 왓챠/활동/평가` —
-     * the 평가 that `활동/_screen.md` lists and `활동/평가.md` is). A component drawn as a part is a place a change
-     * elsewhere shows in, whether it is a directory or one scenario.
-     */
-    fun mentionables(): List<String> {
-        val screens = screens()
-        val parts = screens.flatMap { screen ->
-            val layout = runCatching { layoutOf(screen) }.getOrNull() ?: return@flatMap emptyList()
-            layout.parts.map { "$screen/$it" }.filter { it !in screens }
-        }
-        return screens + parts
-    }
 
     /** The directory of [screen] (a path of directory names, compared in one Unicode form); null when there is none. */
     private fun dirOf(screen: String): File? = screen.split('/').fold(scenariosDir as File?) { dir, name ->
@@ -108,8 +89,8 @@ class SimulProject(val appRoot: File) {
      * own when it names one — and the runner plays the entry's steps from the entry's trace before the
      * scenario's first step. A scenario with its own address runs as it always did.
      *
-     * Its `@화면` mentions are resolved here, against the project's screens and their parts ([mentionables]): one
-     * that names none is refused.
+     * Its `@화면` mentions are resolved here, against the project's screens — a part of a screen is one, being a
+     * directory: one that names none is refused.
      */
     fun load(md: File): Scenario {
         require(md.name != ScreenMd.FILE) { "${ScreenMd.FILE} says what a screen is made of — it is not a scenario and is not run" }
@@ -139,10 +120,10 @@ class SimulProject(val appRoot: File) {
     private fun mentioned(scenario: Scenario): Scenario {
         val written = listOf(scenario.description) + scenario.sections.map { it.description }
         if (written.none(Mentions::has)) return scenario
-        val screens = mentionables()
+        val screens = screens()
         val unknown = written.flatMap { Mentions.unknown(it, screens) }.distinct()
         require(unknown.isEmpty()) {
-            "scenario '${scenario.name}': ${unknown.joinToString(", ") { "@$it" }} names no screen, nor a part of one (there: ${screens.joinToString(", ")})"
+            "scenario '${scenario.name}': ${unknown.joinToString(", ") { "@$it" }} names no screen (screens: ${screens.joinToString(", ")})"
         }
         return scenario.copy(
             mentions = Mentions.of(scenario.description, screens),
