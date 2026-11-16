@@ -381,9 +381,9 @@ class SiteTest {
         assertTrue("<h3>들어오는 길</h3>" in activity && "<span class=ip>딥링크</span><span class=it>없음</span>" in activity, "a way in with a step that moves: the screen has no address of its own")
         assertTrue("<span class=ip>진입</span><span class=it><code class=e>app://my</code> 를 열고 <span class=q>&quot;활동&quot;</span> 탭을 누른다<span class=st2>이 화면의 시나리오 1개가 여기서 시작한다</span>" in activity,
             activity.substringAfter("들어오는 길").take(900))
-        assertTrue("<h3>다른 화면에서 바꾸면 <span class=hn><b class=bad>실패 1</b> · 쓰인 화면에서 센다</span></h3>" in activity)
+        assertTrue("<h3>다른 화면의 변경 반영 <span class=hn><b class=bad>실패 1</b> · 이 화면 집계에서 제외</span></h3>" in activity)
         assertTrue("href=\"../작품 상세/_screen.html#comment\">작품 상세 › 코멘트 추가와 삭제 › 추가 뒤 활동 탭</a><span class=it><b class=\"mn here\">나의왓챠-활동</b> 코멘트 영역 맨 앞에 나온다." +
-            "<br><span class=reason>녹화 때 있던 것이 화면에 없음: 방금 쓴 코멘트</span>" in activity, activity.substringAfter("다른 화면에서 바꾸면").take(900))
+            "<br><span class=reason>녹화 때 있던 것이 화면에 없음: 방금 쓴 코멘트</span>" in activity, activity.substringAfter("다른 화면의 변경 반영").take(900))
         assertTrue("시나리오 1 · 확인 2 · 전부 통과" in activity, "the failure is counted where it is written")
         val own = activity.substringAfter("<h3>이 화면에서</h3>")
         assertTrue("<b class=fn>포스터</b><span class=fs>포스터를 누르면 그 작품의 <a class=mn href=\"../작품 상세/_screen.html\">작품 상세</a>로 간다.</span><span class=ckn>1스텝</span>" in own, own.take(600))
@@ -392,7 +392,7 @@ class SiteTest {
         val content = File(day, "작품 상세/_screen.html").readText()
         assertTrue("<span class=ip>딥링크</span><span class=it><code class=e>app://contents/1</code><span class=st2>이 주소가 바로 연다</span><span class=st2>이 화면의 시나리오 1개가 여기서 시작한다</span>" in content,
             content.substringAfter("들어오는 길").take(600))
-        assertTrue(">나의왓챠-활동 › 포스터</a>" in content && "다른 화면에서 바꾸면" !in content, "a check that walked here is a way in")
+        assertTrue(">나의왓챠-활동 › 포스터</a>" in content && "다른 화면의 변경 반영" !in content, "a check that walked here is a way in")
         assertTrue("<span class=passed>추가</span> · <span class=failed>추가 뒤 활동 탭</span> · <span class=passed>삭제</span><span class=to>→ 나의왓챠-활동</span>" in content)
         assertTrue("<span class=to>나의왓챠-활동의 진입으로 연다</span> <span class=to>member-empty 계정으로</span>" in content && "<details class=\"ck failed\" open>" in content,
             "a check's own setup: where it started and as whom")
@@ -470,7 +470,7 @@ class SiteTest {
         assertTrue(order.all { it > 0 } && order == order.sorted(), "$order")
         // the part, read as a screen is — with what another screen changed that shows on it
         val part = my.substringAfter("<section class=part id=\"s:프로필_헤더\">").substringBefore("<section class=\"part tabpart\">")
-        assertTrue("<span class=pk>부분</span><h2>프로필 헤더</h2>" in part && "<h3>다른 화면에서 바꾸면" in part && "<h3>이 부분에서</h3>" in part, part.take(600))
+        assertTrue("<span class=pk>부분</span><h2>프로필 헤더</h2>" in part && "<h3>다른 화면의 변경 반영" in part && "<h3>이 부분에서</h3>" in part, part.take(600))
         assertTrue("href=\"../나의 왓챠/프로필 수정/_screen.html#link\">나의 왓챠 › 프로필 수정 › 링크 › 다시 들어와도 유지</a><span class=it><b class=\"mn here\">프로필 헤더</b>의 링크가 바뀌어 있다." in part, part.take(900))
         // the screen's own scenarios sit between its parts and its tabs; a mention of a tab goes to the tab
         val own = my.substringAfter("<h3>이 화면에서</h3>").substringBefore("<section class=\"part tabpart\">")
@@ -507,5 +507,48 @@ class SiteTest {
         assertTrue("<span class=sub2>↳</span><a href=\"나의 왓챠/프로필 수정/_screen.html\">나의 왓챠 › 프로필 수정</a>" in home)
         val steps = File(day, "나의 왓챠/활동/empty.html").readText()
         assertTrue("<a href=\"../../나의 왓챠/_screen.html#활동/empty\">나의 왓챠 › 활동</a><span>/</span><b>empty</b>" in steps, "a scenario of a tab leads back to its line in the tab")
+    }
+
+    @Test
+    fun `a part that is one scenario is drawn as a part - its checks are the lines, in the order the screen's file gives`() {
+        val day = File(runs, "2026-11-16")
+        fun st(n: Int, text: String, status: StepStatus = StepStatus.PASSED, reason: String? = null) =
+            StepReport(n, text, status, "replay", emptyList(), emptyList(), reason, 500, emptyList(), startedMs = n * 1000L)
+        // what `활동/_screen.md` says: two components, each a scenario file — not in the order of their names
+        val layout = mapOf("활동" to ScreenLayout(listOf(ScreenLayout.Slot(part = "평가"), ScreenLayout.Slot(part = "재감상"), ScreenLayout.Slot(part = "코멘트"))))
+        fun write(name: String, title: String, prose: String, steps: List<StepReport>, sections: List<SectionReport> = emptyList()) {
+            val dir = File(day, "활동/$name").apply { mkdirs() }
+            val status = if (steps.any { it.status == StepStatus.FAILED }) StepStatus.FAILED else StepStatus.PASSED
+            ResultJson.write(ScenarioRunResult(title, status, steps, null, 5000, startedAtMs = 1_794_000_000_000L, reportDir = dir, sections = sections), "replay",
+                ResultJson.Meta("활동", name, null, "활동/$name.md", title, null, prose, "2026-11-16", ResultJson.Env("6.4.0", "sdk", "1.1"),
+                    setup = ResultJson.Setup("app://my", false, "member"), screens = layout), dir)
+        }
+        write("재감상", "재감상", "여러 번 본 작품의 영역.",
+            listOf(st(1, "\"재혼 황후\"를 누른다"), st(2, "\"재감상 전체 보기\"를 누른다", StepStatus.FAILED, "replay broken: evidence not on screen: 여러 번 본 작품")),
+            listOf(SectionReport("포스터", "누르면 그 작품의 상세로 간다.", StepStatus.PASSED, 1..1), SectionReport("헤더", "누르면 여러 번 본 작품 목록으로 간다.", StepStatus.FAILED, 2..2)))
+        write("평가", "평가", "평가한 작품의 영역.", listOf(st(1, "\"100일의 거짓말\"을 누른다"), st(2, "\"평가 전체 보기\"를 누른다")),
+            listOf(SectionReport("포스터", "누르면 그 작품의 상세로 간다.", StepStatus.PASSED, 1..1), SectionReport("헤더", "누르면 평가함으로 간다.", StepStatus.PASSED, 2..2)))
+        // one that is about the whole screen, not a component of it; `코멘트` is named but did not run tonight
+        write("back", "돌아오면 탭 유지", "뒤로 오면 이 탭이 그대로 열려 있다.", listOf(st(1, "뒤로 간다")))
+
+        val screen = Site.screens(Site.classify(Site.load(day))).single()
+        assertEquals(listOf("평가", "재감상"), screen.slots.map { it.rows.single().title }, "as the line says, and only what ran")
+        assertEquals(listOf("돌아오면 탭 유지"), screen.loose.map { it.title })
+
+        SitePages.build(day, day)
+        val page = File(day, "활동/_screen.html").readText()
+        assertTrue("시나리오 3 · 확인 5 · <b class=bad>실패 1</b>" in page && " · 부분 2</span>" in page, page.substringAfter("<h1>").take(300))
+        val order = listOf("<section class=part id=\"평가\">", "<section class=part id=\"재감상\">", "<h3>이 화면에서</h3>").map { page.indexOf(it) }
+        assertTrue(order.all { it > 0 } && order == order.sorted(), "the components in the line's order, then the screen's own scenarios: $order")
+        val part = page.substringAfter("<section class=part id=\"재감상\">").substringBefore("</section>")
+        assertTrue("<span class=pk>부분</span><h2>재감상</h2><span class=dim>확인 2 · <b class=bad>실패 1</b></span></div><p class=spd>여러 번 본 작품의 영역.</p>" in part, part.take(400))
+        assertTrue("<details class=\"ft passed\"><summary><i class=\"ic passed\">✓</i><b class=fn>포스터</b><span class=fs>누르면 그 작품의 상세로 간다.</span><span class=ckn>1스텝</span></summary>" in part, part.take(900))
+        assertTrue("<details class=\"ft failed\" open><summary><i class=\"ic failed\">✕</i><b class=fn>헤더</b>" in part && "녹화 때 있던 것이 화면에 없음: 여러 번 본 작품" in part)
+        assertTrue("href=\"../활동/재감상.html\">스텝·영상 ›</a>" in part)
+        assertTrue("<b class=fn>돌아오면 탭 유지</b>" in page.substringAfter("<h3>이 화면에서</h3>") && "<b class=fn>평가</b>" !in page, "a component is not listed again among the screen's scenarios")
+        val nav = page.substringAfter("<nav class=snav").substringBefore("<div class=doc>")
+        assertTrue("<div class=kids><a class=k href=\"../활동/_screen.html#평가\"" in nav && nav.indexOf("#평가\"") < nav.indexOf("#재감상\""), nav.take(900))
+        val home = File(day, "index.html").readText()
+        assertTrue("<a href=\"활동/_screen.html#재감상\">활동</a><span>›</span><a class=title href=\"활동/재감상.html\">재감상</a>" in home, "a failure in a component leads to the component")
     }
 }

@@ -50,17 +50,28 @@ class SimulProject(val appRoot: File) {
         .flatMap { path -> path.split('/').let { seg -> seg.indices.map { i -> seg.subList(0, i + 1).joinToString("/") } } }.distinct()
 
     /**
-     * What [screen] is made of, as its `_screen.md` says ([ScreenLayout]); null when its directory has none. A name
-     * in it is a directory under the screen's.
+     * What [screen] is made of, as its `_screen.md` says ([ScreenLayout]); null when its directory has none. A part
+     * it names is a directory under the screen's — a piece with scenarios of its own — or a scenario file in it,
+     * `<name>.md`: a piece whose checks are that one scenario's sections. A tab is a directory.
      */
     fun layoutOf(screen: String): ScreenLayout? {
         val dir = dirOf(screen) ?: return null
         val file = File(dir, ScreenMd.FILE).takeIf { it.isFile } ?: return null
         val where = file.relativeTo(scenariosDir).path
         val layout = ScreenMd.parse(file.readText(), where) ?: return null
-        val under = dir.listFiles { f -> f.isDirectory }?.map { Mentions.norm(it.name) }.orEmpty()
-        (layout.names - under.toSet()).let { missing ->
-            require(missing.isEmpty()) { "$where: parts ${missing.joinToString(", ")} — a part or a tab is a directory under this screen's (there: ${under.joinToString(", ").ifEmpty { "none" }})" }
+        val under = dir.listFiles { f -> f.isDirectory }?.map { Mentions.norm(it.name) }.orEmpty().toSet()
+        val files = dir.listFiles { f -> f.isFile && f.extension == "md" && f.name != ENTRY_FILE && f.name != ScreenMd.FILE }?.map { Mentions.norm(it.nameWithoutExtension) }.orEmpty().toSet()
+        (layout.parts.toSet() - under - files).let { missing ->
+            require(missing.isEmpty()) {
+                "$where: parts ${missing.joinToString(", ")} — a part is a directory under this screen's or a scenario file in it " +
+                    "(directories: ${under.joinToString(", ").ifEmpty { "none" }}; files: ${files.joinToString(", ").ifEmpty { "none" }})"
+            }
+        }
+        (layout.tabs.toSet() - under).let { missing ->
+            require(missing.isEmpty()) { "$where: tabs ${missing.joinToString(", ")} — a tab is a directory under this screen's (there: ${under.joinToString(", ").ifEmpty { "none" }})" }
+        }
+        (layout.parts.toSet() intersect under intersect files).let { both ->
+            require(both.isEmpty()) { "$where: ${both.joinToString(", ")} is both a directory and a scenario file here — the line cannot tell which it names" }
         }
         return layout
     }
