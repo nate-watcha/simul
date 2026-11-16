@@ -299,9 +299,21 @@ class CliProjectTest {
             "its own way in and the one its section starts from are recorded first")
         assertEquals(0, cliMain(arrayOf("run", "나의 왓챠/홈/empty.md", "--dry-run"), root))
 
+        // a part may be one scenario: the file of that name in the screen's directory — its sections are the part's checks
+        File(my, "_screen.md").writeText("---\nparts: [tabs, 프로필 헤더, [홈, 활동]]\n---\n")
+        assertEquals(listOf("tabs", "프로필 헤더"), p.layoutOf("나의 왓챠")?.parts)
+        assertEquals(0, cliMain(arrayOf("run", "나의 왓챠/tabs.md", "--dry-run"), root))
+        // a tab is a directory, never a file; and a name that is both a directory and a file names neither
+        File(my, "_screen.md").writeText("---\nparts: [프로필 헤더, [홈, tabs]]\n---\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.layoutOf("나의 왓챠") }.message!!, "tabs tabs — a tab is a directory")
+        File(my, "홈.md").writeText("1. 스텝\n")
+        File(my, "_screen.md").writeText("---\nparts: [홈]\n---\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.layoutOf("나의 왓챠") }.message!!, "both a directory and a scenario file")
+        File(my, "홈.md").delete()
+
         // a part or a tab is a directory under the screen; the file is not run; the line is no longer the way in's
         File(my, "_screen.md").writeText("---\nparts: [프로필 헤더, [홈, 좋아요]]\n---\n")
-        assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(my, "홈/empty.md")) }.message!!, "parts 좋아요")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(my, "홈/empty.md")) }.message!!, "tabs 좋아요")
         File(my, "_screen.md").writeText("---\nparts: [프로필 헤더, [홈, 활동]]\n---\n")
         assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(my, "_screen.md")) }.message!!, "not a scenario")
         File(my, "_entry.md").writeText("---\ntabs: [홈, 활동]\nsetup:\n  deeplink: app://my\n---\n1. 스텝\n")

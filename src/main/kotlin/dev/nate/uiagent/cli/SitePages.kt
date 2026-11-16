@@ -469,7 +469,7 @@ object SitePages {
             val (sp, sn) = passedOf(its)
             val q = (s.name + " " + s.subtree.joinToString(" ") { it.label } + " " + its.joinToString(" ") { it.title }).lowercase()
             sb.append("<a${if (s === screen) " class=on" else ""} href=\"${attr(u + screenPageOf(s.feature))}\" data-q=\"${attr(q)}\"><i class=\"dot ${kind.cls}\"></i><span class=nm>${esc(s.name)}</span><span class=\"c${if (kind == Site.Kind.FAILED) " bad" else ""}\">$sp/$sn</span></a>")
-            if (s === screen.root && s.children.isNotEmpty()) navKids(sb, s, screen, u)
+            if (s === screen.root && (s.children.isNotEmpty() || s.slots.isNotEmpty())) navKids(sb, s, screen, u)
         }
         sb.append("</nav><div class=doc>")
 
@@ -480,7 +480,7 @@ object SitePages {
         // without a way in of its own, where its scenarios start is all there is to say about getting here
         if (screen.entry == null && screen.entries.isNotEmpty()) sb.append("<div class=ents>${screen.entries.joinToString("") { entryLine(it) }}</div>")
         val nested = listOfNotNull(
-            screen.parts.size.takeIf { it > 0 }?.let { "부분 $it" }, screen.tabs.size.takeIf { it > 0 }?.let { "탭 $it" },
+            screen.slots.count { it.tabs.isEmpty() }.takeIf { it > 0 }?.let { "부분 $it" }, screen.tabs.size.takeIf { it > 0 }?.let { "탭 $it" },
             screen.opens.size.takeIf { it > 0 }?.let { "여기서 열리는 화면 $it" },
         ).joinToString("") { " · $it" }
         sb.append("<span class=dim>${tally(on)} · ${esc(humanDuration(on.sumOf { it.timeline.durationMs }))}$nested</span></div></header>")
@@ -504,11 +504,18 @@ object SitePages {
             val q = (c.label + " " + its.joinToString(" ") { it.title }).lowercase()
             sb.append("<a class=\"k$cls${if (c === current) " cur" else ""}\" href=\"${attr(u + screenHref(c.feature))}\" data-q=\"${attr(q)}\"><i class=\"dot ${kind.cls}\"></i><span class=nm>${esc(c.label)}</span><span class=\"c${if (kind == Site.Kind.FAILED) " bad" else ""}\">$p/$n</span></a>")
             // a part's own parts; what is under a screen that opens from here only on that screen's pages
-            if (c.children.isNotEmpty() && (c.place != Site.Place.OPENS || c.subtree.contains(current))) navKids(sb, c, current, u)
+            if ((c.children.isNotEmpty() || c.slots.isNotEmpty()) && (c.place != Site.Place.OPENS || c.subtree.contains(current))) navKids(sb, c, current, u)
         }
         sb.append("<div class=kids>")
         for (slot in s.slots) {
             if (slot.part != null) { line(slot.part, ""); continue }
+            if (slot.rows.isNotEmpty()) {
+                for (row in slot.rows) {
+                    val (p, n) = passedOf(listOf(row))
+                    sb.append("<a class=k href=\"${attr(u + scenarioHref(row.result))}\" data-q=\"${attr(row.title.lowercase())}\"><i class=\"dot ${row.kind.cls}\"></i><span class=nm>${esc(row.title)}</span><span class=\"c${if (row.kind == Site.Kind.FAILED) " bad" else ""}\">$p/$n</span></a>")
+                }
+                continue
+            }
             sb.append("<div class=tg><span class=tgl>탭</span>")
             for (c in slot.tabs) line(c, " tab")
             sb.append("</div>")
@@ -536,14 +543,14 @@ object SitePages {
             sb.append("</div></section>")
         }
         if (looks.isNotEmpty()) {
-            sb.append("<section class=blk>${blockHead("다른 화면에서 바꾸면", looks, "쓰인 화면에서 센다")}<div class=ways>")
+            sb.append("<section class=blk>${blockHead("다른 화면의 변경 반영", looks, "이 화면 집계에서 제외")}<div class=ways>")
             for (l in looks) linkRow(sb, l, u, pages, here)
             sb.append("</div></section>")
         }
 
         // ---- the screen's own scenarios: those of the account most of them run in, then each other account's
         fun ownScenarios() {
-            val byState = screen.scenarios.groupBy { stateOf(it.result) }
+            val byState = screen.loose.groupBy { stateOf(it.result) }
             val main = screen.entry?.let { stateOf(it.result) }?.takeIf { it in byState } ?: byState.maxByOrNull { it.value.size }?.key
             val own = when (screen.place) { Site.Place.TAB -> "이 탭에서"; Site.Place.PART -> "이 부분에서"; else -> "이 화면에서" }
             for ((state, rows) in byState.entries.sortedBy { it.key != main }) {
@@ -565,6 +572,10 @@ object SitePages {
                 sb.append("<section class=part id=\"${attr(sid(part))}\"><div class=ph><span class=pk>부분</span><h2>${esc(part.label)}</h2><span class=dim>${tally(Site.rowsOf(part.onPage))}</span></div>")
                 screenBody(sb, part, u, pages, links)
                 sb.append("</section>")
+                continue
+            }
+            if (slot.rows.isNotEmpty()) {
+                for (row in slot.rows) scenarioPart(sb, row, u, pages, several = slot.rows.size > 1)
                 continue
             }
             val tabs = slot.tabs
@@ -651,6 +662,42 @@ object SitePages {
         sb.append("<div class=\"in ${cls(l.status)}\">${icon(l.status)}<a class=ip href=\"${attr(u + scenarioHref(l.row.result))}\">$path</a><span class=it>${mentions(l.text, u, pages, here)}")
         if (l.status == "FAILED") (l.check?.let { whyNot(l.row, it) } ?: orphanFailure(l.row))?.let { sb.append("<br><span class=reason>${esc(it)}</span>") }
         sb.append("</span></div>")
+    }
+
+    /**
+     * A part of a screen that is one scenario (`parts:` names its file): the scenario's name is the part's, and each
+     * of its checks a line under it — its title, its sentence, its steps on demand — where a part that is a directory
+     * lists scenarios. The part is where links to the scenario land.
+     */
+    private fun scenarioPart(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>, several: Boolean) {
+        val r = row.result
+        val t = row.timeline
+        val checks = row.checks
+        val (p, n) = passedOf(listOf(row))
+        val failed = checks.count { it.status == "FAILED" }
+        val mark = if (row.recordFailed) " " + chip(Site.Kind.FAILED, "녹화 실패") else if (row.kind == Site.Kind.SETUP) " " + chip(Site.Kind.SETUP) else ""
+        // the same scenario under several accounts (`states:`) is told apart by the account
+        val whose = if (several) " <code class=e>${esc(stateOf(r))}</code>" else ""
+        sb.append("<section class=part id=\"${attr(anchorOf(r))}\"><div class=ph><span class=pk>부분</span><h2>${esc(row.title)}</h2>$whose")
+        sb.append("<span class=dim>확인 $n · ${if (failed > 0) "<b class=bad>실패 $failed</b>" else if (p == n) "전부 통과" else "통과 $p"}</span>$mark</div>")
+        val sectioned = checks.any { it.title != null }
+        if (sectioned && t.description.isNotEmpty()) sb.append("<p class=spd>${mentions(t.description, u, pages)}</p>")
+        t.sections.firstOrNull { it.preparation }?.let { prep ->
+            sb.append("<p class=prep>준비 · ${t.steps.filter { it.n in prep.from..prep.to }.joinToString(" / ") { stepText(it.text) }}</p>")
+        }
+        if (row.kind == Site.Kind.SETUP) sb.append("<p class=dim>${esc(r.reason ?: "돌지 않음")}</p>")
+        orphanFailure(row)?.let { sb.append("<p class=reason>${esc(it)}</p>") }
+        sb.append("<div class=fl>")
+        for (c in checks) {
+            val at = (c.deeplink?.let { " <code class=\"e dl\">${esc(it)}</code>" } ?: c.entry?.let { " <span class=to>${esc(leaf(it))}의 진입으로 연다</span>" } ?: "") +
+                (c.appState?.let { " <span class=to>${esc(it)} 계정으로</span>" } ?: "")
+            val why = whyNot(row, c)?.takeIf { c.status == "FAILED" && c.steps.none { st -> st.status == "FAILED" } }?.let { "<br><span class=reason>${esc(it)}</span>" } ?: ""
+            sb.append("<details class=\"ft ${cls(c.status)}\"${if (c.status == "FAILED") " open" else ""}><summary>${icon(c.status)}<b class=fn>${esc(c.title ?: row.title)}</b>")
+            sb.append("<span class=fs>${mentions(c.description, u, pages)}$at$why</span><span class=ckn>${if (c.steps.isEmpty()) "" else "${c.steps.size}스텝"}</span></summary><div class=fb>")
+            if (c.steps.isNotEmpty()) stepList(sb, c.steps)
+            sb.append("</div></details>")
+        }
+        sb.append("</div><span class=fm>${esc(listOf(stateOf(r), humanDuration(t.durationMs)).filter { it.isNotEmpty() }.joinToString(" · "))} · <a class=more href=\"${attr(u + pageOf(r))}\">스텝·영상 ›</a></span></section>")
     }
 
     /**
