@@ -1251,10 +1251,13 @@ object SitePages {
         .snav a.k.cur{background:var(--card);box-shadow:inset 0 0 0 1px var(--line2);color:var(--fg)}
         .snav .tg{display:flex;flex-direction:column;gap:1px;margin:3px 0;padding:3px 0;border-top:1px dashed var(--line2);border-bottom:1px dashed var(--line2)}
         .snav .tgl{font-size:10.5px;font-weight:600;letter-spacing:.06em;color:var(--faint);padding:2px 8px 0}
-        .part{display:flex;flex-direction:column;gap:12px;min-width:0;scroll-margin-top:12px}.part .part{padding-left:14px;border-left:1px solid var(--line2)}
-        .ph{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px}.ph h2{margin:0;font-size:17px;font-weight:600;letter-spacing:-.005em}
-        .pk{font-size:10.5px;font-weight:600;letter-spacing:.06em;color:var(--faint);border:1px solid var(--line2);border-radius:4px;padding:0 6px;line-height:18px}
-        .tabrow{display:flex;gap:2px;border-bottom:1px solid var(--line2);overflow-x:auto}
+        .part{display:flex;flex-direction:column;gap:14px;min-width:0;scroll-margin-top:12px;background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:0 16px 14px}
+        .part .part{background:var(--bg)}.part .ways{background:var(--bg)}.part .part .ways{background:var(--card)}
+        .part .fl{border-top:0;border-bottom:0}.part>.blk:last-child>.fl{margin-bottom:-8px}.part>.blk>.fl{margin-top:-6px}
+        .ph{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0 -16px;padding:11px 16px;background:var(--panel);border-bottom:1px solid var(--line2);border-radius:11px 11px 0 0}
+        .ph h2{margin:0;font-size:17px;font-weight:600;letter-spacing:-.005em}.ph .dim{margin-left:auto;font-size:13px}
+        .pk{font-size:10.5px;font-weight:600;letter-spacing:.06em;color:var(--onfg);background:var(--dim);border-radius:4px;padding:0 6px;line-height:18px}
+        .tabrow{display:flex;gap:2px;border-bottom:1px solid var(--line2);overflow-x:auto}.tabpart>.tabrow{margin:-14px -16px 0;padding:0 6px}
         .tabrow button{font:inherit;font-size:14.5px;background:none;border:0;border-bottom:2px solid transparent;margin-bottom:-1px;color:var(--dim);padding:10px 16px 9px;cursor:pointer;display:flex;align-items:baseline;gap:8px;white-space:nowrap}
         .tabrow button:hover{color:var(--fg)}.tabrow button[aria-selected=true]{color:var(--fg);font-weight:600;border-bottom-color:var(--fg)}
         .tabrow .tc{font-size:12px;font-weight:400;color:var(--faint);font-variant-numeric:tabular-nums}.tabrow button.failed .tc{color:var(--failfg);font-weight:600}
@@ -1268,6 +1271,7 @@ object SitePages {
         .sub2{color:var(--faint);margin-right:6px}
         @media(max-width:900px){aside.replay{position:static}main.screen{grid-template-columns:minmax(0,1fr)}.snav{position:static;max-height:none}.frow{grid-template-columns:52px minmax(0,1fr)}.frow .side{grid-column:2;align-items:flex-start;text-align:left}.tools{margin-left:0}}
         @media(max-width:640px){main{padding:20px 16px 40px}.cols2{grid-template-columns:1fr}.in{grid-template-columns:18px minmax(0,1fr)}.in .it{grid-column:2}
-          details.ft>summary{grid-template-columns:18px minmax(0,1fr) auto}details.ft>summary>.fs{grid-column:2/-1;grid-row:2}.fb{padding-left:0}ol.st{margin-left:0}.grp>.spd,.grp>.prep,.grp>p,.grp>.fl,.grp>.fm{margin-left:0}}
+          details.ft>summary{grid-template-columns:18px minmax(0,1fr) auto}details.ft>summary>.fs{grid-column:2/-1;grid-row:2}.fb{padding-left:0}ol.st{margin-left:0}.grp>.spd,.grp>.prep,.grp>p,.grp>.fl,.grp>.fm{margin-left:0}
+          .part{padding:0 12px 12px}.ph{margin:0 -12px;padding:10px 12px}.tabpart>.tabrow{margin:-14px -12px 0;padding:0 2px}}
     """.trimIndent()
 }
