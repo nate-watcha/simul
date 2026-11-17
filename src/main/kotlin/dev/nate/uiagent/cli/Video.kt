@@ -2,6 +2,7 @@ package dev.nate.uiagent.cli
 
 import dev.nate.uiagent.ProcessTimeout
 import dev.nate.uiagent.Spawned
+import dev.nate.uiagent.device.adbCommand
 import dev.nate.uiagent.runProcess
 import dev.nate.uiagent.spawnProcess
 import java.io.File
@@ -29,7 +30,11 @@ class ScreenRecorder(
     private val spawn: (List<String>) -> Spawned = ::spawnProcess,
     private val run: (List<String>, Long) -> String = { argv, timeout -> runProcess(argv, timeout) },
     private val clock: () -> Long = System::currentTimeMillis,
+    /** The device recorded, when the run is over several (see [adbCommand]). */
+    private val serial: String? = null,
 ) {
+    private fun adb(vararg args: String): List<String> = adbCommand(adbBin, serial, *args)
+
     private val stamp = System.currentTimeMillis()
     private val remotes = mutableListOf<String>()
     @Volatile private var stopping = false
@@ -58,7 +63,7 @@ class ScreenRecorder(
         while (!stopping) {
             val remote = "/sdcard/simul-rec-$stamp-${n++}.mp4"
             val p = try {
-                spawn(listOf(adbBin, "shell", "screenrecord", "--time-limit", "$segmentSec", "--bit-rate", bitRate, remote))
+                spawn(adb("shell", "screenrecord", "--time-limit", "$segmentSec", "--bit-rate", bitRate, remote))
             } catch (e: Exception) {
                 problem = "could not start screenrecord: ${e.message}"
                 return
@@ -86,7 +91,7 @@ class ScreenRecorder(
         var tries = 0
         var unanswered = 0
         while (t.isAlive && tries++ < 15 && unanswered < 2) {
-            val sent = runCatching { run(listOf(adbBin, "shell", "kill -2 \$(pidof screenrecord)"), 5_000) }
+            val sent = runCatching { run(adb("shell", "kill -2 \$(pidof screenrecord)"), 5_000) }
             if (sent.exceptionOrNull() is ProcessTimeout) unanswered++ else unanswered = 0
             t.join(1000)
         }
@@ -106,8 +111,8 @@ class ScreenRecorder(
         val parts = mutableListOf<File>()
         for ((i, remote) in segments.withIndex()) {
             val local = if (segments.size == 1) dest else File(dest.parentFile, "${dest.nameWithoutExtension}-${i + 1}.mp4")
-            val pulled = runCatching { run(listOf(adbBin, "pull", remote, local.path), 120_000) }.isSuccess && local.length() > 0
-            runCatching { run(listOf(adbBin, "shell", "rm", "-f", remote), 5_000) }
+            val pulled = runCatching { run(adb("pull", remote, local.path), 120_000) }.isSuccess && local.length() > 0
+            runCatching { run(adb("shell", "rm", "-f", remote), 5_000) }
             if (pulled) parts += local else local.delete()
         }
         if (parts.isEmpty()) {

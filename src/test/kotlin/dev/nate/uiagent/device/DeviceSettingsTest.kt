@@ -102,13 +102,22 @@ class DeviceSettingsTest {
     }
 
     @Test
-    fun `physical devices are never touched`() {
+    fun `a physical device that is not marked for simul is never touched`() {
         val ops = FakeOps().also { it.emulator = false }
         val logged = mutableListOf<String>()
         val changes = mutableListOf<SettingChange>()
         DeviceSettings.apply(ops, listOf(DeviceSetting("secure", "credential_service", "")), logged::add, changes)
         assertTrue(changes.isEmpty() && ops.settingLog.isEmpty())
-        assertTrue(logged.single().startsWith("warning:") && "not an emulator" in logged.single(), logged.toString())
+        assertTrue(logged.single().startsWith("warning:") && "settings put global simul_device 1" in logged.single(), logged.toString())
+    }
+
+    @Test
+    fun `a physical device marked for simul is pinned like an emulator`() {
+        val ops = FakeOps().also { it.emulator = false; it.marked = true }
+        val changes = mutableListOf<SettingChange>()
+        DeviceSettings.apply(ops, listOf(DeviceSetting("global", "simul", "1")), log = {}, changes)
+        assertEquals(listOf("put global.simul=1"), ops.settingLog)
+        assertEquals(1, changes.size)
     }
 
     @Test

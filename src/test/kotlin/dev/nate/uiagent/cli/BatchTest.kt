@@ -28,6 +28,26 @@ class BatchTest {
     }
 
     @Test
+    fun `a physical device is woken, and pinned only when it is marked for simul`() {
+        val p = project()
+        val own = FakeOps().apply { emulator = false; display = "1080x2400@420"; settings["secure.autofill_service"] = "x" }
+        val ownLog = mutableListOf<String>()
+        BatchSession(p, own, ownLog::add).use { it.pin() }
+        assertEquals(1, own.woken)
+        assertTrue(own.display == "1080x2400@420" && own.settingLog.isEmpty(), "a person's phone is left as it is")
+        assertEquals(2, ownLog.count { "warning:" in it && "simul_device" in it }, "the display and the settings each say why: $ownLog")
+
+        val placed = FakeOps().apply { emulator = false; marked = true; display = "1080x2400@420"; settings["secure.autofill_service"] = "x" }
+        BatchSession(p, placed, {}).use {
+            it.pin()
+            assertEquals("720x1280@320", placed.display)
+            assertEquals(listOf("delete secure.autofill_service"), placed.settingLog)
+        }
+        assertEquals("1080x2400@420", placed.display, "put back on exit")
+        assertEquals("x", placed.settings["secure.autofill_service"])
+    }
+
+    @Test
     fun `a device that does not answer is neither pinned nor run against, and every scenario says so`() {
         val p = project()
         val ops = FakeOps().apply { down = "adb shell does not answer"; settings["secure.autofill_service"] = "x" }

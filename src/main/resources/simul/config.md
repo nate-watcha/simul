@@ -25,7 +25,7 @@ setup:
 ```
 
 - `settings` — 에뮬레이터의 `settings` 값이면 무엇이든 된다. 키는 `<namespace>.<key>`(`system|secure|global`), 값은
-  `settings put`에 그대로 들어가고 `null`은 키 삭제다. 이 시나리오의 launch 전에 바꾸고 끝나면 되돌린다. 에뮬레이터에서만 동작한다.
+  `settings put`에 그대로 들어가고 `null`은 키 삭제다. 이 시나리오의 launch 전에 바꾸고 끝나면 되돌린다. 에뮬레이터와, simul 전용으로 표시해 둔 실제 기기(`adb shell settings put global simul_device 1`)에서만 동작한다.
 - `locale` — 앱의 언어(Android 13+ 앱별 언어). BCP-47 태그 하나(`en-US`) 또는 선호 목록(`ko-KR,en-US`). 시스템 언어는 건드리지
   않는다. 앱이 자체 설정값만 읽는 독자 구현이면 효과가 없다.
 

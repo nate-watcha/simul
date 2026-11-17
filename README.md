@@ -83,7 +83,13 @@ Slack 메시지 블록을 뽑을 수 있다.
 
 - PATH에 `simul`(이 레포 `./gradlew installDist` + `scripts/simul`), `adb`·`emulator`·`android`(CLI), `ffprobe`/`ffmpeg`(녹화
   타임라인 보정·180s 세그먼트 이어붙임용, 선택)
-- 에뮬레이터 1대: 매번 콜드 부팅·스냅샷 저장 안 함(기기 드리프트가 앱 회귀로 둔갑하지 않게), `ANDROID_SERIAL` 고정.
+- 에뮬레이터: 매번 콜드 부팅·스냅샷 저장 안 함(기기 드리프트가 앱 회귀로 둔갑하지 않게). **붙어 있는 대수만큼 동시에 돈다** —
+  옵션은 없다. 여러 대가 online이면 재생(`--mode replay|auto`, `simul report <trace>`)이 그 전부에 나뉘고, 한 대뿐이거나
+  `ANDROID_SERIAL`이 있으면 그 한 대에서 전과 같이 돈다. 녹화(`--mode llm`)는 언제나 한 대다. 나뉘는 순서: 들어오는 길(`_entry.md`)
+  전부가 먼저, 그다음 화면(디렉토리)별로 — 한 화면의 시나리오는 한 기기에서 차례로 돈다(같은 계정의 같은 데이터를 고치는 것들이라).
+  같은 AVD를 여러 대 띄우려면 `emulator -read-only -port <5554, 5556, …>`, 앱은 기기마다 설치한다(`adb -s <serial> install`).
+  기기가 CPU를 나눠 쓰므로 호스트가 감당하는 대수까지만 빨라진다(2019 Mac Pro 8코어: `-gpu host`로 4대 ≈ 2.2~2.8배,
+  `swiftshader`는 3대에서 포화 — 2026-11-16 실측).
   화면은 config.yaml `display:`가, 자격 증명 제공자·자동완성 같은 기기 설정은 `device.settings`가, 앱 언어는
   `device.locale`(앱별 언어, 시나리오 setup마다)이 실행 중 강제하므로 AVD 해상도·설정·시스템 언어는 무관. 단 "저장된 비밀번호" 시트처럼 Google 계정 데이터가 전제인 시나리오는
   그 데이터가 AVD 이미지에 있어야 한다
@@ -93,6 +99,10 @@ Slack 메시지 블록을 뽑을 수 있다.
   `doOnPreDraw`) — setup은 그 `Fully drawn` 신호를 기다려 첫 스텝을 시작한다(스플래시·광고 인터스티셜 액티비티 위에서 관찰하지
   않게). 런치당 첫 호출만 유효하다. 신호가 15s 안에 없으면 경고만 남기고 진행한다
 - 로그인 등 상태 스냅샷(`.simul/states/*.tar`, gitignored)은 러너 로컬 디렉터리에서 체크아웃 뒤 복사
+- 실제 기기를 쓸 때: 그 기기에 **한 번** `adb shell settings put global simul_device 1`을 넣어 둔다. 이 표시가 있는 기기만
+  에뮬레이터처럼 다룬다(`display:`·`device.settings` 적용, 여러 대일 때 대상에 포함). 표시가 없는 폰은 사람의 것이라 화면도 설정도
+  건드리지 않는다. 기기를 놓을 때 손으로 해 둘 것: USB 디버깅 "항상 허용", 화면 잠금 "없음"(PIN·패턴이 있으면 adb로 못 연다 —
+  러너는 실행 전에 화면을 깨우기만 한다), 시스템 자동 업데이트 끄기, 충전 80% 제한, 계정·앱 최소화. 같은 기종끼리만 묶는다
 - 끝나면 `adb emu kill`; 아티팩트는 `.simul/reports/<stamp>/` 디렉토리 통째(받아서 `index.html`을 열면 끝)
 
 ## 빌드 & 테스트

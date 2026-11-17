@@ -14,6 +14,9 @@ import java.io.File
 const val GUEST_STATE = "guest"
 
 interface DeviceOps {
+    /** The device these operations are for, when the run is over several ([adbCommand]); null = the one adb picks. */
+    val serial: String? get() = null
+
     /**
      * Scenario setup: optional app-data restore (state snapshot or clear), cold start, deeplink.
      * After a launch or deeplink it waits for the app's own "I have drawn my content" signal —
@@ -76,16 +79,32 @@ interface DeviceOps {
      */
     fun androidCliVersion(): String?
 
-    // ---- display profile enforcement (emulator-only safety net; see DisplayProfile) ----
+    // ---- display profile enforcement (a device that is the runner's to set up; see DisplayProfile) ----
 
     /** Current effective display as "WxH@dpi" (override if set, else physical); null if unreadable. */
     fun displayProfile(): String?
 
     fun isEmulator(): Boolean
+
+    /**
+     * Is this device the runner's to set up — its display forced, its `settings` pinned? An emulator is. A
+     * physical device is only when whoever placed it said so on the device itself, once:
+     * `adb shell settings put global simul_device 1` ([AdbOps.DEDICATED_KEY]). A phone without that mark is a
+     * person's and is left as it is; the mark lives on the device, so no run has to be told which is which.
+     */
+    fun dedicated(): Boolean = isEmulator()
+
+    /**
+     * Turn the screen on and leave the lock screen, before a batch: a physical device that sits plugged in
+     * sleeps between runs (an emulator's screen never goes off). Only a device without a PIN or pattern can
+     * be brought past its lock screen this way — setting that up is the placing of the device, not a run's work.
+     */
+    fun wake() {}
+
     fun setDisplay(profile: DisplayProfile)
     fun resetDisplay()
 
-    // ---- `settings` pinning (emulator-only, see DeviceSettings) ----
+    // ---- `settings` pinning (see DeviceSettings) ----
 
     /** `settings get <namespace> <key>`; null when the key is unset (the shell prints `null`). */
     fun settingGet(namespace: String, key: String): String?
@@ -105,7 +124,10 @@ class AdbOps(
     private val androidBin: String = "android",
     /** Where `simul state save` snapshots live (`.simul/states`); null disables appState. */
     private val statesDir: File? = null,
+    override val serial: String? = null,
 ) : DeviceOps {
+
+    private fun adb(vararg args: String): List<String> = adbCommand(adbBin, serial, *args)
 
     override var setupPhases: List<Pair<String, Long>> = emptyList()
         private set
@@ -113,12 +135,12 @@ class AdbOps(
     override fun setup(app: String?, appState: String?, clearData: Boolean, launch: Boolean, deeplink: String?, locale: String?): String? {
         val phase = phaseClock()
         if ((clearData || appState != null) && app != null) {
-            runCatching { runProcess(listOf(adbBin, "shell", "am", "force-stop", app)) }
-            runProcess(listOf(adbBin, "shell", "pm", "clear", app))
+            runCatching { runProcess(adb("shell", "am", "force-stop", app)) }
+            runProcess(adb("shell", "pm", "clear", app))
             // pm clear also revokes runtime permissions — re-grant the ones whose system
             // dialogs would otherwise block the very first step (seen on-device).
             runCatching {
-                runProcess(listOf(adbBin, "shell", "pm", "grant", app, "android.permission.POST_NOTIFICATIONS"))
+                runProcess(adb("shell", "pm", "grant", app, "android.permission.POST_NOTIFICATIONS"))
             }
         }
         appState?.let { name ->
@@ -130,9 +152,9 @@ class AdbOps(
                 return@let
             }
             // debuggable builds only: restore the app-data snapshot under the app's own uid
-            runProcess(listOf(adbBin, "push", tar.path, "/data/local/tmp/simul-state.tar"))
-            runProcess(listOf(adbBin, "shell", "run-as", app, "sh", "-c", "'tar xf /data/local/tmp/simul-state.tar'"))
-            runCatching { runProcess(listOf(adbBin, "shell", "rm", "/data/local/tmp/simul-state.tar")) }
+            runProcess(adb("push", tar.path, "/data/local/tmp/simul-state.tar"))
+            runProcess(adb("shell", "run-as", app, "sh", "-c", "'tar xf /data/local/tmp/simul-state.tar'"))
+            runCatching { runProcess(adb("shell", "rm", "/data/local/tmp/simul-state.tar")) }
         }
         phase("restore")
         // after the clear (which wipes it), before the launch (so the first frame is already in it)
@@ -143,7 +165,7 @@ class AdbOps(
 
     override fun reopen(app: String?, launch: Boolean, deeplink: String?): String? {
         val phase = phaseClock()
-        if (app != null) runCatching { runProcess(listOf(adbBin, "shell", "am", "force-stop", app)) }
+        if (app != null) runCatching { runProcess(adb("shell", "am", "force-stop", app)) }
         phase("stop")
         return open(app, launch, deeplink, phase)
     }
@@ -173,15 +195,15 @@ class AdbOps(
                 // fixed 3s head start that predates that wait was paid on top of it by every
                 // launcher scenario (52 setups of stone run 41992964956, the app drawn in 1.4s).
                 // Only a deeplink fired onto the app still starting keeps it — untested without.
-                runCatching { runProcess(listOf(adbBin, "shell", "am", "force-stop", app)) }
-                runProcess(listOf(adbBin, "shell", "monkey", "-p", app, "-c", "android.intent.category.LAUNCHER", "1"))
+                runCatching { runProcess(adb("shell", "am", "force-stop", app)) }
+                runProcess(adb("shell", "monkey", "-p", app, "-c", "android.intent.category.LAUNCHER", "1"))
                 if (deeplink != null) Thread.sleep(3000)
             }
             deeplink?.let { link ->
                 // Pin the package: with both prod and dev builds installed, an unpinned VIEW
                 // intent opens the system app chooser instead of the app under test.
                 val out = runProcess(
-                    listOf(adbBin, "shell", "am", "start", "-W", "-a", "android.intent.action.VIEW", "-d", link) +
+                    adb("shell", "am", "start", "-W", "-a", "android.intent.action.VIEW", "-d", link) +
                         listOfNotNull(app)
                 )
                 // `am start -W` exits 0 even when nothing handled the URI — the app can't process
@@ -198,7 +220,7 @@ class AdbOps(
 
     /** The activity manager's lines of the device log — launches, kills, `Fully drawn`. */
     private fun launchLog(): String =
-        runProcess(listOf(adbBin, "logcat", "-d", "-v", "brief", "ActivityTaskManager:I", "ActivityManager:I", "*:S"))
+        runProcess(adb("logcat", "-d", "-v", "brief", "ActivityTaskManager:I", "ActivityManager:I", "*:S"))
 
     /**
      * Poll the device log for the app's `Fully drawn` line. `am start -W` returns at the first
@@ -233,17 +255,17 @@ class AdbOps(
 
 
     override fun screenshot(dest: File): Boolean =
-        runToFile(listOf(adbBin, "exec-out", "screencap", "-p"), dest, SCREENCAP_TIMEOUT_MS) == null
+        runToFile(adb("exec-out", "screencap", "-p"), dest, SCREENCAP_TIMEOUT_MS) == null
 
     override fun unresponsive(): String? {
         try {
-            if (runProcess(listOf(adbBin, "shell", "echo", "ok"), PROBE_TIMEOUT_MS).trim() != "ok") return "adb shell does not answer"
+            if (runProcess(adb("shell", "echo", "ok"), PROBE_TIMEOUT_MS).trim() != "ok") return "adb shell does not answer"
         } catch (e: Exception) {
             return "adb shell does not answer (${(e as? ProcessError)?.brief ?: e.message})"
         }
         // Only a capture that never returns counts: one that fails says nothing about the display.
         try {
-            runProcess(listOf(adbBin, "shell", "screencap -p > /dev/null"), SCREENCAP_TIMEOUT_MS)
+            runProcess(adb("shell", "screencap -p > /dev/null"), SCREENCAP_TIMEOUT_MS)
         } catch (e: ProcessTimeout) {
             return "a screencap does not return within ${e.timeoutMs / 1000}s — the display has stopped"
         } catch (_: Exception) {
@@ -253,18 +275,18 @@ class AdbOps(
 
     override fun logcatClear() {
         // `Log.isLoggable` reads the property live — the already-running Play services process picks it up (measured)
-        runCatching { runProcess(listOf(adbBin, "shell", "setprop", "log.tag.FA-SVC", "VERBOSE")) }
-        runCatching { runProcess(listOf(adbBin, "logcat", "-c")) }
+        runCatching { runProcess(adb("shell", "setprop", "log.tag.FA-SVC", "VERBOSE")) }
+        runCatching { runProcess(adb("logcat", "-c")) }
     }
 
     // epoch timestamps (seconds.millis, device clock) so a report can slice the log around a step
     override fun logcatDump(dest: File): Boolean =
-        runToFile(listOf(adbBin, "logcat", "-d", "-v", "threadtime", "-v", "epoch"), dest) == null
+        runToFile(adb("logcat", "-d", "-v", "threadtime", "-v", "epoch"), dest) == null
 
     override fun appVersionName(app: String?): String? {
         if (app == null) return null
         return runCatching {
-            runProcess(listOf(adbBin, "shell", "dumpsys", "package", app))
+            runProcess(adb("shell", "dumpsys", "package", app))
                 .lineSequence()
                 .firstOrNull { "versionName=" in it }
                 ?.substringAfter("versionName=")
@@ -278,53 +300,62 @@ class AdbOps(
             .map { it.trim() }.firstOrNull { it.matches(Regex("\\d+(\\.\\d+)+")) }
     }.getOrNull()
 
+    // with the serial when the run names its devices: four emulators of one image are one model
     override fun deviceName(): String? = runCatching {
-        runProcess(listOf(adbBin, "shell", "getprop", "ro.product.model")).trim().ifEmpty { null }
-    }.getOrNull()
+        runProcess(adb("shell", "getprop", "ro.product.model")).trim().ifEmpty { null }
+    }.getOrNull().let { model -> if (serial == null) model else listOfNotNull(model, "($serial)").joinToString(" ") }
 
     override fun displayProfile(): String? = runCatching {
         parseWm(
-            runProcess(listOf(adbBin, "shell", "wm", "size")),
-            runProcess(listOf(adbBin, "shell", "wm", "density")),
+            runProcess(adb("shell", "wm", "size")),
+            runProcess(adb("shell", "wm", "density")),
         )
     }.getOrNull()
 
     override fun isEmulator(): Boolean = runCatching {
-        runProcess(listOf(adbBin, "shell", "getprop", "ro.kernel.qemu")).trim() == "1" ||
-            runProcess(listOf(adbBin, "shell", "getprop", "ro.boot.qemu")).trim() == "1"
+        runProcess(adb("shell", "getprop", "ro.kernel.qemu")).trim() == "1" ||
+            runProcess(adb("shell", "getprop", "ro.boot.qemu")).trim() == "1"
     }.getOrDefault(false)
 
+    override fun dedicated(): Boolean =
+        isEmulator() || runCatching { settingGet("global", DEDICATED_KEY) == "1" }.getOrDefault(false)
+
+    override fun wake() {
+        runCatching { runProcess(adb("shell", "input", "keyevent", "KEYCODE_WAKEUP")) }
+        runCatching { runProcess(adb("shell", "wm", "dismiss-keyguard")) }
+    }
+
     override fun setDisplay(profile: DisplayProfile) {
-        runProcess(listOf(adbBin, "shell", "wm", "size", "${profile.width}x${profile.height}"))
-        runProcess(listOf(adbBin, "shell", "wm", "density", "${profile.density}"))
+        runProcess(adb("shell", "wm", "size", "${profile.width}x${profile.height}"))
+        runProcess(adb("shell", "wm", "density", "${profile.density}"))
     }
 
     override fun resetDisplay() {
-        runCatching { runProcess(listOf(adbBin, "shell", "wm", "size", "reset")) }
-        runCatching { runProcess(listOf(adbBin, "shell", "wm", "density", "reset")) }
+        runCatching { runProcess(adb("shell", "wm", "size", "reset")) }
+        runCatching { runProcess(adb("shell", "wm", "density", "reset")) }
     }
 
     override fun settingGet(namespace: String, key: String): String? =
-        runProcess(listOf(adbBin, "shell", "settings", "get", namespace, key)).trim().takeIf { it != "null" }
+        runProcess(adb("shell", "settings", "get", namespace, key)).trim().takeIf { it != "null" }
 
     override fun settingPut(namespace: String, key: String, value: String) {
         // adb joins the argv and the device shell re-parses it, so an empty value would vanish
         // and spaces would split — single-quote for that shell (`'` itself as '\'').
         val quoted = "'" + value.replace("'", "'\\''") + "'"
-        runProcess(listOf(adbBin, "shell", "settings", "put", namespace, key, quoted))
+        runProcess(adb("shell", "settings", "put", namespace, key, quoted))
     }
 
     override fun settingDelete(namespace: String, key: String) {
-        runProcess(listOf(adbBin, "shell", "settings", "delete", namespace, key))
+        runProcess(adb("shell", "settings", "delete", namespace, key))
     }
 
     override fun appLocales(app: String): String? =
-        parseAppLocales(runProcess(listOf(adbBin, "shell", "cmd", "locale", "get-app-locales", app)), app)
+        parseAppLocales(runProcess(adb("shell", "cmd", "locale", "get-app-locales", app)), app)
 
     override fun setAppLocales(app: String, locales: String?) {
         // `cmd locale` reports an unknown package on stdout with exit 0 — read the output.
         val out = runProcess(
-            listOf(adbBin, "shell", "cmd", "locale", "set-app-locales", app) +
+            adb("shell", "cmd", "locale", "set-app-locales", app) +
                 (if (locales.isNullOrEmpty()) emptyList() else listOf("--locales", locales))
         )
         localeError(out)?.let { throw RuntimeException("could not set app locale '${locales ?: ""}' for $app: $it") }
@@ -336,9 +367,9 @@ class AdbOps(
      * stream is redirected straight to the file, never through a String.
      */
     fun saveState(app: String, dest: File): Boolean {
-        runCatching { runProcess(listOf(adbBin, "shell", "am", "force-stop", app)) }
+        runCatching { runProcess(adb("shell", "am", "force-stop", app)) }
         val err = runToFile(
-            listOf(adbBin, "exec-out", "run-as", app, "tar", "cf", "-", "--exclude=./cache", "--exclude=./code_cache", "."),
+            adb("exec-out", "run-as", app, "tar", "cf", "-", "--exclude=./cache", "--exclude=./code_cache", "."),
             dest, timeoutMs = 120_000,
         ) ?: return true
         System.err.println("state save failed (run-as needs a debuggable build): ${err.take(200)}")
@@ -346,6 +377,9 @@ class AdbOps(
     }
 
     companion object {
+        /** `settings put global simul_device 1`: the mark of a physical device placed for simul (see [DeviceOps.dedicated]). */
+        const val DEDICATED_KEY = "simul_device"
+
         /** How long setup waits for the app to report fully drawn — above kloud's splash-ad timeout (5s) plus a load. */
         const val FULLY_DRAWN_TIMEOUT_MS = 15_000L
         private const val FULLY_DRAWN_POLL_MS = 500L

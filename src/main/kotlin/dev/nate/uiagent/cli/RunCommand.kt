@@ -26,6 +26,10 @@ import java.util.Date
  * then 45 minutes on three that would not replay). `simul report <scenario.md>` is the same pair
  * with the screen recording and the pages — the thing to show a person, not the loop.
  *
+ * With several devices attached the run goes over all of them at once ([Devices], [runOverDevices]) — there is
+ * no option for it: the emulators that are up, and the physical devices marked for simul, are the ones it uses,
+ * and `ANDROID_SERIAL` names one as it always did.
+ *
  * `--runs <dir>` lays the run out the way the report reads it (README "나이틀리 운영"): one
  * directory per scenario and state, `<dir>/<feature>/<name>.<state>/`, each with its
  * result.json, steps/, layout/, logcat.txt and replay.mp4, plus `<dir>/run.json` for the batch and
@@ -121,8 +125,21 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     val batchStart = System.currentTimeMillis()
     val startedAt = RunSummaryJson.stamp(batchStart)
 
-    val ops = AdbOps(statesDir = project.statesDir)
-    BatchSession(project, ops, ::println, runsDir).use { batch ->
+    // the devices attached are the devices it runs on; a recording stays on one — a scenario's way in is recorded
+    // before the scenario that starts from it, and that order is one device's
+    val serials = if (dryRun) Devices.ADB_PICKS else try { Devices.forRun() } catch (e: IllegalStateException) { return err(e.message ?: "no device") }
+    val devices = (if (mode == RunMode.LLM) serials.take(1) else serials).map { AdbOps(statesDir = project.statesDir, serial = it) }
+    if (serials.size > devices.size) println("devices: ${serials.size} online — a recording runs on one (${serials.first()})")
+    val ops = devices.first()
+    if (devices.size > 1) {
+        println("devices: ${devices.size} — ${serials.joinToString(", ")}")
+        for (r in runOverDevices(project, runs, devices, mode, llm, video, runsDir)) {
+            outcomes += r.outcome
+            r.result?.let { results += it }
+            if (r.outcome.status != "SKIPPED") anyRan = true
+            if (r.outcome.status == "FAILED" || r.outcome.status == "CRASH") anyFailed = true
+        }
+    } else BatchSession(project, ops, ::println, runsDir).use { batch ->
         if (!dryRun) batch.pin()
         for ((md, scenario) in runs) {
             if (dryRun) {
@@ -162,7 +179,12 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     if (!anyRan && !dryRun) println("warning: no scenario was executed (all skipped)")
     if (outcomes.size > 1) recap(outcomes).forEach(::println)
     // where the batch's time went, summed over its scenarios — the line to read before any single run's
-    if (results.size > 1) println(timeLine(System.currentTimeMillis() - batchStart, results, ::humanDuration))
+    if (results.size > 1) println(
+        if (devices.size == 1) timeLine(System.currentTimeMillis() - batchStart, results, ::humanDuration)
+        // the parts are summed over the devices, so they are shares of the devices' time, not of the clock's
+        else "wall ${humanDuration(System.currentTimeMillis() - batchStart)} on ${devices.size} devices — device " +
+            timeLine(results.sumOf { it.wallMs }, results, ::humanDuration)
+    )
     if (!dryRun && (summaryPath != null || runsDir != null)) {
         val ended = System.currentTimeMillis()
         val summary = RunSummary(
@@ -172,7 +194,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
             durationMs = ended - batchStart,
             agentVersion = AGENT_VERSION,
             appVersionName = ops.appVersionName(project.config.app),
-            device = ops.deviceName(),
+            device = devices.mapNotNull { it.deviceName() }.distinct().joinToString(", ").ifEmpty { null },
             scenarios = outcomes,
             androidCli = ops.androidCliVersion(),
             app = project.config.app,
@@ -271,7 +293,7 @@ internal fun executeScenario(
     val listener = SwitchableListener()
     var recording: ScreenRecorder.Recording? = null
     var recorderProblem: String? = null
-    val result = DeviceStack(project.config.app, jsonl, project.config.scrollLimit, listener).use { stack ->
+    val result = DeviceStack(project.config.app, jsonl, project.config.scrollLimit, listener, serial = ops.serial).use { stack ->
         // turn lines nest under the runner's step line in the live log
         // replay never builds a client — the key stays optional for CI that only replays
         val executor = SessionStepExecutor(stack.controller, { llm.client() }, llm.llmModel(), project.config.maxTurns,
@@ -281,13 +303,13 @@ internal fun executeScenario(
         // spans the steps — the journey itself, not the pm clear and the splash. It stops in
         // `finally`: a crashed run must not leave screenrecord running on the device for the
         // rest of its time limit. A recorded replay keeps only the failed step's screencap.
-        val recorder = if (video) ScreenRecorder() else null
+        val recorder = if (video) ScreenRecorder(serial = ops.serial) else null
         // steps are logged live by the runner — a scenario can run for minutes
         val runner = ScenarioRunner(stack.controller, listener, ops, executor, reportDir, project.config.app,
             locale = project.config.device.locale, stepFrames = !(video && mode == RunMode.REPLAY), log = log, onSetupDone = { recorder?.start() },
             entries = project::entryOf)
 
-        log("── ${scenario.name} [${mode.name.lowercase()}] ${"─".repeat(30)}")
+        log("── ${scenario.name} [${mode.name.lowercase()}]${ops.serial?.let { " on $it" } ?: ""} ${"─".repeat(30)}")
         try {
             runner.run(scenario, trace, mode)
         } finally {
