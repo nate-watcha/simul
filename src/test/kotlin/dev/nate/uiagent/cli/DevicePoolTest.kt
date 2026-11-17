@@ -29,10 +29,10 @@ class DevicePoolTest {
 
     @Test
     fun `one device, or ANDROID_SERIAL, is adb's pick as before`() {
-        assertEquals(Devices.ADB_PICKS, Devices.forRun(env = { null }, online = { listOf("emulator-5554") }, dedicated = { error("not asked") }))
-        assertEquals(Devices.ADB_PICKS, Devices.forRun(env = { null }, online = { emptyList() }, dedicated = { error("not asked") }))
-        assertEquals(Devices.ADB_PICKS, Devices.forRun(env = { "emulator-5556" }, online = { error("not asked") }, dedicated = { error("not asked") }))
-        assertEquals(Devices.ADB_PICKS, Devices.forRun(env = { null }, online = { error("adb: not found") }, dedicated = { error("not asked") }))
+        assertEquals(Devices.ADB_PICKS, Devices.forRun("com.x", env = { null }, online = { listOf("emulator-5554") }, dedicated = { error("not asked") }))
+        assertEquals(Devices.ADB_PICKS, Devices.forRun("com.x", env = { null }, online = { emptyList() }, dedicated = { error("not asked") }))
+        assertEquals(Devices.ADB_PICKS, Devices.forRun("com.x", env = { "emulator-5556" }, online = { error("not asked") }, dedicated = { error("not asked") }))
+        assertEquals(Devices.ADB_PICKS, Devices.forRun("com.x", env = { null }, online = { error("adb: not found") }, dedicated = { error("not asked") }))
     }
 
     @Test
@@ -40,12 +40,32 @@ class DevicePoolTest {
         val online = listOf("emulator-5554", "PERSONAL", "emulator-5556", "PLACED")
         assertEquals(
             listOf("emulator-5554", "emulator-5556", "PLACED"),
-            Devices.forRun(env = { null }, online = { online }, dedicated = { it != "PERSONAL" }),
+            Devices.forRun("com.x", env = { null }, online = { online }, dedicated = { it != "PERSONAL" }, installed = { _, _ -> true }),
         )
         val e = assertFailsWith<IllegalStateException> {
-            Devices.forRun(env = { null }, online = { listOf("A", "B") }, dedicated = { false })
+            Devices.forRun("com.x", env = { null }, online = { listOf("A", "B") }, dedicated = { false })
         }
         assertTrue("ANDROID_SERIAL" in e.message!! && "simul_device" in e.message!!, e.message)
+    }
+
+    @Test
+    fun `several devices - only the ones with the app under test, so another app's emulator on the same host is left out`() {
+        // the Mac Pro: stone's emulators on 5554 and 5558, kloud's on 5556
+        val online = listOf("emulator-5554", "emulator-5556", "emulator-5558")
+        val notes = mutableListOf<String>()
+        assertEquals(
+            listOf("emulator-5554", "emulator-5558"),
+            Devices.forRun("com.frograms.watcha.dev", env = { null }, online = { online }, dedicated = { true },
+                installed = { serial, app -> app == "com.frograms.watcha.dev" && serial != "emulator-5556" }, note = notes::add),
+        )
+        assertEquals(listOf("devices: emulator-5556 left out — com.frograms.watcha.dev is not installed on it"), notes)
+
+        val e = assertFailsWith<IllegalStateException> {
+            Devices.forRun("com.x", env = { null }, online = { online }, dedicated = { true }, installed = { _, _ -> false })
+        }
+        assertTrue("none has com.x installed" in e.message!!, e.message)
+        // a project without `app:` has nothing to look for
+        assertEquals(online, Devices.forRun(null, env = { null }, online = { online }, dedicated = { true }, installed = { _, _ -> error("not asked") }))
     }
 
     // ------------------------------------------------------------------ handing the work out

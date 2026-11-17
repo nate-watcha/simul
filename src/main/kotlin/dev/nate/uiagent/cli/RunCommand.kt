@@ -27,8 +27,8 @@ import java.util.Date
  * with the screen recording and the pages — the thing to show a person, not the loop.
  *
  * With several devices attached the run goes over all of them at once ([Devices], [runOverDevices]) — there is
- * no option for it: the emulators that are up, and the physical devices marked for simul, are the ones it uses,
- * and `ANDROID_SERIAL` names one as it always did.
+ * no option for it: the emulators that are up and the physical devices marked for simul, with the app under test
+ * installed, are the ones it uses, and `ANDROID_SERIAL` names one as it always did.
  *
  * `--runs <dir>` lays the run out the way the report reads it (README "나이틀리 운영"): one
  * directory per scenario and state, `<dir>/<feature>/<name>.<state>/`, each with its
@@ -127,7 +127,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
 
     // the devices attached are the devices it runs on; a recording stays on one — a scenario's way in is recorded
     // before the scenario that starts from it, and that order is one device's
-    val serials = if (dryRun) Devices.ADB_PICKS else try { Devices.forRun() } catch (e: IllegalStateException) { return err(e.message ?: "no device") }
+    val serials = if (dryRun) Devices.ADB_PICKS else try { Devices.forRun(project.config.app) } catch (e: IllegalStateException) { return err(e.message ?: "no device") }
     val devices = (if (mode == RunMode.LLM) serials.take(1) else serials).map { AdbOps(statesDir = project.statesDir, serial = it) }
     if (serials.size > devices.size) println("devices: ${serials.size} online — a recording runs on one (${serials.first()})")
     val ops = devices.first()

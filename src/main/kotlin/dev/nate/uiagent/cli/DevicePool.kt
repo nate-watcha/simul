@@ -12,7 +12,10 @@ import java.util.concurrent.ConcurrentHashMap
  *
  *  - `ANDROID_SERIAL` set, or at most one device online: that one, picked by adb as before ([ADB_PICKS]).
  *  - Several online: every one that is the runner's to set up ([DeviceOps.dedicated]) — the emulators, and the
- *    physical devices marked for simul. A person's phone that happens to be plugged in beside them is not run on.
+ *    physical devices marked for simul — and has the app under test installed. A person's phone that happens to
+ *    be plugged in beside them is not run on; neither is an emulator that was brought up for something else (a
+ *    CI host serves more than one app: the Mac Pro boots kloud's emulator next to stone's). Installing the build
+ *    is what makes a device one of this run's.
  */
 internal object Devices {
     /** One device, named by nobody: adb takes the only one online, or ANDROID_SERIAL. */
@@ -23,22 +26,31 @@ internal object Devices {
         .map { it.trim().split(Regex("\\s+")) }.filter { it.size >= 2 && it[1] == "device" }.map { it[0] }.toList()
 
     /**
-     * The devices of this run, or why there are none to pick ([IllegalStateException]). [dedicated] answers
-     * [DeviceOps.dedicated] for a serial.
+     * The devices of this run of [app] (config `app:`; null = no app to look for), or why there are none to pick
+     * ([IllegalStateException]). [dedicated] answers [DeviceOps.dedicated] for a serial, [installed] whether the
+     * app is on it; [note] gets a line for every device left out for want of the app.
      */
     fun forRun(
+        app: String?,
         env: (String) -> String? = System::getenv,
         online: () -> List<String> = { parseOnline(runProcess(listOf("adb", "devices"))) },
         dedicated: (String) -> Boolean = { AdbOps(serial = it).dedicated() },
+        installed: (String, String) -> Boolean = { serial, pkg -> AdbOps(serial = serial).installed(pkg) },
+        note: (String) -> Unit = ::println,
     ): List<String?> {
         if (!env("ANDROID_SERIAL").isNullOrBlank()) return ADB_PICKS
         // adb itself says what is wrong when it cannot list or finds nothing — on the first command, as before
         val serials = runCatching(online).getOrDefault(emptyList())
         if (serials.size <= 1) return ADB_PICKS
-        return serials.filter(dedicated).ifEmpty {
+        val ours = serials.filter(dedicated).ifEmpty {
             error("${serials.size} devices online (${serials.joinToString(", ")}) and none is an emulator or marked for simul — " +
                 "name one with ANDROID_SERIAL. ${DeviceSettings.NOT_DEDICATED.replaceFirstChar(Char::uppercase)}.")
         }
+        if (app == null) return ours
+        val (with, without) = ours.partition { installed(it, app) }
+        if (with.isEmpty()) error("${ours.size} devices online (${ours.joinToString(", ")}) and none has $app installed — install the build under test on the devices to run on, or name one with ANDROID_SERIAL.")
+        without.forEach { note("devices: $it left out — $app is not installed on it") }
+        return with
     }
 }
 

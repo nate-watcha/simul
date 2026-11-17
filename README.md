@@ -84,7 +84,8 @@ Slack 메시지 블록을 뽑을 수 있다.
 - PATH에 `simul`(이 레포 `./gradlew installDist` + `scripts/simul`), `adb`·`emulator`·`android`(CLI), `ffprobe`/`ffmpeg`(녹화
   타임라인 보정·180s 세그먼트 이어붙임용, 선택)
 - 에뮬레이터: 매번 콜드 부팅·스냅샷 저장 안 함(기기 드리프트가 앱 회귀로 둔갑하지 않게). **붙어 있는 대수만큼 동시에 돈다** —
-  옵션은 없다. 여러 대가 online이면 재생(`--mode replay|auto`, `simul report <trace>`)이 그 전부에 나뉘고, 한 대뿐이거나
+  옵션은 없다. 여러 대가 online이면 재생(`--mode replay|auto`, `simul report <trace>`)이 그중 **시험할 앱(config `app:`)이 설치된**
+  기기 전부에 나뉘고(같은 호스트에서 다른 앱용으로 떠 있는 에뮬레이터는 빠진다 — 빌드를 설치하는 것이 그 기기를 이 실행의 것으로 만든다), 한 대뿐이거나
   `ANDROID_SERIAL`이 있으면 그 한 대에서 전과 같이 돈다. 녹화(`--mode llm`)는 언제나 한 대다. 나뉘는 순서: 들어오는 길(`_entry.md`)
   전부가 먼저, 그다음 화면(디렉토리)별로 — 한 화면의 시나리오는 한 기기에서 차례로 돈다(같은 계정의 같은 데이터를 고치는 것들이라).
   같은 AVD를 여러 대 띄우려면 `emulator -read-only -port <5554, 5556, …>`, 앱은 기기마다 설치한다(`adb -s <serial> install`).

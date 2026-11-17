@@ -317,6 +317,10 @@ class AdbOps(
             runProcess(adb("shell", "getprop", "ro.boot.qemu")).trim() == "1"
     }.getOrDefault(false)
 
+    /** Is [app] installed? `pm path` prints its APK, or exits 1 for a package the device does not know. */
+    fun installed(app: String): Boolean =
+        runCatching { runProcess(adb("shell", "pm", "path", app)).lineSequence().any { it.startsWith("package:") } }.getOrDefault(false)
+
     override fun dedicated(): Boolean =
         isEmulator() || runCatching { settingGet("global", DEDICATED_KEY) == "1" }.getOrDefault(false)
 
