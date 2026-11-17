@@ -309,10 +309,15 @@ class SiteTest {
         val spec = File(runs, "2026-11-10/my-other/_screen.html").readText()
         assertTrue("<p class=spd>타인 프로필의 팔로우 버튼은 누를 때마다 바뀐다.</p>" in spec && "<p class=prep>준비 · 팔로우하고 있지 않으면" in spec, spec.substringAfter("<section"))
         assertTrue("<li class=\"passed v\"><span class=q>&quot;팔로우&quot;</span>가 보이는지 확인한다</li>" in spec, "a passed check step is set apart from the steps that get there")
-        assertTrue("<b>팔로우 취소</b>&quot;팔로우 취소&quot;를 누르면 &quot;팔로우&quot;로 바뀐다." in spec, "a step's quotes are set apart, a sentence's are not")
-        assertTrue("<details class=\"ck skipped\"><summary>" in spec && "<b>다시 취소</b>" in spec, "a section that was not reached is listed, not open")
-        assertTrue("<span class=\"fs titles\"><span class=passed>팔로우 취소</span> · <span class=failed>팔로우 추가</span> · <span class=skipped>다시 취소</span></span><span class=ckn>확인 3</span>" in spec,
-            "closed, a scenario of several checks is its sections' titles")
+        assertTrue("<b class=fn><span class=no>1</span>팔로우 취소</b><span class=fs>&quot;팔로우 취소&quot;를 누르면 &quot;팔로우&quot;로 바뀐다." in spec, "a step's quotes are set apart, a sentence's are not")
+        assertTrue("<details class=\"ft skipped\"><summary><i class=\"ic skipped\">–</i><b class=fn><span class=no>3</span>다시 취소</b>" in spec, "a section that was not reached is listed, not open")
+        // a scenario of several checks is a group: its name and how its checks stand, then every check a line of its own
+        val group = spec.substringAfter("<div class=\"grp failed\" id=\"").substringBefore("</div></details></div><span class=fm>")
+        assertTrue("<span class=gt>확인 3 · <b class=bad>실패 1</b></span></div><p class=spd>" in group, group.take(500))
+        assertEquals(listOf("1" to "팔로우 취소", "2" to "팔로우 추가", "3" to "다시 취소"),
+            Regex("<summary><i class=\"ic [a-z]+\">.</i><b class=fn><span class=no>(\\d)</span>([^<]+)</b>").findAll(group).map { it.groupValues[1] to it.groupValues[2] }.toList(),
+            "its checks, each to be read without opening the scenario, numbered in the order they run — the preparation is not one of them")
+        assertTrue("fs titles" !in spec && "<span class=ckn>확인 " !in spec, "it is not folded into one line of titles")
     }
 
     @Test
@@ -381,9 +386,9 @@ class SiteTest {
         assertTrue("<h3>들어오는 길</h3>" in activity && "<span class=ip>딥링크</span><span class=it>없음</span>" in activity, "a way in with a step that moves: the screen has no address of its own")
         assertTrue("<span class=ip>진입</span><span class=it><code class=e>app://my</code> 를 열고 <span class=q>&quot;활동&quot;</span> 탭을 누른다<span class=st2>이 화면의 시나리오 1개가 여기서 시작한다</span>" in activity,
             activity.substringAfter("들어오는 길").take(900))
-        assertTrue("<h3>다른 화면에서 바꾸면 <span class=hn><b class=bad>실패 1</b> · 쓰인 화면에서 센다</span></h3>" in activity)
+        assertTrue("<h3>다른 화면의 변경 반영 <span class=hn><b class=bad>실패 1</b> · 이 화면 집계에서 제외</span></h3>" in activity)
         assertTrue("href=\"../작품 상세/_screen.html#comment\">작품 상세 › 코멘트 추가와 삭제 › 추가 뒤 활동 탭</a><span class=it><b class=\"mn here\">나의왓챠-활동</b> 코멘트 영역 맨 앞에 나온다." +
-            "<br><span class=reason>녹화 때 있던 것이 화면에 없음: 방금 쓴 코멘트</span>" in activity, activity.substringAfter("다른 화면에서 바꾸면").take(900))
+            "<br><span class=reason>녹화 때 있던 것이 화면에 없음: 방금 쓴 코멘트</span>" in activity, activity.substringAfter("다른 화면의 변경 반영").take(900))
         assertTrue("시나리오 1 · 확인 2 · 전부 통과" in activity, "the failure is counted where it is written")
         val own = activity.substringAfter("<h3>이 화면에서</h3>")
         assertTrue("<b class=fn>포스터</b><span class=fs>포스터를 누르면 그 작품의 <a class=mn href=\"../작품 상세/_screen.html\">작품 상세</a>로 간다.</span><span class=ckn>1스텝</span>" in own, own.take(600))
@@ -392,10 +397,10 @@ class SiteTest {
         val content = File(day, "작품 상세/_screen.html").readText()
         assertTrue("<span class=ip>딥링크</span><span class=it><code class=e>app://contents/1</code><span class=st2>이 주소가 바로 연다</span><span class=st2>이 화면의 시나리오 1개가 여기서 시작한다</span>" in content,
             content.substringAfter("들어오는 길").take(600))
-        assertTrue(">나의왓챠-활동 › 포스터</a>" in content && "다른 화면에서 바꾸면" !in content, "a check that walked here is a way in")
-        assertTrue("<span class=passed>추가</span> · <span class=failed>추가 뒤 활동 탭</span> · <span class=passed>삭제</span><span class=to>→ 나의왓챠-활동</span>" in content)
-        assertTrue("<span class=to>나의왓챠-활동의 진입으로 연다</span> <span class=to>member-empty 계정으로</span>" in content && "<details class=\"ck failed\" open>" in content,
-            "a check's own setup: where it started and as whom")
+        assertTrue(">나의왓챠-활동 › 포스터</a>" in content && "다른 화면의 변경 반영" !in content, "a check that walked here is a way in")
+        assertTrue("<b class=fn>코멘트 추가와 삭제</b><span class=gt>확인 3 · <b class=bad>실패 1</b></span><span class=to>→ 나의왓챠-활동</span></div>" in content, content.substringAfter("이 화면에서").take(700))
+        assertTrue("<details class=\"ft failed\" open><summary><i class=\"ic failed\">✕</i><b class=fn><span class=no>2</span>추가 뒤 활동 탭</b><span class=fs>" in content &&
+            "<span class=to>나의왓챠-활동의 진입으로 연다</span> <span class=to>member-empty 계정으로</span>" in content, "a check's own setup: where it started and as whom")
 
         val search = File(day, "검색/_screen.html").readText()
         assertTrue("시나리오 1개를 돌리지 못했다" in search && "<span class=ip>진입</span>" in search, search.substringAfter("들어오는 길").take(600))
@@ -470,7 +475,8 @@ class SiteTest {
         assertTrue(order.all { it > 0 } && order == order.sorted(), "$order")
         // the part, read as a screen is — with what another screen changed that shows on it
         val part = my.substringAfter("<section class=part id=\"s:프로필_헤더\">").substringBefore("<section class=\"part tabpart\">")
-        assertTrue("<span class=pk>부분</span><h2>프로필 헤더</h2>" in part && "<h3>다른 화면에서 바꾸면" in part && "<h3>이 부분에서</h3>" in part, part.take(600))
+        assertTrue("<span class=pk>부분</span><h2>프로필 헤더</h2>" in part && "<h3>다른 화면의 변경 반영" in part, part.take(600))
+        assertTrue("이 부분에서" !in my, "a part's own checks carry no heading: the band of its panel names the part")
         assertTrue("href=\"../나의 왓챠/프로필 수정/_screen.html#link\">나의 왓챠 › 프로필 수정 › 링크 › 다시 들어와도 유지</a><span class=it><b class=\"mn here\">프로필 헤더</b>의 링크가 바뀌어 있다." in part, part.take(900))
         // the screen's own scenarios sit between its parts and its tabs; a mention of a tab goes to the tab
         val own = my.substringAfter("<h3>이 화면에서</h3>").substringBefore("<section class=\"part tabpart\">")
@@ -507,5 +513,63 @@ class SiteTest {
         assertTrue("<span class=sub2>↳</span><a href=\"나의 왓챠/프로필 수정/_screen.html\">나의 왓챠 › 프로필 수정</a>" in home)
         val steps = File(day, "나의 왓챠/활동/empty.html").readText()
         assertTrue("<a href=\"../../나의 왓챠/_screen.html#활동/empty\">나의 왓챠 › 활동</a><span>/</span><b>empty</b>" in steps, "a scenario of a tab leads back to its line in the tab")
+    }
+
+    @Test
+    fun `a screen's parts are drawn in the order its file gives, at any depth - and a mention of a part shows under that part`() {
+        val day = File(runs, "2026-11-16")
+        fun st(n: Int, text: String, status: StepStatus = StepStatus.PASSED, reason: String? = null) =
+            StepReport(n, text, status, "replay", emptyList(), emptyList(), reason, 500, emptyList(), startedMs = n * 1000L)
+        // what `활동/_screen.md` says: its components top to bottom — not in the order of their names; `코멘트` did not run tonight
+        val layout = mapOf("활동" to ScreenLayout(listOf(ScreenLayout.Slot(part = "평가"), ScreenLayout.Slot(part = "재감상"), ScreenLayout.Slot(part = "코멘트"))))
+        fun write(feature: String, name: String, title: String, prose: String, steps: List<StepReport>, sections: List<SectionReport> = emptyList(), mentions: List<String> = emptyList()) {
+            val dir = File(day, "$feature/$name").apply { mkdirs() }
+            val status = if (steps.any { it.status == StepStatus.FAILED }) StepStatus.FAILED else StepStatus.PASSED
+            ResultJson.write(ScenarioRunResult(title, status, steps, null, 5000, startedAtMs = 1_794_000_000_000L, reportDir = dir, sections = sections), "replay",
+                ResultJson.Meta(feature, name, null, "$feature/$name.md", title, null, prose, "2026-11-16", ResultJson.Env("6.4.0", "sdk", "1.1"),
+                    setup = ResultJson.Setup("app://my", false, "member"), mentions = mentions, screens = if (feature.startsWith("활동")) layout else emptyMap()), dir)
+        }
+        // a component is a directory; what one does with it are scenarios of their own, each independent of the other
+        write("활동/재감상", "포스터", "포스터", "누르면 그 작품의 상세로 간다.", listOf(st(1, "첫 번째 작품을 누른다")))
+        write("활동/재감상", "헤더", "헤더", "누르면 여러 번 본 작품 목록으로 간다.", listOf(st(1, "\"재감상 전체 보기\"를 누른다", StepStatus.FAILED, "replay broken: evidence not on screen: 여러 번 본 작품")))
+        write("활동/평가", "포스터", "포스터", "누르면 그 작품의 상세로 간다.", listOf(st(1, "첫 번째 작품을 누른다")))
+        write("활동/평가", "헤더", "헤더", "누르면 평가함으로 간다.", listOf(st(1, "\"평가 전체 보기\"를 누른다")))
+        // one that is about the whole screen, not a component of it
+        write("활동", "back", "돌아오면 탭 유지", "뒤로 오면 이 탭이 그대로 열려 있다.", listOf(st(1, "뒤로 간다")))
+        // another screen rates a title and opens this one to look: a flow, so one scenario of sections — its check names the component it shows in
+        write("작품상세", "rating", "평가하고 지우기", "상단의 별점 바.", listOf(st(1, "\"4점\"을 누른다"), st(2, "\"치이카와\"가 보이는지 확인한다")),
+            listOf(SectionReport("평가", "별을 누르면 저장된다.", StepStatus.PASSED, 1..1),
+                SectionReport("평가 뒤 활동 탭", "@활동/평가 맨 앞에 나온다.", StepStatus.PASSED, 2..2, open = Scenario.Open(screen = "활동"), mentions = listOf("활동/평가"))))
+
+        val screen = Site.screens(Site.classify(Site.load(day))).single { it.feature == "활동" }
+        assertEquals(listOf("평가", "재감상"), screen.slots.map { it.part!!.label }, "as the line says, and only what ran")
+        assertEquals(listOf(Site.Place.PART, Site.Place.PART), screen.children.map { it.place })
+
+        SitePages.build(day, day)
+        assertTrue(!File(day, "활동/평가/_screen.html").exists(), "a part is read on its screen's page")
+        val page = File(day, "활동/_screen.html").readText()
+        assertTrue("시나리오 5 · 확인 5 · <b class=bad>실패 1</b>" in page && " · 부분 2</span>" in page, page.substringAfter("<h1>").take(300))
+        val order = listOf("<section class=part id=\"s:평가\">", "<section class=part id=\"s:재감상\">", "<h3>이 화면에서</h3>").map { page.indexOf(it) }
+        assertTrue(order.all { it > 0 } && order == order.sorted(), "the components in the line's order, then the screen's own scenarios: $order")
+        val rated = page.substringAfter("<section class=part id=\"s:평가\">").substringBefore("<section class=part id=\"s:재감상\">")
+        assertTrue("<span class=pk>부분</span><h2>평가</h2><span class=dim>시나리오 2 · 확인 2 · 전부 통과</span>" in rated, rated.take(300))
+        // each thing one does with the component is a line of its own, by the name of its file
+        assertTrue("id=\"평가/포스터\"><summary><i class=\"ic passed\">✓</i><b class=fn>포스터</b><span class=fs>누르면 그 작품의 상세로 간다.</span>" in rated &&
+            "id=\"평가/헤더\"><summary><i class=\"ic passed\">✓</i><b class=fn>헤더</b>" in rated, rated.take(1200))
+        // the look from the other screen is under the component it names, not at the top of the screen
+        assertTrue("<h3>다른 화면의 변경 반영 <span class=hn>이 화면 집계에서 제외</span></h3>" in rated &&
+            "href=\"../작품상세/_screen.html#rating\">작품상세 › 평가하고 지우기 › 평가 뒤 활동 탭</a><span class=it><b class=\"mn here\">평가</b> 맨 앞에 나온다." in rated, rated.take(900))
+        assertTrue("다른 화면의 변경 반영" !in page.substringBefore("<section class=part id=\"s:평가\">") && "다른 화면의 변경 반영" !in page.substringAfter("<section class=part id=\"s:재감상\">"), "nowhere else on the page")
+        val failed = page.substringAfter("<section class=part id=\"s:재감상\">")
+        assertTrue("<details class=\"ft failed\" id=\"재감상/헤더\" open>" in failed && "녹화 때 있던 것이 화면에 없음: 여러 번 본 작품" in failed)
+        assertTrue("<b class=fn>돌아오면 탭 유지</b>" in page.substringAfter("<h3>이 화면에서</h3>"))
+        val content = File(day, "작품상세/_screen.html").readText()
+        assertTrue("<a class=mn href=\"../활동/_screen.html#s:평가\">평가</a> 맨 앞에 나온다." in content && "<span class=to>→ 평가</span>" in content, "from where it is written, the mention leads to the component")
+        val nav = page.substringAfter("<nav class=snav").substringBefore("<div class=doc>")
+        assertTrue("<div class=kids><a class=\"k\" href=\"../활동/_screen.html#s:평가\"" in nav && nav.indexOf("#s:평가\"") < nav.indexOf("#s:재감상\""), nav.take(900))
+        val home = File(day, "index.html").readText()
+        assertTrue("<a href=\"활동/_screen.html#재감상/헤더\">활동 › 재감상</a><span>›</span><a class=title href=\"활동/재감상/헤더.html\">헤더</a>" in home, "a failure in a component leads to its line there")
+        val line = home.split("<tbody").first { "\"활동/_screen.html\"" in it }
+        assertTrue("</span></td><td class=r>1</td><td class=r><span class=dim>–</span></td>" in line, "a line about a component of the screen is a line about the screen: " + line.take(700))
     }
 }

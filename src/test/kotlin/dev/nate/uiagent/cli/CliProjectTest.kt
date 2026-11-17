@@ -299,6 +299,16 @@ class CliProjectTest {
             "its own way in and the one its section starts from are recorded first")
         assertEquals(0, cliMain(arrayOf("run", "나의 왓챠/홈/empty.md", "--dry-run"), root))
 
+        // a part is a directory: a scenario file of that name is refused, with where it goes
+        File(my, "_screen.md").writeText("---\nparts: [tabs, 프로필 헤더, [홈, 활동]]\n---\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.layoutOf("나의 왓챠") }.message!!, "tabs.md is a scenario: a part is a directory, put it in one (tabs/…)")
+        // and it is mentioned as the screen it is
+        assertTrue("나의 왓챠/프로필 헤더" in p.screens() && "나의 왓챠/tabs" !in p.screens())
+        File(my, "_screen.md").writeText("---\nparts: [프로필 헤더, [홈, 활동]]\n---\n")
+        File(my, "홈/look.md").writeText("---\nname: 둘러보기\n---\n@나의 왓챠/tabs 로도 온다.\n\n1. 스텝\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(my, "홈/look.md")) }.message!!, "@나의 왓챠/tabs names no screen")
+        File(my, "홈/look.md").delete()
+
         // a part or a tab is a directory under the screen; the file is not run; the line is no longer the way in's
         File(my, "_screen.md").writeText("---\nparts: [프로필 헤더, [홈, 좋아요]]\n---\n")
         assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(my, "홈/empty.md")) }.message!!, "parts 좋아요")

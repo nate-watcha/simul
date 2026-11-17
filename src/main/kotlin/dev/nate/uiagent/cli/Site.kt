@@ -178,11 +178,13 @@ object Site {
         // what each screen is made of, as any of the run's results carries it
         val layouts = rows.flatMap { it.result.screens.entries }.associate { (screen, layout) -> Mentions.norm(screen) to layout }
         val kids = by.values.filter { '/' in it.feature }.groupBy { by.getValue(Mentions.norm(it.feature.substringBeforeLast('/'))) }
-        for ((parent, children) in kids) {
+        for (screen in by.values) {
+            val children = kids[screen].orEmpty()
+            val layout = layouts[Mentions.norm(screen.feature)]
+            if (children.isEmpty() && layout == null) continue
             val under = children.associateBy { Mentions.norm(it.label) }
-            val layout = layouts[Mentions.norm(parent.feature)]
             for (c in children) {
-                c.parent = parent
+                c.parent = screen
                 val name = Mentions.norm(c.label)
                 c.place = when {
                     layout != null -> if (name in layout.tabs) Place.TAB else if (name in layout.parts) Place.PART else Place.OPENS
@@ -191,11 +193,11 @@ object Site {
                 }
             }
             // a named directory none of whose scenarios ran tonight is not there to draw
-            parent.slots = layout?.slots?.mapNotNull { slot ->
+            screen.slots = layout?.slots?.mapNotNull { slot ->
                 if (slot.part != null) under[slot.part]?.let { Slot(part = it) }
                 else slot.tabs.mapNotNull(under::get).takeIf { it.isNotEmpty() }?.let { Slot(tabs = it) }
             } ?: children.filter { it.place == Place.PART }.sortedBy { it.feature }.map { Slot(part = it) }
-            parent.children = parent.slots.flatMap { listOfNotNull(it.part) + it.tabs } + children.filter { it.place == Place.OPENS }.sortedBy { it.feature }
+            screen.children = screen.slots.flatMap { listOfNotNull(it.part) + it.tabs } + children.filter { it.place == Place.OPENS }.sortedBy { it.feature }
         }
         return by.values.sortedWith(compareBy({ it.kind.ordinal }, { it.feature }))
     }
