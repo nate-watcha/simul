@@ -532,10 +532,11 @@ object SitePages {
         fun ownScenarios() {
             val byState = screen.scenarios.groupBy { stateOf(it.result) }
             val main = screen.entry?.let { stateOf(it.result) }?.takeIf { it in byState } ?: byState.maxByOrNull { it.value.size }?.key
-            val own = when (screen.place) { Site.Place.TAB -> "이 탭에서"; Site.Place.PART -> "이 부분에서"; else -> "이 화면에서" }
+            // a part is a panel with its name on the band: its own checks need no heading under it
+            val own = when (screen.place) { Site.Place.TAB -> "이 탭에서"; Site.Place.PART -> null; else -> "이 화면에서" }
             for ((state, rows) in byState.entries.sortedBy { it.key != main }) {
                 val title = if (state == main) own else "다른 계정으로 보면 <code class=e>${esc(state.ifEmpty { "계정 없음" })}</code>"
-                sb.append("<section class=blk><h3>$title</h3><div class=fl>")
+                sb.append("<section class=blk>${title?.let { "<h3>$it</h3>" } ?: ""}<div class=fl>")
                 for (row in rows) scenarioLine(sb, row, u, pages)
                 sb.append("</div></section>")
             }
@@ -1253,7 +1254,7 @@ object SitePages {
         .snav .tgl{font-size:10.5px;font-weight:600;letter-spacing:.06em;color:var(--faint);padding:2px 8px 0}
         .part{display:flex;flex-direction:column;gap:14px;min-width:0;scroll-margin-top:12px;background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:0 16px 14px}
         .part .part{background:var(--bg)}.part .ways{background:var(--bg)}.part .part .ways{background:var(--card)}
-        .part .fl{border-top:0;border-bottom:0}.part>.blk:last-child>.fl{margin-bottom:-8px}.part>.blk>.fl{margin-top:-6px}
+        .part .fl{border-top:0;border-bottom:0}.part>.blk:last-child>.fl{margin-bottom:-8px}.part>.blk>h3+.fl{margin-top:-6px}.part>.ph+.blk>.fl:first-child{margin-top:-10px}
         .ph{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0 -16px;padding:11px 16px;background:var(--panel);border-bottom:1px solid var(--line2);border-radius:11px 11px 0 0}
         .ph h2{margin:0;font-size:17px;font-weight:600;letter-spacing:-.005em}.ph .dim{margin-left:auto;font-size:13px}
         .pk{font-size:10.5px;font-weight:600;letter-spacing:.06em;color:var(--onfg);background:var(--dim);border-radius:4px;padding:0 6px;line-height:18px}
