@@ -475,7 +475,8 @@ class SiteTest {
         assertTrue(order.all { it > 0 } && order == order.sorted(), "$order")
         // the part, read as a screen is — with what another screen changed that shows on it
         val part = my.substringAfter("<section class=part id=\"s:프로필_헤더\">").substringBefore("<section class=\"part tabpart\">")
-        assertTrue("<span class=pk>부분</span><h2>프로필 헤더</h2>" in part && "<h3>다른 화면의 변경 반영" in part && "<h3>이 부분에서</h3>" in part, part.take(600))
+        assertTrue("<span class=pk>부분</span><h2>프로필 헤더</h2>" in part && "<h3>다른 화면의 변경 반영" in part, part.take(600))
+        assertTrue("이 부분에서" !in my, "a part's own checks carry no heading: the band of its panel names the part")
         assertTrue("href=\"../나의 왓챠/프로필 수정/_screen.html#link\">나의 왓챠 › 프로필 수정 › 링크 › 다시 들어와도 유지</a><span class=it><b class=\"mn here\">프로필 헤더</b>의 링크가 바뀌어 있다." in part, part.take(900))
         // the screen's own scenarios sit between its parts and its tabs; a mention of a tab goes to the tab
         val own = my.substringAfter("<h3>이 화면에서</h3>").substringBefore("<section class=\"part tabpart\">")
