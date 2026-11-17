@@ -65,6 +65,23 @@ class AdbDeviceTest {
     }
 
     @Test
+    fun `a named device gets every command - adb -s and android --device`() {
+        val calls = mutableListOf<List<String>>()
+        val device = AdbDevice(onCommand = calls::add, retryDelayMs = 0, serial = "emulator-5556") { argv -> if (argv[0] == "android" && argv[1] == "layout") dump else "" }
+        device.observeFast()
+        device.tap(5, 5)
+        device.inputText("a", null)
+        assertEquals(
+            listOf(
+                listOf("android", "layout", "--device", "emulator-5556", "--no-idle"),
+                listOf("adb", "-s", "emulator-5556", "shell", "input", "tap", "5", "5"),
+                listOf("android", "input", "--device", "emulator-5556", "text", "--match", "first", "a", "focused=true"),
+            ),
+            calls,
+        )
+    }
+
+    @Test
     fun `inputText is android input text aimed at the field's resource-id, or at the focused element`() {
         val calls = mutableListOf<List<String>>()
         val device = AdbDevice(onCommand = calls::add, retryDelayMs = 0) { "" }

@@ -101,11 +101,15 @@ data class DevicePins(val locale: String? = null, val settings: List<DeviceSetti
 data class SettingChange(val setting: DeviceSetting, val was: String?)
 
 /**
- * Pin / restore [DeviceSetting]s. Same contract as the display profile: emulators only, read
+ * Pin / restore [DeviceSetting]s. Same contract as the display profile: only on a device that is the
+ * runner's to set up ([DeviceOps.dedicated] — an emulator, or a physical device marked for simul), read
  * first and touch only what differs, put back exactly what was there (a developer's own
  * value included) when the scope ends.
  */
 object DeviceSettings {
+    /** Why a device's display and settings are left alone, as the warning says it. */
+    const val NOT_DEDICATED = "a physical device is left as it is unless it is marked for simul (adb shell settings put global ${AdbOps.DEDICATED_KEY} 1)"
+
     /**
      * Bring the device to [wanted]. Each change is appended to [sink] as it happens — so a
      * failure half-way still leaves the caller able to undo what did change — and reported
@@ -118,8 +122,8 @@ object DeviceSettings {
         sink: MutableList<SettingChange>,
     ) {
         if (wanted.isEmpty()) return
-        if (!ops.isEmulator()) {
-            log("warning: ${wanted.size} device setting(s) ignored — target is not an emulator")
+        if (!ops.dedicated()) {
+            log("warning: ${wanted.size} device setting(s) ignored — $NOT_DEDICATED")
             return
         }
         for (s in wanted) {

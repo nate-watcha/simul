@@ -41,6 +41,14 @@ internal class FakeOps(private val versionName: String? = "5.4.0") : DeviceOps {
 
     var emulator = true
     override fun isEmulator(): Boolean = emulator
+    /** `settings put global simul_device 1` on a physical device. */
+    var marked = false
+    override fun dedicated(): Boolean = emulator || marked
+    var woken = 0
+    override fun wake() { woken++ }
+    /** The device's serial in a run over several; null on one device. */
+    var named: String? = null
+    override val serial: String? get() = named
     override fun setDisplay(profile: DisplayProfile) { display = profile.toString() }
     override fun resetDisplay() { display = null }
     /** `namespace.key` → value; absent = unset. */

@@ -10,7 +10,8 @@ import java.io.File
 class BatchResult(val outcome: ScenarioOutcome, val result: ScenarioRunResult?)
 
 /**
- * A batch of scenario runs against one device — what `simul run` and the TUI's run panel share.
+ * A batch of scenario runs against one device — what `simul run` and the TUI's run panel share; a run over
+ * several devices is one of these per device ([runOverDevices]).
  * [pin] forces the configured display profile and `settings` baseline for the whole batch;
  * [close] puts both back exactly as they were (a developer's own `wm` override included), whatever
  * happened in between. [run] turns the three non-results — no trace to replay, a harness crash, a
@@ -29,6 +30,12 @@ class BatchSession(
     /** `--runs <dir>`: lay report dirs out for the report builder (see ReportDirs.inRuns); null = stamped dirs under .simul/reports. */
     private val runsDir: File? = null,
     private val pause: (Long) -> Unit = Thread::sleep,
+    /**
+     * The ways in that failed in this batch, by screen, with why — see [run]. A batch over several devices
+     * ([runOverDevices]) is one batch: its sessions share this, so a way in that failed on one device is not
+     * walked again on another.
+     */
+    private val brokenEntries: MutableMap<String, String> = mutableMapOf(),
 ) : AutoCloseable {
     private var displayBefore: String? = null
     private val pinned = mutableListOf<SettingChange>()
@@ -36,9 +43,6 @@ class BatchSession(
     /** Why the device is no longer usable for this batch; null while it answers. */
     var deviceDown: String? = null
         private set
-
-    /** The ways in that failed in this batch, by screen, with why — see [run]. */
-    private val brokenEntries = mutableMapOf<String, String>()
 
     /**
      * Ask the device whether it still answers. A second look after a pause, when [recheck]: an adb
@@ -60,12 +64,14 @@ class BatchSession(
         // nothing to pin on a device that is not there; every scenario then reports that, not a stack trace
         checkDevice(recheck = false)
         if (deviceDown != null) return
-        // Never touch a physical device's screen, and read the current value BEFORE forcing it.
+        // a physical device that sat plugged in is asleep; an emulator's screen is already on
+        ops.wake()
+        // Never touch a person's device's screen, and read the current value BEFORE forcing it.
         val display = project.config.display
         if (display != null) {
             val current = ops.displayProfile()
             when {
-                !ops.isEmulator() -> log("warning: display profile $display ignored — target is not an emulator")
+                !ops.dedicated() -> log("warning: display profile $display ignored — ${DeviceSettings.NOT_DEDICATED}")
                 current == display.toString() -> {} // already there, nothing to restore
                 else -> {
                     ops.setDisplay(display)
@@ -128,7 +134,8 @@ class BatchSession(
         }
         // a scenario that did not pass may be the device's doing — and then so would every one after it
         if (!result.passed) checkDevice(recheck = true)
-        if (md.name == SimulProject.ENTRY_FILE) {
+        // a way in that stopped because the device did says nothing about the way in
+        if (md.name == SimulProject.ENTRY_FILE && deviceDown == null) {
             val screen = project.screenOf(md)
             if (result.passed) brokenEntries -= screen
             else brokenEntries[screen] = result.steps.firstOrNull { it.status == StepStatus.FAILED }?.let { "step ${it.index} — ${it.reason ?: "failed"}" } ?: "failed"

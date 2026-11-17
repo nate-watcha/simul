@@ -42,6 +42,14 @@ interface Device {
     fun releaseAutomation() {}
 }
 
+/**
+ * `adb [-s <serial>] <args>`: one device named among several. Without [serial] adb picks — the only device
+ * online, or ANDROID_SERIAL — which is every run on one device; a run over several names each
+ * ([dev.nate.uiagent.cli.DevicePool]).
+ */
+fun adbCommand(adbBin: String, serial: String?, vararg args: String): List<String> =
+    listOf(adbBin) + (serial?.let { listOf("-s", it) } ?: emptyList()) + args
+
 /** Live device via `android layout` / `android input text` + `adb shell input`. */
 class AdbDevice(
     private val adbBin: String = "adb",
@@ -50,8 +58,12 @@ class AdbDevice(
     private val retryDelayMs: Long = 1000L,
     /** A dump's idle wait ran out and the dump is asked again: how long the refused attempt took ([DeviceMeter.idleRefused]). */
     private val onIdleRefused: (Long) -> Unit = {},
+    /** The device every command is for (`adb -s`, `android --device`); null = the one adb picks — the only one online, or ANDROID_SERIAL. */
+    private val serial: String? = null,
     private val run: (List<String>) -> String = { runProcess(it) },
 ) : Device {
+
+    private fun adb(vararg args: String): List<String> = adbCommand(adbBin, serial, *args)
 
     /**
      * One `android layout` per observation. Since CLI 1.0.16406183 a failed dump exits
@@ -82,7 +94,7 @@ class AdbDevice(
      * several devices are online — every `android` call gets the serial explicitly.
      */
     private fun androidArgs(command: String): List<String> =
-        listOf(androidBin, command) + (System.getenv("ANDROID_SERIAL")?.let { listOf("--device", it) } ?: emptyList())
+        listOf(androidBin, command) + ((serial ?: System.getenv("ANDROID_SERIAL"))?.let { listOf("--device", it) } ?: emptyList())
 
     private fun observe(noIdle: Boolean): LogicalLayout {
         val argv = androidArgs("layout") + (if (noIdle) listOf("--no-idle") else emptyList())
@@ -124,7 +136,7 @@ class AdbDevice(
     }
 
     private fun shell(vararg args: String) {
-        val argv = listOf(adbBin, "shell", *args)
+        val argv = adb("shell", *args)
         onCommand(argv)
         run(argv)
     }

@@ -21,8 +21,10 @@ class DeviceStack(
     listener: ActionListener? = null,
     /** A substitute for the live device (offline layout file); the CDP channel is then unused. */
     device: Device? = null,
+    /** The device this stack drives, when the run is over several (see [dev.nate.uiagent.device.adbCommand]). */
+    serial: String? = null,
 ) : AutoCloseable {
-    private val cdp = CdpClient()
+    private val cdp = CdpClient(serial = serial)
     private val meter = DeviceMeter()
 
     val controller: DeviceController = DeviceController(
@@ -30,6 +32,7 @@ class DeviceStack(
             AdbDevice(
                 onCommand = { argv -> trace.event("exec") { it["argv"] = argv.joinToString(" ") } },
                 onIdleRefused = meter::idleRefused,
+                serial = serial,
             ),
             cdp,
             app,

@@ -1,6 +1,7 @@
 package dev.nate.uiagent.web
 
 import dev.nate.uiagent.Bounds
+import dev.nate.uiagent.device.adbCommand
 import dev.nate.uiagent.json
 import dev.nate.uiagent.runProcess
 import kotlinx.serialization.json.JsonArray
@@ -32,7 +33,9 @@ import java.util.concurrent.TimeUnit
  * [Discovery] whose `failure` explains why no target is available; [evaluate] returns
  * [Eval.Failed] instead of throwing. Callers degrade to native-only observation.
  */
-open class CdpClient(private val adbBin: String = "adb") : AutoCloseable {
+open class CdpClient(private val adbBin: String = "adb", private val serial: String? = null) : AutoCloseable {
+
+    private fun adb(vararg args: String): List<String> = adbCommand(adbBin, serial, *args)
 
     /** One debuggable page inside a WebView, as listed by GET /json. */
     data class Target(
@@ -66,14 +69,14 @@ open class CdpClient(private val adbBin: String = "adb") : AutoCloseable {
      * live process of that package are considered (socket names embed the app pid).
      */
     open fun discover(appId: String?): Discovery {
-        val unixDump = runCatching { runProcess(listOf(adbBin, "shell", "cat", "/proc/net/unix")) }
+        val unixDump = runCatching { runProcess(adb("shell", "cat", "/proc/net/unix")) }
             .getOrElse { return Discovery(emptyList(), "adb failed: ${it.message?.lineSequence()?.first()}") }
         var sockets = parseWebViewSockets(unixDump)
         if (sockets.isEmpty()) {
             return Discovery(emptyList(), "no webview_devtools socket on the device")
         }
         if (appId != null) {
-            val pids = runCatching { runProcess(listOf(adbBin, "shell", "pidof", appId)) }
+            val pids = runCatching { runProcess(adb("shell", "pidof", appId)) }
                 .getOrDefault("").trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
             sockets = sockets.filter { socketPid(it) in pids }
             if (sockets.isEmpty()) return Discovery(emptyList(), "no webview_devtools socket for $appId")
@@ -108,7 +111,7 @@ open class CdpClient(private val adbBin: String = "adb") : AutoCloseable {
     private fun forwardPort(socket: String): Int? {
         forwards[socket]?.let { return it }
         val out = runCatching {
-            runProcess(listOf(adbBin, "forward", "tcp:0", "localabstract:$socket"))
+            runProcess(adb("forward", "tcp:0", "localabstract:$socket"))
         }.getOrNull() ?: return null
         val port = out.trim().toIntOrNull() ?: return null
         forwards[socket] = port
@@ -166,7 +169,7 @@ open class CdpClient(private val adbBin: String = "adb") : AutoCloseable {
 
     override fun close() {
         forwards.values.forEach { port ->
-            runCatching { runProcess(listOf(adbBin, "forward", "--remove", "tcp:$port")) }
+            runCatching { runProcess(adb("forward", "--remove", "tcp:$port")) }
         }
         forwards.clear()
     }

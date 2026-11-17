@@ -7,8 +7,9 @@ package dev.nate.uiagent.device
  * density would still produce a different layout.
  *
  * The runner applies the profile via `adb shell wm size/density` before scenarios run and
- * resets it afterwards, and ONLY on emulators — resizing a person's physical device screen is
- * never acceptable collateral for a test run.
+ * resets it afterwards, and ONLY on a device that is its to set up ([DeviceOps.dedicated]: an emulator, or a
+ * physical device its owner marked for simul) — resizing a person's physical device screen is never
+ * acceptable collateral for a test run.
  */
 data class DisplayProfile(val width: Int, val height: Int, val density: Int) {
     /** Canonical text form, also stamped into traces: "720x1280@320". */
