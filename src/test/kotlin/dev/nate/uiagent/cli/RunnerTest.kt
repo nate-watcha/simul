@@ -223,6 +223,39 @@ class RunnerTest {
     }
 
     @Test
+    fun `a scenario without a network runs in airplane mode and gives the network back when it ends`() {
+        val dev = FakeDevice(screenA, screenA, screenB, screenB)
+        var airplaneDuringStep: Boolean? = null
+        lateinit var h: Harness
+        h = Harness(dev) { c, _ -> airplaneDuringStep = h.ops.airplane; c.tap("웹툰"); ScenarioSession.Verdict(true, "ok") }
+        val offline = scenario.copy(setup = Scenario.Setup(deeplink = "app://home", launch = false, device = DevicePins(network = false)))
+
+        val result = h.runner.run(offline, trace = null, mode = RunMode.LLM)
+
+        assertEquals(StepStatus.PASSED, result.status)
+        assertEquals(true, airplaneDuringStep)
+        assertEquals(listOf("airplane on", "airplane off"), h.ops.airplaneLog)
+        assertEquals(false, h.ops.airplane, "the next scenario has a network again")
+        assertEquals(listOf("com.example|null|false|false|app://home"), h.ops.setups, "the app was opened after the network went away")
+    }
+
+    @Test
+    fun `taking the network away is refused on a person's phone and over wireless adb - the scenario fails at setup, untouched`() {
+        val offline = scenario.copy(setup = Scenario.Setup(deeplink = "app://home", launch = false, device = DevicePins(network = false)))
+        for (prepare in listOf<(FakeOps) -> Unit>({ it.emulator = false }, { it.wireless = true })) {
+            val h = Harness(FakeDevice(screenA)) { _, _ -> ScenarioSession.Verdict(true, "ok") }
+            prepare(h.ops)
+
+            val result = h.runner.run(offline, trace = null, mode = RunMode.LLM)
+
+            assertEquals(StepStatus.FAILED, result.status)
+            assertTrue(result.setupFailed)
+            assertTrue(result.steps[0].reason!!.startsWith("setup failed: network: off"), result.steps[0].reason)
+            assertTrue("airplane on" !in h.ops.airplaneLog && h.ops.setups.isEmpty(), "${h.ops.airplaneLog} ${h.ops.setups}")
+        }
+    }
+
+    @Test
     fun `device settings are restored even when setup fails, and a physical device is left alone`() {
         val dev = FakeDevice(screenA)
         val failing = object : DeviceOps by FakeOps() {

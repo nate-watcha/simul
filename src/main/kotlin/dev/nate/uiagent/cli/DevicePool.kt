@@ -56,7 +56,8 @@ internal object Devices {
 
 /**
  * [runs] over several devices at once: one [BatchSession] per device, each taking the next piece of work when it
- * is free — a faster device takes more, and what a device that stopped answering had left goes to the others.
+ * is free — a faster device takes more, and what a device that stopped answering (or lost its network for good)
+ * had left goes to the others, the scenario it found that out on included.
  * Returns one [BatchResult] per run, in the order of [runs].
  *
  * What is handed out, and in which order:
@@ -79,6 +80,7 @@ internal fun runOverDevices(
     video: Boolean,
     runsDir: File?,
     out: (String) -> Unit = ::println,
+    pause: (Long) -> Unit = Thread::sleep,
 ): List<BatchResult> {
     val (entries, rest) = runs.indices.partition { runs[it].first.name == SimulProject.ENTRY_FILE }
     val results = arrayOfNulls<BatchResult>(runs.size)
@@ -91,20 +93,29 @@ internal fun runOverDevices(
         @Volatile var lines: MutableList<String>? = null
         // between scenarios a line is the device's own (pinning, not answering): printed at once, under its name
         val log: (String) -> Unit = { line -> lines?.add(line) ?: synchronized(print) { out("[$name] $line") } }
-        val session = BatchSession(project, ops, log, runsDir, brokenEntries = broken)
+        val session = BatchSession(project, ops, log, runsDir, pause, brokenEntries = broken)
 
         override fun start() = session.pin()
         override val alive get() = session.deviceDown == null
 
-        override fun run(index: Int) {
+        override fun run(index: Int): Boolean {
             val (md, scenario) = runs[index]
             val block = mutableListOf<String>().also { lines = it }
-            results[index] = try {
-                session.run(md, scenario, mode, llm, video, scenarioLog = log)
-            } catch (t: Throwable) {
-                // the session turns a scenario's crash into a row itself; what still gets here is the runner's own
-                log("CRASH ${scenario.name}: $t")
-                BatchResult(outcomeWithout(project, md, scenario, "CRASH", t.toString()), null)
+            try {
+                val r = try {
+                    session.run(md, scenario, mode, llm, video, scenarioLog = log)
+                } catch (t: Throwable) {
+                    // the session turns a scenario's crash into a row itself; what still gets here is the runner's own
+                    log("CRASH ${scenario.name}: $t")
+                    BatchResult(outcomeWithout(project, md, scenario, "CRASH", t.toString()), null)
+                }
+                // the device could not start it: not this scenario's result — another device takes it
+                if (r.deviceGone) {
+                    log("  ${scenario.name} goes back to be run on another device")
+                    return false
+                }
+                results[index] = r
+                return true
             } finally {
                 lines = null
                 synchronized(print) { block.forEach(out) }
@@ -142,15 +153,16 @@ internal interface PoolWorker {
     fun start() {}
     /** False once it can take no more — what it had left then goes to the others. */
     val alive: Boolean
-    fun run(index: Int)
+    /** Run [index]; false when it could not be started because the worker can take no more — it goes back with the rest. */
+    fun run(index: Int): Boolean
 }
 
 /**
  * Hand the pieces of work out to [workers], each on its own thread, until none is left or no worker is alive;
  * returns what nobody ran. A piece is a list of indices one worker runs in order. Every piece of [first] is
  * over before any of [then] is handed out — a worker that asks in between waits. A worker that stops being
- * [PoolWorker.alive] in the middle of a piece gives the rest of it back; one that throws ([onStopped]) does too,
- * except for the index it threw on.
+ * [PoolWorker.alive] in the middle of a piece gives the rest of it back, with the index it could not start
+ * ([PoolWorker.run] false); one that throws ([onStopped]) does too, except for the index it threw on.
  */
 internal fun <W : PoolWorker> handOut(
     first: List<List<Int>>,
@@ -170,11 +182,16 @@ internal fun <W : PoolWorker> handOut(
                         while (left.isNotEmpty() && w.alive) {
                             val index = left.first()
                             left = left.drop(1)
-                            w.run(index)
+                            if (!w.run(index)) {
+                                left = listOf(index) + left
+                                break
+                            }
                         }
                     } finally {
                         queue.done(taken, left)
                     }
+                    // gave work back while saying it is alive: asking again would hand it the same piece for ever
+                    if (left.isNotEmpty() && w.alive) break
                 }
             } catch (t: Throwable) {
                 onStopped(w, t)

@@ -1,13 +1,26 @@
 package dev.nate.uiagent.cli
 
+import dev.nate.uiagent.device.DeviceNetwork
 import dev.nate.uiagent.device.DeviceOps
 import dev.nate.uiagent.device.DeviceSettings
 import dev.nate.uiagent.device.DisplayProfile
 import dev.nate.uiagent.device.SettingChange
 import java.io.File
 
-/** One scenario's place in a batch: the summary row, and the full result when it actually ran. */
-class BatchResult(val outcome: ScenarioOutcome, val result: ScenarioRunResult?)
+/**
+ * One scenario's place in a batch: the summary row, and the full result when it actually ran. [deviceGone]: it
+ * was not run because the device could not run anything any more — a run over several devices gives such a
+ * scenario to another device instead of keeping this row ([runOverDevices]).
+ */
+class BatchResult(val outcome: ScenarioOutcome, val result: ScenarioRunResult?, val deviceGone: Boolean = false)
+
+/**
+ * Is [scenario] written for a device with a network? Every one is, unless its setup — or, for every scenario of
+ * the project, config.yaml — says `device.network: off`; the runner then takes it away for the scenario's span
+ * ([ScenarioRunner]) and the batch does not ask for it.
+ */
+internal fun needsNetwork(scenario: Scenario, config: SimulConfig): Boolean =
+    (scenario.setup?.device?.network ?: config.device.network) != false
 
 /**
  * A batch of scenario runs against one device — what `simul run` and the TUI's run panel share; a run over
@@ -22,6 +35,11 @@ class BatchResult(val outcome: ScenarioOutcome, val result: ScenarioRunResult?)
  * once the device is gone the rest become CRASH rows without touching it. Running them would have
  * each one sit out the time limit of every adb command and then fail looking like an app
  * regression — stone run 42039775943 lost its emulator's display at the 12th of 39 recordings.
+ *
+ * The same goes for a device without a network. Before every scenario that needs one — all but those whose
+ * setup says `device.network: off` — the batch has the device brought back to it ([DeviceNetwork.ensureOn]),
+ * and a device that cannot be is down for the rest of the batch: one of four emulators of stone run
+ * 44235375505 booted without a network and failed all fourteen scenarios it took.
  */
 class BatchSession(
     private val project: SimulProject,
@@ -106,15 +124,29 @@ class BatchSession(
             log("SKIPPED ${scenario.name}: $why")
             return BatchResult(outcomeWithout(project, md, scenario, "SKIPPED", "no trace"), null)
         }
-        deviceDown?.let { why ->
+        fun deviceGone(why: String): BatchResult {
             log("CRASH ${scenario.name}: not run — $why")
-            return BatchResult(outcomeWithout(project, md, scenario, "CRASH", "not run — $why"), null)
+            return BatchResult(outcomeWithout(project, md, scenario, "CRASH", "not run — $why"), null, deviceGone = true)
         }
+        deviceDown?.let { return deviceGone(it) }
         // a way in that failed in this batch fails once: the scenarios that start from it are not run to fail the same way
         scenario.via?.let { screen ->
             brokenEntries[screen]?.let { why ->
                 log("SKIPPED ${scenario.name}: not run — the way in to '$screen' failed")
                 return BatchResult(outcomeWithout(project, md, scenario, "SKIPPED", "${Site.WAY_IN_FAILED} '$screen' failed: $why"), null)
+            }
+        }
+        // the network the scenario is written for: there, unless its setup takes it away (the runner does that, for its span)
+        if (needsNetwork(scenario, project.config)) {
+            val why = try {
+                DeviceNetwork.ensureOn(ops, { log("device: $it") }, pause)
+            } catch (e: Exception) {
+                "no network: ${e.message?.lineSequence()?.firstOrNull() ?: e}"
+            }
+            if (why != null) {
+                deviceDown = "device has $why"
+                log("device: $why. The scenarios that follow are not run on it.")
+                return deviceGone(deviceDown!!)
             }
         }
         if (scenario.precondition == null) {

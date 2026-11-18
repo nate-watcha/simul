@@ -55,6 +55,15 @@ class DeviceSettingsTest {
         assertFailsWith<IllegalArgumentException> { DevicePins.parse(yaml("device:\n  language: ko")["device"], "t") }
     }
 
+    @Test
+    fun `device network is on or off, and not said when left out`() {
+        assertEquals(DevicePins(network = false), DevicePins.parse(yaml("device:\n  network: off")["device"], "t"))
+        assertEquals(true, DevicePins.parse(yaml("device:\n  network: on\n  locale: ko-KR")["device"], "t").network)
+        assertEquals(null, DevicePins.parse(yaml("device:\n  locale: ko-KR")["device"], "t").network)
+        val e = assertFailsWith<IllegalArgumentException> { DevicePins.parse(yaml("device:\n  network: wifi")["device"], "t") }
+        assertTrue("`on` or `off`" in e.message!!, e.message)
+    }
+
     // ------------------------------------------------------------------ apply / restore
 
     @Test
