@@ -283,6 +283,27 @@ object SitePages {
             }
         }
 
+    /**
+     * The Firebase events a scenario sent, beside it: each by the app's id for it (its name where the app sends none,
+     * [Site.Fired]), the name and how many times on hover. An id is a link to the first page's search for it — every
+     * scenario that sends that event; the search of the page it is on lights it up.
+     */
+    private fun eventChips(row: Site.Row, u: String): String {
+        val events = row.events
+        if (events.isEmpty()) return ""
+        return "<span class=evs><span class=evk>firebase</span>" + events.joinToString("") { e ->
+            val find = java.net.URLEncoder.encode(e.key, "UTF-8").replace("+", "%20")
+            "<a class=evid href=\"${attr("${u}index.html#q=$find")}\" data-ev=\"${attr(e.key.lowercase())}\" data-name=\"${attr(e.name.lowercase())}\" " +
+                "title=\"${attr(e.name + if (e.count > 1) " ×${e.count}" else "")}\">${esc(e.key)}</a>"
+        } + "</span>"
+    }
+    /** What the search boxes say they find. */
+    private const val FIND = "화면·시나리오·이벤트 id 찾기"
+    /** What a search finds [rows] by among their events: an id typed whole (` 530 115 `, so `53` is not `530`). */
+    private fun evIds(rows: List<Site.Row>) = rows.flatMap { it.events }.map { it.key.lowercase() }.distinct().joinToString(" ", " ", " ")
+    /** The names of the events [rows] sent, for a search by a part of one (`view`). */
+    private fun evNames(rows: List<Site.Row>) = rows.flatMap { it.events }.map { it.name.lowercase() }.distinct().joinToString(" ")
+
     // ------------------------------------------------------------------ home
 
     /**
@@ -342,14 +363,15 @@ object SitePages {
 
         // ---- the whole run, by screen
         sb.append("<section><div class=sh><h2>전체</h2><span class=dim>화면 ${screens.size} · 시나리오 ${rows.count { !it.isEntry }} · 화면을 누르면 시나리오와 확인이 펼쳐진다</span>")
-        sb.append("<span class=tools><input type=search id=q placeholder=\"화면·시나리오 찾기\" aria-label=\"화면·시나리오 찾기\">")
+        sb.append("<span class=tools><input type=search id=q placeholder=\"$FIND\" aria-label=\"$FIND\">")
         if (failed.isNotEmpty()) sb.append("<button type=button id=onlyfail class=tog aria-pressed=false>실패만</button>")
         sb.append("</span></div><div class=tw><table class=scr><thead><tr><th>화면</th><th>진입</th><th class=r>시나리오</th><th class=r>확인</th><th>상태</th><th class=r title=\"다른 화면의 확인이 이 화면을 말한 줄\">다른 화면에서</th><th class=r title=\"이 화면의 확인이 다른 화면을 말한 줄\">다른 화면으로</th><th class=r>소요</th></tr></thead>")
         for (s in screens) {
             val on = Site.rowsOf(s.onPage)
             val kind = Site.kindOf(on)
             val (p, n) = passedOf(on)
-            val q = (s.name + " " + on.joinToString(" ") { it.result.title + " " + it.result.name }).lowercase()
+            // the search finds a screen by its name — then all of it shows — or a scenario by its own line (scenarioRow)
+            val q = (s.name + " " + s.onPage.joinToString(" ") { it.label }).lowercase()
             // a run of a few screens (one scenario, a feature branch) is read open
             sb.append("<tbody class=\"g ${kind.cls}${if (screens.size <= 3) " open" else ""}\" data-q=\"${attr(q)}\"><tr class=srow><td>${if (s.parent != null) "<span class=sub2>↳</span>" else ""}<a href=\"${attr(screenPageOf(s.feature))}\">${esc(pathName(s.feature))}</a></td>")
             // the screen's own way in when it has one — the address, and that there are steps after it — else where its scenarios start
@@ -424,7 +446,9 @@ object SitePages {
     /** One scenario under its screen's row: its name, the state it starts from, what it confirms — each check with its sentence. */
     private fun scenarioRow(sb: StringBuilder, row: Site.Row, within: String = "") {
         val r = row.result
-        sb.append("<tr class=\"sub ${row.kind.cls}\"><td><i class=\"dot ${row.kind.cls}\"></i>${if (within.isEmpty()) "" else "<span class=dim>${esc(within)}</span>"}<a href=\"${attr(pageOf(r))}\">${esc(row.title)}</a>")
+        // what the search finds it by: its name and the names of the events it sends — and an event's id, typed whole
+        val q = listOf(row.title, r.title, r.name, evNames(listOf(row))).joinToString(" ").lowercase()
+        sb.append("<tr class=\"sub ${row.kind.cls}\" data-q=\"${attr(q)}\" data-ev=\"${attr(evIds(listOf(row)))}\"><td><i class=\"dot ${row.kind.cls}\"></i>${if (within.isEmpty()) "" else "<span class=dim>${esc(within)}</span>"}<a href=\"${attr(pageOf(r))}\">${esc(row.title)}</a>")
         if (row.recordFailed) sb.append(" ${chip(Site.Kind.FAILED, "녹화 실패")}") else if (row.kind == Site.Kind.SETUP) sb.append(" ${chip(Site.Kind.SETUP)}")
         sb.append("</td><td class=dim>${esc(stateOf(r))}</td><td colspan=3><span class=cl>")
         orphanFailure(row)?.let { sb.append("<span class=failed>${icon("FAILED")}<span class=reason>${esc(it)}</span></span>") }
@@ -433,7 +457,7 @@ object SitePages {
             whyNot(row, c)?.let { sb.append("<br><span class=reason>${esc(it)}</span>") }
             sb.append("</span></span>")
         }
-        sb.append("</span></td><td class=\"r dim\">${esc(humanDuration(row.timeline.durationMs))}</td></tr>")
+        sb.append("</span>${eventChips(row, "")}</td><td class=\"r dim\">${esc(humanDuration(row.timeline.durationMs))}</td></tr>")
     }
 
     // ------------------------------------------------------------------ screen
@@ -462,13 +486,13 @@ object SitePages {
         sb.append("<div class=topbar><div class=inner><span class=brand>simul</span><nav class=crumbs><a href=\"${u}index.html\">${esc(app)}</a><span>/</span>$above<b>${esc(if (screen.parent == null) screen.name else screen.label)}</b></nav><span class=right>${esc(run.date)}</span></div></div><main class=screen>")
 
         // ---- the screens of the run: the roots, and under the one this page is in, what is nested in it
-        sb.append("<nav class=snav aria-label=\"화면\"><input type=search id=q placeholder=\"화면·시나리오 찾기\" aria-label=\"화면·시나리오 찾기\">")
+        sb.append("<nav class=snav aria-label=\"화면\"><input type=search id=q placeholder=\"$FIND\" aria-label=\"$FIND\">")
         for (s in Site.pages(screens).filter { it.parent == null }) {
             val its = Site.rowsOf(s.subtree)
             val kind = Site.kindOf(its)
             val (sp, sn) = passedOf(its)
-            val q = (s.name + " " + s.subtree.joinToString(" ") { it.label } + " " + its.joinToString(" ") { it.title }).lowercase()
-            sb.append("<a${if (s === screen) " class=on" else ""} href=\"${attr(u + screenPageOf(s.feature))}\" data-q=\"${attr(q)}\"><i class=\"dot ${kind.cls}\"></i><span class=nm>${esc(s.name)}</span><span class=\"c${if (kind == Site.Kind.FAILED) " bad" else ""}\">$sp/$sn</span></a>")
+            val q = (s.name + " " + s.subtree.joinToString(" ") { it.label } + " " + its.joinToString(" ") { it.title } + " " + evNames(its)).lowercase()
+            sb.append("<a${if (s === screen) " class=on" else ""} href=\"${attr(u + screenPageOf(s.feature))}\" data-q=\"${attr(q)}\" data-ev=\"${attr(evIds(its))}\"><i class=\"dot ${kind.cls}\"></i><span class=nm>${esc(s.name)}</span><span class=\"c${if (kind == Site.Kind.FAILED) " bad" else ""}\">$sp/$sn</span></a>")
             if (s === screen.root && (s.children.isNotEmpty() || s.slots.isNotEmpty())) navKids(sb, s, screen, u)
         }
         sb.append("</nav><div class=doc>")
@@ -501,8 +525,8 @@ object SitePages {
             val its = Site.rowsOf(c.subtree)
             val kind = Site.kindOf(its)
             val (p, n) = passedOf(its)
-            val q = (c.label + " " + its.joinToString(" ") { it.title }).lowercase()
-            sb.append("<a class=\"k$cls${if (c === current) " cur" else ""}\" href=\"${attr(u + screenHref(c.feature))}\" data-q=\"${attr(q)}\"><i class=\"dot ${kind.cls}\"></i><span class=nm>${esc(c.label)}</span><span class=\"c${if (kind == Site.Kind.FAILED) " bad" else ""}\">$p/$n</span></a>")
+            val q = (c.label + " " + its.joinToString(" ") { it.title } + " " + evNames(its)).lowercase()
+            sb.append("<a class=\"k$cls${if (c === current) " cur" else ""}\" href=\"${attr(u + screenHref(c.feature))}\" data-q=\"${attr(q)}\" data-ev=\"${attr(evIds(its))}\"><i class=\"dot ${kind.cls}\"></i><span class=nm>${esc(c.label)}</span><span class=\"c${if (kind == Site.Kind.FAILED) " bad" else ""}\">$p/$n</span></a>")
             // a part's own parts; what is under a screen that opens from here only on that screen's pages
             if ((c.children.isNotEmpty() || c.slots.isNotEmpty()) && (c.place != Site.Place.OPENS || c.subtree.contains(current))) navKids(sb, c, current, u)
         }
@@ -715,7 +739,7 @@ object SitePages {
         val mark = if (row.recordFailed) " " + chip(Site.Kind.FAILED, "녹화 실패") else if (row.kind == Site.Kind.SETUP) " " + chip(Site.Kind.SETUP) else ""
         // the screens its checks are about: they show on those screens' pages too
         val to = (t.mentions + row.checks.flatMap { it.mentions }).distinct().joinToString("") { "<span class=to>→ ${esc(leaf(it))}</span>" }
-        sb.append("<div class=\"grp ${row.kind.cls}\" id=\"${attr(anchorOf(row.result))}\"><div class=gh>${icon(status)}<b class=fn>${esc(row.title)}</b><span class=gt>${checkTally(row)}</span>$to$mark</div>")
+        sb.append("<div class=\"grp ${row.kind.cls}\" id=\"${attr(anchorOf(row.result))}\"><div class=gh>${icon(status)}<b class=fn>${esc(row.title)}</b><span class=gt>${checkTally(row)}</span>$to$mark</div>${eventChips(row, u)}")
         scenarioNotes(sb, row, u, pages)
         checkLines(sb, row, u, pages)
         sb.append("${scenarioMeta(row, u)}</div>")
@@ -734,7 +758,7 @@ object SitePages {
         val status = when (row.kind) { Site.Kind.FAILED -> "FAILED"; Site.Kind.PASSED -> "PASSED"; Site.Kind.SETUP -> "NONE" }
         val mark = if (row.recordFailed) chip(Site.Kind.FAILED, "녹화 실패") else if (row.kind == Site.Kind.SETUP) chip(Site.Kind.SETUP) else ""
         sb.append("<details class=\"ft ${row.kind.cls}\" id=\"${attr(anchorOf(r))}\"${if (row.kind != Site.Kind.PASSED) " open" else ""}><summary>${icon(status)}<b class=fn>${esc(row.title)}</b>")
-        sb.append("<span class=fs>${mentions(c.description, u, pages)}$mark</span><span class=ckn>${if (c.steps.isEmpty()) "" else "${c.steps.size}스텝"}</span></summary><div class=fb>")
+        sb.append("<span class=fs>${mentions(c.description, u, pages)}$mark${eventChips(row, u)}</span><span class=ckn>${if (c.steps.isEmpty()) "" else "${c.steps.size}스텝"}</span></summary><div class=fb>")
         scenarioNotes(sb, row, u, pages)
         if (c.steps.isNotEmpty()) stepList(sb, c.steps)
         sb.append("${scenarioMeta(row, u)}</div></details>")
@@ -1103,25 +1127,52 @@ object SitePages {
         })();
     """.trimIndent()
 
-    /** The home's table: a screen's row opens its scenarios, the search narrows the screens (opening those it leaves), `실패만` keeps the failures. */
+    /**
+     * The home's table: a screen's row opens its scenarios, `실패만` keeps the failures, and the search narrows it — to
+     * the screens whose name it is in, whole, and to the scenarios it finds by name or by a Firebase event they send:
+     * the event's id typed whole, or a part of its name. An event's id beside a scenario searches for it (again: clears
+     * it). The address keeps what is searched (`#q=530`), so the other pages' ids — and a link passed on — open it.
+     */
     private val HOME_JS = """
         (function(){
           var q=document.getElementById('q'),of=document.getElementById('onlyfail'),gs=[].slice.call(document.querySelectorAll('tbody.g'));
           gs.forEach(function(g){g.querySelector('tr.srow').addEventListener('click',function(e){if(e.target.closest('a'))return;g.classList.toggle('open')})});
-          if(q)q.addEventListener('input',function(){var s=q.value.trim().toLowerCase();gs.forEach(function(g){var hit=g.dataset.q.indexOf(s)>=0;g.hidden=!!s&&!hit;g.classList.toggle('hit',!!s&&hit)})});
+          function run(){
+            var s=q.value.trim().toLowerCase();
+            gs.forEach(function(g){
+              var whole=!!s&&g.dataset.q.indexOf(s)>=0,some=false;
+              [].slice.call(g.querySelectorAll('tr.sub')).forEach(function(r){
+                var m=!!s&&(r.dataset.q.indexOf(s)>=0||r.dataset.ev.indexOf(' '+s+' ')>=0);
+                r.classList.toggle('m',m);some=some||m;
+                [].slice.call(r.querySelectorAll('.evid')).forEach(function(a){a.classList.toggle('on',!!s&&(a.dataset.ev===s||a.dataset.name.indexOf(s)>=0))});
+              });
+              g.hidden=!!s&&!whole&&!some;g.classList.toggle('hit',whole);g.classList.toggle('some',!whole&&some);
+            });
+            try{history.replaceState(null,'',s?'#q='+encodeURIComponent(s):location.pathname+location.search)}catch(e){}
+          }
+          function fromHash(){var m=/^#q=(.*)${'$'}/.exec(location.hash);if(!m||!q)return;q.value=decodeURIComponent(m[1]);run();q.closest('section').scrollIntoView()}
+          if(q){
+            q.addEventListener('input',run);
+            document.addEventListener('click',function(e){var a=e.target.closest('a.evid');if(!a)return;e.preventDefault();q.value=q.value.trim().toLowerCase()===a.dataset.ev?'':a.textContent;run()});
+            window.addEventListener('hashchange',fromHash);fromHash();
+          }
           if(of)of.addEventListener('click',function(){of.setAttribute('aria-pressed',document.body.classList.toggle('onlyfail'))});
         })();
     """.trimIndent()
 
     /**
-     * A screen page's list of screens, narrowed by the search — and its tabs: a click opens a tab's panel, the arrow
+     * A screen page's list of screens, narrowed by the search — by name, or to the screens a scenario of which sends
+     * the Firebase event searched for (its id typed whole, a part of its name), whose ids on this page light up — and its tabs: a click opens a tab's panel, the arrow
      * keys move along the row, and a link to something inside a panel (`#s:활동`, a scenario's line) opens the panel
      * it is in before the page goes there.
      */
     private val SCREEN_JS = """
         (function(){
           var q=document.getElementById('q'),as=[].slice.call(document.querySelectorAll('.snav a'));
-          if(q)q.addEventListener('input',function(){var s=q.value.trim().toLowerCase();as.forEach(function(a){a.hidden=!!s&&a.dataset.q.indexOf(s)<0})});
+          var evs=[].slice.call(document.querySelectorAll('.evid'));
+          if(q)q.addEventListener('input',function(){var s=q.value.trim().toLowerCase();
+            as.forEach(function(a){a.hidden=!!s&&a.dataset.q.indexOf(s)<0&&a.dataset.ev.indexOf(' '+s+' ')<0});
+            evs.forEach(function(a){a.classList.toggle('on',!!s&&(a.dataset.ev===s||a.dataset.name.indexOf(s)>=0))})});
           function pick(tab){
             [].slice.call(tab.parentNode.querySelectorAll('[role=tab]')).forEach(function(b){
               var on=b===tab;b.setAttribute('aria-selected',on);document.getElementById(b.getAttribute('aria-controls')).hidden=!on;
@@ -1221,7 +1272,11 @@ object SitePages {
         table.scr .r{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}tbody.g[hidden]{display:none}tr.srow{cursor:pointer}tr.srow:hover td{background:var(--hover)}tr.srow td:first-child{white-space:nowrap;font-weight:600}tr.srow a{text-decoration:none}tr.srow a:hover{text-decoration:underline}
         tr.srow td:first-child::before{content:'▸';color:var(--faint);font-size:11px;display:inline-block;width:16px}tbody.g.open tr.srow td:first-child::before,tbody.g.hit tr.srow td:first-child::before{content:'▾'}
         tr.sub{display:none}tbody.g.open tr.sub,tbody.g.hit tr.sub{display:table-row}tr.sub td{background:var(--bg)}tr.sub td:first-child{padding-left:30px}tr.sub td:first-child .dot{margin-right:8px}tr.sub a{text-decoration:none}tr.sub a:hover{text-decoration:underline}
-        .onlyfail tbody.g:not(.failed){display:none}.onlyfail tbody.g.failed tr.sub{display:none}.onlyfail tbody.g.failed tr.sub.failed{display:table-row}
+        tbody.g.some tr.sub.m{display:table-row}tbody.g.some tr.sub:not(.m){display:none}tbody.g.some tr.srow td:first-child::before{content:'▾'}
+        .onlyfail tbody.g:not(.failed){display:none}.onlyfail tbody.g.failed tr.sub{display:none}.onlyfail tbody.g.failed tr.sub.failed{display:table-row}.onlyfail tbody.g.some tr.sub:not(.m){display:none}
+        .evs{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;min-width:0}.cl+.evs{margin-top:7px;padding-left:26px}.fs .evs{margin-top:5px}.grp>.evs{margin-left:30px}
+        .evk{font-size:11px;color:var(--faint);margin-right:2px}.evid{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:11.5px;line-height:17px;padding:0 6px;border-radius:4px;background:var(--chipbg);color:var(--ink2);text-decoration:none;white-space:nowrap;font-variant-numeric:tabular-nums}
+        .evid:hover{box-shadow:inset 0 0 0 1px var(--dim);color:var(--fg)}.evid.on{background:var(--infobg);color:var(--info);box-shadow:inset 0 0 0 1px var(--info);font-weight:500}
         .cl{display:flex;flex-direction:column;gap:5px}.cl>span{display:grid;grid-template-columns:18px minmax(0,1fr);gap:8px}.cl b{font-weight:600}.cl .failed b{color:var(--failfg)}.cl .skipped{color:var(--dim)}
         main.screen{display:grid;grid-template-columns:220px minmax(0,1fr);gap:28px;align-items:start}.snav{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto;display:flex;flex-direction:column;gap:2px}.snav input{width:100%;margin-bottom:8px}
         .snav a{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;text-decoration:none;font-size:13.5px}.snav a[hidden]{display:none}.snav a.on{background:var(--card);box-shadow:inset 0 0 0 1px var(--line2);font-weight:500}.snav .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.snav .c{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
