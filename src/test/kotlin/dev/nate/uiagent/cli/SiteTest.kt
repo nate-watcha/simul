@@ -318,6 +318,16 @@ class SiteTest {
             Regex("<summary><i class=\"ic [a-z]+\">.</i><b class=fn><span class=no>(\\d)</span>([^<]+)</b>").findAll(group).map { it.groupValues[1] to it.groupValues[2] }.toList(),
             "its checks, each to be read without opening the scenario, numbered in the order they run — the preparation is not one of them")
         assertTrue("fs titles" !in spec && "<span class=ckn>확인 " !in spec, "it is not folded into one line of titles")
+
+        // the scenario's own page: its sections are one flow — a strip of them in the order they ran, each linking to
+        // its block, and each block that ran saying where it started
+        val page = File(runs, "2026-11-10/my-other/follow.html").readText()
+        assertTrue("<nav class=flow aria-label=\"구간 흐름\"><a class=\"passed prep\" href=\"#sec-0\">준비<span>0.5s</span></a><i>→</i><a class=\"passed\" href=\"#sec-1\"><b>1</b>팔로우 취소<span>1.0s</span></a>" +
+            "<i>→</i><a class=\"failed\" href=\"#sec-2\"><b>2</b>팔로우 추가<span>1.0s</span></a><i>→</i><a class=\"skipped\" href=\"#sec-3\"><b>3</b>다시 취소</a></nav>" in page, page.substringAfter("<nav class=flow").take(600))
+        assertTrue("<details class=\"sec failed\" id=sec-2 data-scope open>" in page, "the strip's links land on the blocks")
+        assertTrue("<div class=sfrom><code class=e>app://users/42</code>에서 시작</div>" in page, "the first section starts at the scenario's way in")
+        assertTrue("<div class=sfrom>앱을 다시 열어 <code class=e>app://users/42</code>에서 시작 · 앞 구간이 바꾼 것은 그대로</div>" in page, "one after it opens the app again, on what the one before it left")
+        assertEquals(2, Regex("<div class=sfrom>").findAll(page).count(), "the preparation and a section that did not run say nothing of a start")
     }
 
     @Test

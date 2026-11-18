@@ -872,6 +872,7 @@ object SitePages {
             sb.append("</aside></div>")
         } else {
             sb.append("<section class=\"steps grouped\"><h2>$heading<span class=hint>구간마다 그 구간의 영상 · $hint</span></h2>")
+            flowStrip(sb, t)
             setupRow(sb, t)
             timeline(sb, t, filmAt = rec?.failedStep, film = frames.actions, players = Players(video, thumbs))
             if (video != null) sb.append("<div class=whole><span class=dim>영상 파일은 하나입니다 — 구간마다 그 구간만 재생합니다.</span><a class=btn href=\"${attr(video)}\" download>전체 mp4 다운로드</a></div>")
@@ -939,6 +940,36 @@ object SitePages {
     }
 
     /**
+     * The sections of a run as one line, in the order they ran — a scenario's sections are one flow, each building
+     * on what the one before it changed, so where it stopped and what did not run after that is read here before
+     * any block is: `준비 → 1 평가 2.4s → 2 평가 뒤 활동 탭 → …`. Each links to its block below.
+     */
+    private fun flowStrip(sb: StringBuilder, r: ResultJson.Result) {
+        if (r.sections.size < 2) return
+        var order = 0
+        sb.append("<nav class=flow aria-label=\"구간 흐름\">")
+        r.sections.forEachIndexed { i, sec ->
+            if (i > 0) sb.append("<i>→</i>")
+            val took = if (sec.status == "SKIPPED") "" else "<span>${"%.1fs".format(r.steps.filter { it.n in sec.from..sec.to }.sumOf { it.durationMs } / 1000.0)}</span>"
+            sb.append("<a class=\"${cls(sec.status)}${if (sec.preparation) " prep" else ""}\" href=\"#sec-$i\">${if (sec.preparation) "" else "<b>${++order}</b>"}${esc(sec.title)}$took</a>")
+        }
+        sb.append("</nav>")
+    }
+
+    /**
+     * Where a section started, as the runner does it: the first at the scenario's way in; every one after it with
+     * the app stopped and opened again there — what the sections before it changed is kept, the screen they ended
+     * on is not; one with a `setup:` of its own at its place and as its account.
+     */
+    private fun startOf(r: ResultJson.Result, sec: ResultJson.Section): String {
+        val where = sec.deeplink?.let { "<code class=e>${esc(it)}</code>" } ?: sec.entry?.let { "${esc(leaf(it))}의 진입" }
+            ?: r.setup?.via?.let { "${esc(leaf(it))}의 진입" } ?: r.setup?.deeplink?.let { "<code class=e>${esc(it)}</code>" } ?: "첫 화면"
+        val account = sec.appState?.let { " · ${esc(it)} 계정으로" } ?: ""
+        return if (sec === r.tests.firstOrNull()) "${where}에서 시작$account"
+        else "앱을 다시 열어 ${where}에서 시작$account" + if (sec.appState == null) " · 앞 구간이 바꾼 것은 그대로" else ""
+    }
+
+    /**
      * The steps of a run. A scenario with sections gets one block per section, in the order they ran: its number
      * in that order, title, status, how long, its prose, then its steps numbered as the scenario numbers them.
      * The `## 준비` section stands ahead of them unnumbered — it tests nothing — with what the model found or
@@ -947,8 +978,9 @@ object SitePages {
     private fun timeline(sb: StringBuilder, r: ResultJson.Result, interactive: Boolean = true, filmAt: Int? = null, film: List<Frame> = emptyList(), players: Players? = null) {
         if (r.sections.isEmpty()) { r.steps.forEach { s -> stepRow(sb, r, s, interactive, if (s.n == filmAt) film else emptyList()) }; return }
         var order = 0
-        // With players the sections are cards side by side — video on top, steps under it — so the scenarios of the
-        // file are seen together; a failed one takes the full width (its detail needs it), one that is folded is a bar.
+        // With players every section is a block of the page's full width, one under the other: its steps with the
+        // room to read them — the Firebase events under a step are long lines — and its video beside them. Side by
+        // side, three or four to a row, the events could not be read (nate, 2026-11-18).
         if (players != null) sb.append("<div class=secgrid>")
         for (sec in r.sections) {
             val steps = r.steps.filter { it.n in sec.from..sec.to }
@@ -962,19 +994,20 @@ object SitePages {
             }
             val took = "%.1fs".format(steps.sumOf { it.durationMs } / 1000.0)
             val open = ran && !(sec.preparation && sec.status == "PASSED" && did == 0)
-            val wide = players != null && (!open || sec.status == "FAILED")
-            sb.append("<details class=\"sec ${cls(sec.status)}${if (sec.preparation) " prep" else ""}${if (wide) " wide" else ""}\"${if (players != null) " data-scope" else ""}${if (open) " open" else ""}><summary>")
+            sb.append("<details class=\"sec ${cls(sec.status)}${if (sec.preparation) " prep" else ""}\"${if (players != null) " id=sec-${r.sections.indexOf(sec)} data-scope" else ""}${if (open) " open" else ""}><summary>")
             sb.append("<span class=ord>${if (sec.preparation) "⚙" else (++order).toString()}</span><span class=stitle>${esc(sec.title)}</span>${chip(kind, label)}")
             sb.append("<span class=sinfo>" + when {
                 !ran -> "앞에서 실패해 돌지 않음"
                 sec.preparation -> "모델이 준비 · ${if (did == 0) "한 일 없음" else "조작 ${did}번"} · $took"
                 else -> "${steps.size}스텝 · $took"
             } + "</span></summary><div class=sbody>")
-            if (sec.description.isNotEmpty()) sb.append("<p class=sdesc>${esc(plain(sec.description))}</p>")
-            if (sec.preparation) sb.append("<div class=snote>테스트가 아니라 준비입니다. 지난 실행이 남긴 상태가 무엇이든 아래 구간이 같은 상태에서 시작하도록, 재생에서도 모델이 화면을 보고 필요한 만큼만 조작합니다.</div>")
-            // the section's own player with its steps; a section that did not run has nothing to play
+            // the section's own player with its steps; a section that did not run has nothing to play. Its sentence
+            // heads the steps, not the block: beside the player it does not push the video down
             val playing = players?.takeIf { ran }
             if (playing != null) sb.append("<div class=scols><div class=ssteps>")
+            if (sec.description.isNotEmpty()) sb.append("<p class=sdesc>${esc(plain(sec.description))}</p>")
+            if (ran && !sec.preparation) sb.append("<div class=sfrom>${startOf(r, sec)}</div>")
+            if (sec.preparation) sb.append("<div class=snote>테스트가 아니라 준비입니다. 지난 실행이 남긴 상태가 무엇이든 아래 구간이 같은 상태에서 시작하도록, 재생에서도 모델이 화면을 보고 필요한 만큼만 조작합니다.</div>")
             for (s in steps) stepRow(sb, r, s, interactive, if (s.n == filmAt) film else emptyList(), prep = sec.preparation)
             if (playing != null) {
                 sb.append("</div>")
@@ -1227,10 +1260,14 @@ object SitePages {
         .tabs{display:flex;gap:4px;background:var(--chipbg);padding:3px;border-radius:8px}.tabs a{padding:6px 14px;border-radius:6px;color:var(--dim);font-size:13px;display:flex;align-items:center;gap:6px;text-decoration:none}.tabs a[aria-selected=true]{background:var(--card);color:var(--fg);font-weight:500}
         .cols{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}section.steps{flex:1 1 560px;min-width:0;display:flex;flex-direction:column;gap:10px}aside.replay{flex:0 1 380px;min-width:300px;display:flex;flex-direction:column;gap:10px;position:sticky;top:12px}
         section.steps h2,aside.replay h2{font-size:13px;color:var(--dim);letter-spacing:.04em;margin-bottom:4px}section.steps h2 .hint{margin-left:12px;font-weight:400;font-size:12px;letter-spacing:0}
-        .secgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(264px,1fr));gap:12px;align-items:start}.secgrid details.sec{margin:0}.secgrid details.sec.wide{grid-column:1/-1}
-        .scols{display:flex;flex-direction:column;gap:10px}.ssteps{min-width:0;display:flex;flex-direction:column;gap:8px}.scols .player{order:-1;padding:10px;gap:8px}.scols .caption{font-size:10.5px}.scols .play{width:28px;height:28px}
-        .sec.wide .scols{flex-direction:row;flex-wrap:wrap;gap:14px;align-items:flex-start}.sec.wide .ssteps{flex:1 1 320px;gap:10px}.sec.wide .scols .player{order:0;flex:0 0 260px}
-        .secgrid .sec:not(.wide) .step{padding:10px}.secgrid .sec:not(.wide) .step .line{gap:8px}.secgrid .sec:not(.wide) .sinfo{margin-left:0;flex-basis:100%;text-align:left;order:9}
+        .flow{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:12.5px}.flow>i{font-style:normal;color:var(--faint)}.flow a{display:inline-flex;align-items:baseline;gap:6px;padding:4px 10px;border-radius:6px;border:1px solid var(--line2);background:var(--card);color:var(--dim);text-decoration:none}.flow a b{font-weight:600}.flow a span{font-size:11.5px;opacity:.75}
+        .flow a.passed{background:var(--okbg);border-color:transparent;color:var(--okfg)}.flow a.failed{background:var(--failbg);border-color:var(--fail);color:var(--failfg)}.flow a.skipped{background:transparent;border-style:dashed}.flow a.prep.passed{background:var(--chipbg);color:var(--dim)}
+        .secgrid{position:relative;display:flex;flex-direction:column;gap:12px;padding-left:36px}.secgrid::before{content:'';position:absolute;left:11px;top:18px;bottom:18px;width:2px;background:var(--line2)}
+        .secgrid details.sec{position:relative;min-width:0;container:sec/inline-size;scroll-margin-top:12px}.secgrid details.sec+details.sec{margin:0}.secgrid .sec>summary .ord{position:absolute;left:-36px;top:11px}
+        .scols{display:flex;gap:16px;align-items:flex-start}.ssteps{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:10px}.scols .player{flex:0 0 240px;padding:10px;gap:8px;position:sticky;top:12px}.scols .caption{font-size:10.5px}.scols .play{width:28px;height:28px}
+        .sfrom{margin:0 2px;font-size:12.5px;line-height:1.6;color:var(--dim)}
+        @container sec (max-width:519.98px){.secgrid .scols{flex-direction:column;align-items:stretch;gap:10px}.secgrid .ssteps{display:contents}.secgrid .scols .sdesc,.secgrid .scols .sfrom,.secgrid .scols .snote{order:-2}.secgrid .scols .player{order:-1;flex:none;position:static}.secgrid .scols .frame{width:min(100%,240px);align-self:center}
+          .secgrid .sec .sinfo{margin-left:0;flex-basis:100%;text-align:left;order:9}}
         .whole{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:4px}.whole .btn{flex:0 0 auto}
         .step{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;cursor:pointer}.step.on{border-color:var(--fg);box-shadow:0 0 0 1px var(--fg)}.step.skipped{opacity:.55;cursor:default;border-style:dashed;border-color:var(--line2)}.step.failed{border-color:var(--fail);box-shadow:0 0 0 3px var(--failbg)}.step.static{cursor:default}
         .step .line{display:flex;gap:12px}.step .icon{flex-shrink:0;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;background:var(--okbg);color:var(--okfg)}.step.failed .icon{background:var(--fail);color:var(--onfail)}.step.skipped .icon{background:var(--chipbg);color:var(--faint)}
@@ -1240,7 +1277,7 @@ object SitePages {
         .progress{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px}
         details.replaysec{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px}details.replaysec summary{cursor:pointer;font-weight:500;font-size:13px}details.replaysec .steps{display:flex;flex-direction:column;gap:10px;margin-top:12px}
         .step.setup{cursor:default;border-style:dashed;border-color:var(--line2)}.step.setup .icon{background:var(--chipbg);color:var(--dim)}
-        details.events{margin:8px 0 0 34px;cursor:auto}details.events summary{cursor:pointer;font-size:12px;color:var(--dim);list-style:none;display:flex;gap:8px;align-items:baseline;font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace}details.events summary::-webkit-details-marker{display:none}details.events summary .k{color:var(--faint);flex-shrink:0}details.events summary .k::before{content:'▸ '}details.events[open] summary .k::before{content:'▾ '}
+        details.events{margin:8px 0 0 34px;cursor:auto}details.events summary{cursor:pointer;overflow-wrap:anywhere;font-size:12px;color:var(--dim);list-style:none;display:flex;gap:8px;align-items:baseline;font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace}details.events summary::-webkit-details-marker{display:none}details.events summary .k{color:var(--faint);flex-shrink:0}details.events summary .k::before{content:'▸ '}details.events[open] summary .k::before{content:'▾ '}
         .evlist{margin-top:6px;background:var(--code);border-radius:6px;padding:8px 10px;display:flex;flex-direction:column;gap:3px}.ev{display:flex;gap:10px;align-items:baseline;font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:11.5px;line-height:1.5}.ev .at{color:var(--faint);min-width:44px;text-align:right;flex-shrink:0}.ev b{font-weight:500;flex-shrink:0}.ev b.auto{color:var(--faint);font-weight:400}.ev .params{color:var(--dim);overflow-wrap:anywhere}.ev .params .ga{color:var(--faint)}
         pre.log{margin:0;background:var(--logbg);color:var(--logfg);padding:10px 12px;border-radius:6px;font-size:11.5px;line-height:1.5;overflow:auto;max-height:260px;white-space:pre-wrap}
         .actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.actions code{background:var(--code);padding:6px 10px;border-radius:6px}.actions .btn{flex:0 0 auto}
@@ -1326,7 +1363,7 @@ object SitePages {
         .oc .oh,.oc .on{grid-column:2/-1;font-size:12.5px;color:var(--dim)}.oc .on{color:var(--faint)}
         .sub2{color:var(--faint);margin-right:6px}
         @media(max-width:900px){aside.replay{position:static}main.screen{grid-template-columns:minmax(0,1fr)}.snav{position:static;max-height:none}.frow{grid-template-columns:52px minmax(0,1fr)}.frow .side{grid-column:2;align-items:flex-start;text-align:left}.tools{margin-left:0}}
-        @media(max-width:640px){main{padding:20px 16px 40px}.cols2{grid-template-columns:1fr}.in{grid-template-columns:18px minmax(0,1fr)}.in .it{grid-column:2}
+        @media(max-width:640px){main{padding:20px 16px 40px}.secgrid{padding-left:0}.secgrid::before{display:none}.secgrid .sec>summary .ord{position:static}.cols2{grid-template-columns:1fr}.in{grid-template-columns:18px minmax(0,1fr)}.in .it{grid-column:2}
           details.ft>summary{grid-template-columns:18px minmax(0,1fr) auto}details.ft>summary>.fs{grid-column:2/-1;grid-row:2}.fb{padding-left:0}ol.st{margin-left:0}.grp>.spd,.grp>.prep,.grp>p,.grp>.fl,.grp>.fm{margin-left:0}
           .part{padding:0 12px 12px}.ph{margin:0 -12px;padding:10px 12px}.tabpart>.tabrow{margin:-14px -12px 0;padding:0 2px}}
     """.trimIndent()
