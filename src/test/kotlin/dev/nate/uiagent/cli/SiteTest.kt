@@ -291,7 +291,8 @@ class SiteTest {
             SectionReport("팔로우 추가", "팔로우하지 않은 유저를 팔로우할 수 있다.", StepStatus.FAILED, 4..5),
             SectionReport("다시 취소", "한 번 더 취소할 수 있다.", StepStatus.SKIPPED, 6..6),
         )
-        ResultJson.write(ScenarioRunResult("팔로우", StepStatus.FAILED, steps, null, 9000, startedAtMs = 1_794_000_000_000L, reportDir = dir, sections = sections), "replay",
+        val vid = VideoInfo(File(dir, "replay.mp4").apply { writeText("mp4") }, 1_794_000_000_000L - 2500, 9000)
+        ResultJson.write(ScenarioRunResult("팔로우", StepStatus.FAILED, steps, null, 9000, startedAtMs = 1_794_000_000_000L, reportDir = dir, sections = sections, video = vid), "replay",
             ResultJson.Meta("my-other", "follow", null, "my-other/follow.md", "팔로우", null, "타인 프로필의 팔로우 버튼은 누를 때마다 바뀐다.", "2026-11-09",
                 ResultJson.Env("6.4.0", "sdk", "1.1"), setup = ResultJson.Setup("app://users/42", false, "member")), dir)
 
@@ -323,7 +324,9 @@ class SiteTest {
         // its block, and each block that ran saying where it started
         val page = File(runs, "2026-11-10/my-other/follow.html").readText()
         assertTrue("<nav class=flow aria-label=\"구간 흐름\"><a class=\"passed prep\" href=\"#sec-0\">준비<span>0.5s</span></a><i>→</i><a class=\"passed\" href=\"#sec-1\"><b>1</b>팔로우 취소<span>1.0s</span></a>" +
-            "<i>→</i><a class=\"failed\" href=\"#sec-2\"><b>2</b>팔로우 추가<span>1.0s</span></a><i>→</i><a class=\"skipped\" href=\"#sec-3\"><b>3</b>다시 취소</a></nav>" in page, page.substringAfter("<nav class=flow").take(600))
+            "<i>→</i><a class=\"failed\" href=\"#sec-2\"><b>2</b>팔로우 추가<span>1.0s</span></a><i>→</i><a class=\"skipped\" href=\"#sec-3\"><b>3</b>다시 취소</a>" +
+            "<button type=button class=\"btn chain\">▶ 이어 재생</button></nav>" in page, page.substringAfter("<nav class=flow").take(700))
+        assertTrue("chainBtn=document.querySelector('.chain')" in page, "with a recording the sections play through, one after the other")
         assertTrue("<details class=\"sec failed\" id=sec-2 data-scope open>" in page, "the strip's links land on the blocks")
         assertTrue("<div class=sfrom><code class=e>app://users/42</code>에서 시작</div>" in page, "the first section starts at the scenario's way in")
         assertTrue("<div class=sfrom>앱을 다시 열어 <code class=e>app://users/42</code>에서 시작 · 앞 구간이 바꾼 것은 그대로</div>" in page, "one after it opens the app again, on what the one before it left")
