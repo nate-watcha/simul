@@ -321,7 +321,15 @@ object ResultJson {
     data class Action(val tool: String, val target: String?, val atMs: Long, val videoMs: Long?)
 
     /** One Firebase Analytics event (AnalyticsEvents): [atMs] since the scenario started, [origin] `app`/`auto`. */
-    data class Event(val atMs: Long, val videoMs: Long?, val origin: String, val name: String, val params: Map<String, String>)
+    data class Event(val atMs: Long, val videoMs: Long?, val origin: String, val name: String, val params: Map<String, String>) {
+        /**
+         * The app's own id for the event, when it sends one: its `event_id` parameter, under whatever prefix the app
+         * gives its keys (`w_event_id=530`). It is what the app's event spec lists an event by — one name (`w_view`)
+         * is many events there — so it is what the report lists and finds an event by ([Site.Fired]).
+         */
+        val id: String? get() = params.entries.firstOrNull { (k, _) -> !k.startsWith("ga_") && (k.equals("event_id", true) || k.endsWith("_event_id", true)) }
+            ?.value?.takeIf { it.isNotBlank() && it != "null" }
+    }
 
     private fun events(o: JsonObject, key: String): List<Event> = o.arr(key)?.mapNotNull { el ->
         val e = el as? JsonObject ?: return@mapNotNull null

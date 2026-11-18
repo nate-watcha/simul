@@ -124,7 +124,7 @@ class SiteTest {
         val billing = table.split("<tbody").first { "billing/_screen.html" in it }
         assertTrue("class=\"g failed open\"" in billing && "<td class=r>2</td><td class=r><b class=\"bad\">1/2</b></td>" in billing, billing)
         assertTrue("<i class=\"failed\"></i>" in billing && "<i class=\"passed\"></i>" in billing, "a cell per check")
-        assertTrue("<tr class=\"sub failed\">" in billing && "<tr class=\"sub passed\">" in billing && "설정에서 쿠폰 메뉴로 들어간다." in billing, "a scenario without sections is its own check, its prose the sentence")
+        assertTrue("<tr class=\"sub failed\" " in billing && "<tr class=\"sub passed\" " in billing && "설정에서 쿠폰 메뉴로 들어간다." in billing, "a scenario without sections is its own check, its prose the sentence")
         assertTrue("id=onlyfail" in home && "id=q" in home)
         assertTrue("어제" !in home && "7일" !in home && "acknowledged" !in home, "no history, no site machinery")
 
@@ -571,5 +571,58 @@ class SiteTest {
         assertTrue("<a href=\"활동/_screen.html#재감상/헤더\">활동 › 재감상</a><span>›</span><a class=title href=\"활동/재감상/헤더.html\">헤더</a>" in home, "a failure in a component leads to its line there")
         val line = home.split("<tbody").first { "\"활동/_screen.html\"" in it }
         assertTrue("</span></td><td class=r>1</td><td class=r><span class=dim>–</span></td>" in line, "a line about a component of the screen is a line about the screen: " + line.take(700))
+    }
+
+    @Test
+    fun `the Firebase events a scenario sends stand beside it by the app's id for them, and the search finds the scenario by one`() {
+        val day = File(runs, "2026-11-18")
+        val t0 = 1_795_000_000_000L
+        fun st(n: Int, text: String) = StepReport(n, text, StepStatus.PASSED, "replay", emptyList(), emptyList(), null, 500, emptyList(), startedMs = n * 1000L)
+        fun fa(atMs: Long, origin: String, name: String, params: String) =
+            "         ${(t0 + atMs) / 1000}.${(t0 + atMs) % 1000}  1566  1600 V FA-SVC  : Logging event: origin=$origin,name=$name,params=Bundle[{$params}]\n"
+        fun write(feature: String, name: String, title: String, steps: List<StepReport>, logcat: String, sections: List<SectionReport> = emptyList()) {
+            val dir = File(day, "$feature/$name").apply { mkdirs() }
+            File(dir, "logcat.txt").writeText(logcat)
+            ResultJson.write(ScenarioRunResult(title, StepStatus.PASSED, steps, null, 5000, startedAtMs = t0, reportDir = dir, sections = sections), "replay",
+                ResultJson.Meta(feature, name, null, "$feature/$name.md", title, null, "설명.", "2026-11-18", ResultJson.Env("6.4.0", "sdk", "1.1"), setup = ResultJson.Setup("app://x", false, "member")), dir)
+        }
+        // the app's launch sends its screen's view (before the first step); the same id twice is one event; Firebase's own is not the app's
+        write("알림", "읽기", "알림을 읽는다", listOf(st(1, "첫 번째 알림을 누른다"), st(2, "\"읽음\"이 보이는지 확인한다")),
+            fa(200, "app", "w_view", "w_event_id=530, w_path=/notification, ga_screen_class(_sc)=MainNavActivity") +
+                fa(1300, "app", "w_click", "w_path=/notification, w_event_id=5301") +
+                fa(1400, "auto", "screen_view", "ga_event_id(_eid)=77, ga_screen_class(_sc)=MainNavActivity") +
+                fa(2300, "app", "w_view", "w_event_id=530, w_path=/notification"))
+        // an app that sends no id of its own: the event is known by its name
+        write("알림", "설정", "알림을 끈다", listOf(st(1, "\"알림 받기\"를 누른다")), fa(1200, "app", "w_toggle", "w_on=false"))
+        write("홈", "배너", "배너", listOf(st(1, "배너를 누른다"), st(2, "뒤로 간다")),
+            fa(1100, "app", "w_exposed_cell", "w_event_id=115, w_cells={\"1\":3}") + fa(2100, "app", "w_view", "w_event_id=530, w_path=/notification"),
+            listOf(SectionReport("누르기", "누르면 열린다.", StepStatus.PASSED, 1..1), SectionReport("돌아오기", "돌아온다.", StepStatus.PASSED, 2..2)))
+        write("홈", "빈", "빈 홈", listOf(st(1, "아래로 내린다")), "")
+
+        val rows = Site.classify(Site.load(day))
+        fun fired(id: String) = rows.single { it.id == id }.events.map { Triple(it.key, it.name, it.count) }
+        assertEquals(listOf(Triple("530", "w_view", 2), Triple("5301", "w_click", 1)), fired("알림/읽기"), "one per id, in the order first sent, the launch's among them")
+        assertEquals(listOf(Triple("w_toggle", "w_toggle", 1)), fired("알림/설정"))
+        assertEquals(emptyList(), fired("홈/빈"))
+
+        SitePages.build(day, day)
+        val home = File(day, "index.html").readText()
+        val read = home.split("<tr class=\"sub").first { "알림을 읽는다</a>" in it }
+        // beside the scenario: the ids, each a link to the search for it; on the row, what the search finds it by
+        assertTrue("<span class=evs><span class=evk>firebase</span><a class=evid href=\"index.html#q=530\" data-ev=\"530\" data-name=\"w_view\" title=\"w_view ×2\">530</a>" +
+            "<a class=evid href=\"index.html#q=5301\" data-ev=\"5301\" data-name=\"w_click\" title=\"w_click\">5301</a></span>" in read, read)
+        assertTrue("data-ev=\" 530 5301 \"" in read && "w_view w_click\"" in read.substringBefore("data-ev"), "an id is found whole — 530 is not 5301 — a name by a part of it: " + read.take(300))
+        assertTrue("screen_view" !in read && ">77<" !in read, "Firebase's own events are not the app's")
+        assertTrue("data-ev=\"w_toggle\" data-name=\"w_toggle\" title=\"w_toggle\">w_toggle</a>" in home, "without an id, the name")
+        assertTrue("class=evs" !in home.split("<tr class=\"sub").first { "빈 홈</a>" in it }, "nothing sent, nothing beside it")
+        assertTrue("placeholder=\"화면·시나리오·이벤트 id 찾기\"" in home && "location.hash" in home, "the search says so, and opens from the address the other pages link to")
+
+        // the screen's page: beside each scenario's line, leading to the first page's search; its list of screens is found by the events too
+        val alarm = File(day, "알림/_screen.html").readText()
+        assertTrue("<span class=fs>설명.<span class=evs><span class=evk>firebase</span><a class=evid href=\"../index.html#q=530\"" in alarm, alarm.substringAfter("<section").take(600))
+        val banner = File(day, "홈/_screen.html").readText().substringAfter("id=\"배너\">").substringBefore("<div class=fl>")
+        assertTrue("</div><span class=evs><span class=evk>firebase</span><a class=evid href=\"../index.html#q=115\" data-ev=\"115\" data-name=\"w_exposed_cell\" title=\"w_exposed_cell\">115</a>" in banner, "a scenario of several checks: under its heading — $banner")
+        val nav = alarm.substringAfter("<nav class=snav").substringBefore("<div class=doc>")
+        assertTrue("data-ev=\" w_toggle 530 5301 \"" in nav && "data-ev=\" 115 530 \"" in nav, nav)
     }
 }

@@ -94,6 +94,12 @@ object Site {
         }
     }
 
+    /**
+     * One Firebase event a scenario sent, [count] times: [key] is what the report shows and finds it by — the app's
+     * id for it (ResultJson.Event.id), or its [name] where the app sends none.
+     */
+    class Fired(val key: String, val name: String, val count: Int)
+
     /** One way into a screen — a deeplink or `앱 실행` — with the account states its scenarios start from and how many each. */
     class Entry(val entry: String, val states: Map<String, Int>)
 
@@ -234,6 +240,15 @@ object Site {
                 Check(sec.title, sec.description, if (kind == Kind.SETUP) "NONE" else sec.status, t.steps.filter { it.n in sec.from..sec.to }, sec.deeplink, sec.entry, sec.appState, sec.mentions)
             }
             return listOf(Check(null, t.description, when (kind) { Kind.FAILED -> "FAILED"; Kind.PASSED -> "PASSED"; Kind.SETUP -> "NONE" }, t.steps, mentions = t.mentions))
+        }
+        /**
+         * The Firebase events the app sent over this scenario — its launch and its steps — one per event ([Fired]), in
+         * the order each was first sent. Firebase's own (`auto`: screen_view, user_engagement) are not the app's.
+         */
+        val events: List<Fired> by lazy {
+            timeline.let { t -> t.setupEvents + t.steps.flatMap { it.events } }.filter { it.origin == "app" }
+                .groupBy { it.id ?: it.name }
+                .map { (key, sent) -> Fired(key, sent.map { it.name }.distinct().joinToString(" / "), sent.size) }
         }
         /** The replay never ran this scenario (no trace, no steps) — there is nothing of it but the summary line. */
         val replayed get() = result.steps.isNotEmpty()
