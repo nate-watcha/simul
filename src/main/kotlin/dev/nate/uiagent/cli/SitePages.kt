@@ -872,7 +872,7 @@ object SitePages {
             sb.append("</aside></div>")
         } else {
             sb.append("<section class=\"steps grouped\"><h2>$heading<span class=hint>구간마다 그 구간의 영상 · $hint</span></h2>")
-            flowStrip(sb, t)
+            flowStrip(sb, t, playable = video != null)
             setupRow(sb, t)
             timeline(sb, t, filmAt = rec?.failedStep, film = frames.actions, players = Players(video, thumbs))
             if (video != null) sb.append("<div class=whole><span class=dim>영상 파일은 하나입니다 — 구간마다 그 구간만 재생합니다.</span><a class=btn href=\"${attr(video)}\" download>전체 mp4 다운로드</a></div>")
@@ -942,9 +942,11 @@ object SitePages {
     /**
      * The sections of a run as one line, in the order they ran — a scenario's sections are one flow, each building
      * on what the one before it changed, so where it stopped and what did not run after that is read here before
-     * any block is: `준비 → 1 평가 2.4s → 2 평가 뒤 활동 탭 → …`. Each links to its block below.
+     * any block is: `준비 → 1 평가 2.4s → 2 평가 뒤 활동 탭 → …`. Each links to its block below. With a recording
+     * ([playable]) a button plays them through — each section's part of the video in its own block, one after the
+     * other, the page following — as the one flow they are.
      */
-    private fun flowStrip(sb: StringBuilder, r: ResultJson.Result) {
+    private fun flowStrip(sb: StringBuilder, r: ResultJson.Result, playable: Boolean) {
         if (r.sections.size < 2) return
         var order = 0
         sb.append("<nav class=flow aria-label=\"구간 흐름\">")
@@ -953,6 +955,7 @@ object SitePages {
             val took = if (sec.status == "SKIPPED") "" else "<span>${"%.1fs".format(r.steps.filter { it.n in sec.from..sec.to }.sumOf { it.durationMs } / 1000.0)}</span>"
             sb.append("<a class=\"${cls(sec.status)}${if (sec.preparation) " prep" else ""}\" href=\"#sec-$i\">${if (sec.preparation) "" else "<b>${++order}</b>"}${esc(sec.title)}$took</a>")
         }
+        if (playable) sb.append("<button type=button class=\"btn chain\">▶ 이어 재생</button>")
         sb.append("</nav>")
     }
 
@@ -1126,13 +1129,18 @@ object SitePages {
      * One player per `[data-scope]` — the page, or each section of a scenario that has them: the scope's step rows and
      * its player's bar seek its video, which plays only its own window of the mp4 (`data-from`/`data-to`, ms) and
      * shows its time from there (the metadata may be in before this runs — a local file's usually is — so the window
-     * is applied either way). Starting one pauses the others.
+     * is applied either way). Starting one pauses the others. `.chain` plays the scopes through: from the first, each
+     * to the end of its window and on to the next one that is open, the page scrolling to it; anything the reader
+     * does to a player or a step ends that. The strip marks the section that is playing.
      */
     private val JS = """
         (function(){
           function byN(n){for(var i=0;i<STEPS.length;i++)if(STEPS[i].n==n)return STEPS[i];return null}
           function fmt(ms){ms=Math.max(0,ms|0);return Math.floor(ms/60000)+':'+('0'+Math.floor(ms/1000)%60).slice(-2)}
-          var videos=[];
+          var videos=[],clips=[],chain=false,chainBtn=document.querySelector('.chain');
+          function chained(on){chain=on;if(chainBtn)chainBtn.textContent=on?'❚❚ 멈춤':'▶ 이어 재생'}
+          function next(c){var i=clips.indexOf(c)+1;while(i<clips.length&&clips[i].sc.open===false)i++;if(i<clips.length)clips[i].start();else chained(false)}
+          function strip(sc,on){var a=sc.id?document.querySelector('.flow a[href="#'+sc.id+'"]'):null;if(a)a.classList.toggle('on',on)}
           [].slice.call(document.querySelectorAll('[data-scope]')).forEach(function(sc){
             var pl=sc.querySelector('.player');if(!pl)return;
             var v=pl.querySelector('video'),cap=pl.querySelector('.caption'),still=pl.querySelector('img.still'),time=pl.querySelector('.time'),play=pl.querySelector('.play');
@@ -1142,20 +1150,27 @@ object SitePages {
             function mark(n){rows.forEach(function(r){r.classList.toggle('on',r.dataset.step==n)});segs.forEach(function(s){s.classList.toggle('on',s.dataset.step==n)});var s=byN(n);if(s&&cap)cap.textContent=s.no+'/'+s.total+' · '+s.text;if(s&&still&&s.thumb)still.src=s.thumb}
             function seek(ms){v.currentTime=ms/1000;v.play().catch(function(){})}
             function go(n){var s=byN(n);if(!s)return;mark(n);if(!v||s.videoMs==null)return;if(v.readyState>=1)seek(s.videoMs);else v.addEventListener('loadedmetadata',function(){seek(s.videoMs)},{once:true})}
-            rows.forEach(function(r){r.addEventListener('click',function(e){var x=e.target.closest('a,details,code,pre');if(x&&r.contains(x))return;go(+r.dataset.step)})});
-            segs.forEach(function(s){s.addEventListener('click',function(){go(+s.dataset.step)})});
+            rows.forEach(function(r){r.addEventListener('click',function(e){var x=e.target.closest('a,details,code,pre');if(x&&r.contains(x))return;chained(false);go(+r.dataset.step)})});
+            segs.forEach(function(s){s.addEventListener('click',function(){chained(false);go(+s.dataset.step)})});
             if(mine.length)mark(mine[0].n);
             if(!v)return;
             videos.push(v);
+            var clip={sc:sc,start:function(){sc.scrollIntoView({behavior:'smooth',block:'start'});if(v.readyState>=1)seek(from);else v.addEventListener('loadedmetadata',function(){seek(from)},{once:true})}};
+            clips.push(clip);
             function end(){return to!=null?to:(v.duration*1000||0)}
             function shown(){if(time)time.textContent=fmt(v.currentTime*1000-from)+' / '+fmt(end()-from)}
             function ready(){if(v.currentTime*1000<from)v.currentTime=from/1000;shown()}
             if(v.readyState>=1)ready();else v.addEventListener('loadedmetadata',ready,{once:true});
-            v.addEventListener('timeupdate',function(){var t=v.currentTime*1000,cur=null;if(to!=null&&t>=to&&!v.paused)v.pause();for(var i=0;i<mine.length;i++){if(mine[i].videoMs!=null&&mine[i].videoMs<=t+50)cur=mine[i]}if(cur)mark(cur.n);shown()});
-            v.addEventListener('play',function(){play.textContent='❚❚';videos.forEach(function(o){if(o!==v)o.pause()})});
-            v.addEventListener('pause',function(){play.textContent='▶'});
-            function toggle(){if(!v.paused){v.pause();return}var t=v.currentTime*1000;if(t<from-50||t>=end()-100)v.currentTime=from/1000;v.play().catch(function(){})}
+            v.addEventListener('timeupdate',function(){var t=v.currentTime*1000,cur=null;if(to!=null&&t>=to&&!v.paused){var on=chain;v.pause();if(on)next(clip)}for(var i=0;i<mine.length;i++){if(mine[i].videoMs!=null&&mine[i].videoMs<=t+50)cur=mine[i]}if(cur)mark(cur.n);shown()});
+            v.addEventListener('play',function(){play.textContent='❚❚';strip(sc,true);videos.forEach(function(o){if(o!==v)o.pause()})});
+            v.addEventListener('pause',function(){play.textContent='▶';strip(sc,false)});
+            v.addEventListener('ended',function(){if(chain)next(clip)});
+            function toggle(){chained(false);if(!v.paused){v.pause();return}var t=v.currentTime*1000;if(t<from-50||t>=end()-100)v.currentTime=from/1000;v.play().catch(function(){})}
             play.addEventListener('click',toggle);v.addEventListener('click',toggle);
+          });
+          if(chainBtn)chainBtn.addEventListener('click',function(){
+            if(chain){chained(false);videos.forEach(function(o){o.pause()});return}
+            for(var i=0;i<clips.length;i++)if(clips[i].sc.open!==false){chained(true);clips[i].start();return}
           });
         })();
     """.trimIndent()
@@ -1261,7 +1276,7 @@ object SitePages {
         .cols{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}section.steps{flex:1 1 560px;min-width:0;display:flex;flex-direction:column;gap:10px}aside.replay{flex:0 1 380px;min-width:300px;display:flex;flex-direction:column;gap:10px;position:sticky;top:12px}
         section.steps h2,aside.replay h2{font-size:13px;color:var(--dim);letter-spacing:.04em;margin-bottom:4px}section.steps h2 .hint{margin-left:12px;font-weight:400;font-size:12px;letter-spacing:0}
         .flow{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:12.5px}.flow>i{font-style:normal;color:var(--faint)}.flow a{display:inline-flex;align-items:baseline;gap:6px;padding:4px 10px;border-radius:6px;border:1px solid var(--line2);background:var(--card);color:var(--dim);text-decoration:none}.flow a b{font-weight:600}.flow a span{font-size:11.5px;opacity:.75}
-        .flow a.passed{background:var(--okbg);border-color:transparent;color:var(--okfg)}.flow a.failed{background:var(--failbg);border-color:var(--fail);color:var(--failfg)}.flow a.skipped{background:transparent;border-style:dashed}.flow a.prep.passed{background:var(--chipbg);color:var(--dim)}
+        .flow a.passed{background:var(--okbg);border-color:transparent;color:var(--okfg)}.flow a.failed{background:var(--failbg);border-color:var(--fail);color:var(--failfg)}.flow a.skipped{background:transparent;border-style:dashed}.flow a.prep.passed{background:var(--chipbg);color:var(--dim)}.flow a.on{outline:2px solid var(--fg);outline-offset:1px}.flow .chain{flex:0 0 auto;margin-left:auto;padding:4px 12px;font-size:12.5px}
         .secgrid{position:relative;display:flex;flex-direction:column;gap:12px;padding-left:36px}.secgrid::before{content:'';position:absolute;left:11px;top:18px;bottom:18px;width:2px;background:var(--line2)}
         .secgrid details.sec{position:relative;min-width:0;container:sec/inline-size;scroll-margin-top:12px}.secgrid details.sec+details.sec{margin:0}.secgrid .sec>summary .ord{position:absolute;left:-36px;top:11px}
         .scols{display:flex;gap:16px;align-items:flex-start}.ssteps{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:10px}.scols .player{flex:0 0 240px;padding:10px;gap:8px;position:sticky;top:12px}.scols .caption{font-size:10.5px}.scols .play{width:28px;height:28px}
