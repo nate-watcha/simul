@@ -1,6 +1,7 @@
 package dev.nate.uiagent.cli
 
 import dev.nate.uiagent.device.SettingChange
+import dev.nate.uiagent.device.DeviceNetwork
 import dev.nate.uiagent.device.DeviceSettings
 import dev.nate.uiagent.device.AdbOps
 import dev.nate.uiagent.device.DeviceOps
@@ -131,6 +132,8 @@ class ScenarioRunner(
     private val app: String?,
     /** config.yaml `device.locale`: the app language every scenario runs in unless its setup says otherwise. */
     private val locale: String? = null,
+    /** config.yaml `device.network`: whether scenarios have a network unless their setup says otherwise (null = they do). */
+    private val network: Boolean? = null,
     private val takeScreenshots: Boolean = true,
     /**
      * A `steps/NN.png` for every step, or only for the failed one. The CLI turns it off for a replay
@@ -160,12 +163,15 @@ class ScenarioRunner(
         val pinned = mutableListOf<SettingChange>()
         // The app locale the scenario replaced, to put back (`""` = it followed the system); null = untouched.
         var localeBefore: String? = null
+        // Did the scenario take the network away (`device.network: off`)? Then it gives it back.
+        var networkTaken = false
         // logcat for exactly this scenario's span: cleared before setup, dumped after the last step
         runCatching { ops.logcatClear() }
         try {
-            return runPinned(scenario, trace, mode, pinned) { localeBefore = it }
+            return runPinned(scenario, trace, mode, pinned, { networkTaken = true }) { localeBefore = it }
         } finally {
             runCatching { ops.logcatDump(File(reportDir, "logcat.txt")) }
+            if (networkTaken) DeviceNetwork.backOn(ops, { log("  device: $it") })
             if (pinned.isNotEmpty()) DeviceSettings.restore(ops, pinned) { log("  device: $it") }
             localeBefore?.let { was ->
                 runCatching { ops.setAppLocales(app!!, was.ifEmpty { null }) }
@@ -177,7 +183,7 @@ class ScenarioRunner(
 
     private fun runPinned(
         scenario: Scenario, trace: TraceFile?, mode: RunMode,
-        pinned: MutableList<SettingChange>, localeReplaced: (String) -> Unit,
+        pinned: MutableList<SettingChange>, networkTaken: () -> Unit, localeReplaced: (String) -> Unit,
     ): ScenarioRunResult {
         val t0 = System.currentTimeMillis()
         val cost0 = controller.meter.cost
@@ -191,6 +197,11 @@ class ScenarioRunner(
             scenario.setup?.let {
                 // before the cold start, so the app reads the pinned values
                 DeviceSettings.apply(ops, it.device.settings, { msg -> log("  device: $msg") }, pinned)
+                // also before the cold start: the app opens into the state it is to be seen in
+                if ((it.device.network ?: network) == false) {
+                    networkTaken()
+                    DeviceNetwork.turnOff(ops, { msg -> log("  device: $msg") })
+                }
                 // The app locale is set inside ops.setup (after the pm clear that would wipe it);
                 // read what it was first so the scenario can leave the app as it found it.
                 wantLocale = (it.device.locale ?: locale)?.takeIf { app != null }

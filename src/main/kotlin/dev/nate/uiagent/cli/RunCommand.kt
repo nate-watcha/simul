@@ -306,7 +306,7 @@ internal fun executeScenario(
         val recorder = if (video) ScreenRecorder(serial = ops.serial) else null
         // steps are logged live by the runner — a scenario can run for minutes
         val runner = ScenarioRunner(stack.controller, listener, ops, executor, reportDir, project.config.app,
-            locale = project.config.device.locale, stepFrames = !(video && mode == RunMode.REPLAY), log = log, onSetupDone = { recorder?.start() },
+            locale = project.config.device.locale, network = project.config.device.network, stepFrames = !(video && mode == RunMode.REPLAY), log = log, onSetupDone = { recorder?.start() },
             entries = project::entryOf)
 
         log("── ${scenario.name} [${mode.name.lowercase()}]${ops.serial?.let { " on $it" } ?: ""} ${"─".repeat(30)}")

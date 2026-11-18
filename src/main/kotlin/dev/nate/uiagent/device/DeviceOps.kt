@@ -111,6 +111,22 @@ interface DeviceOps {
     fun settingPut(namespace: String, key: String, value: String)
     fun settingDelete(namespace: String, key: String)
 
+    // ---- network (see DeviceNetwork) ----
+
+    /**
+     * Does the device reach the internet — a name resolved and a connection opened from inside it, the way the
+     * app under test has to? null when the device has no way to tell (no `nc` on it): then nothing is concluded.
+     */
+    fun online(): Boolean? = null
+
+    /** Is airplane mode on? null when unreadable. */
+    fun airplaneMode(): Boolean? = null
+
+    fun setAirplaneMode(on: Boolean) {}
+
+    /** Does adb itself reach this device over the network (wireless debugging, `adb connect`)? Its network cannot be taken away then. */
+    fun reachedOverNetwork(): Boolean = false
+
     // ---- per-app language (Android 13+, see DevicePins) ----
 
     /** `cmd locale get-app-locales <app>`: the app's language list (`ko-KR` / `ko-KR,en-US`); null = follows the system language. */
@@ -353,6 +369,24 @@ class AdbOps(
         runProcess(adb("shell", "settings", "delete", namespace, key))
     }
 
+    override fun online(): Boolean? = runCatching {
+        // the exit code comes back on stdout: `adb shell` passes it on only in its newer protocol
+        onlineOf(runProcess(adb("shell", "timeout 5 nc -w 3 $ONLINE_HOST 443 </dev/null >/dev/null 2>&1; echo \$?"), PROBE_TIMEOUT_MS))
+    }.getOrNull()
+
+    override fun airplaneMode(): Boolean? = runCatching {
+        when (settingGet("global", "airplane_mode_on")) { "1" -> true; "0" -> false; else -> null }
+    }.getOrNull()
+
+    override fun setAirplaneMode(on: Boolean) {
+        // Android 11+; the setting alone would not tell the radios
+        runProcess(adb("shell", "cmd", "connectivity", "airplane-mode", if (on) "enable" else "disable"))
+    }
+
+    override fun reachedOverNetwork(): Boolean = runCatching {
+        overNetwork(serial ?: runProcess(adb("get-serialno")).trim())
+    }.getOrDefault(false)
+
     override fun appLocales(app: String): String? =
         parseAppLocales(runProcess(adb("shell", "cmd", "locale", "get-app-locales", app)), app)
 
@@ -390,6 +424,23 @@ class AdbOps(
         /** A screencap takes 0.4s, ~3s on a software-rendered emulator that is also recording. */
         private const val SCREENCAP_TIMEOUT_MS = 20_000L
         private const val PROBE_TIMEOUT_MS = 10_000L
+
+        /** Where [online] connects to: the host Android itself asks to decide that a network has internet. */
+        const val ONLINE_HOST = "connectivitycheck.gstatic.com"
+
+        /**
+         * What the exit code of the connection attempt says: 0 = connected; 126/127 = the device has no `nc`
+         * or `timeout` to try with (null — nothing concluded); anything else (name not resolved, no route,
+         * timed out) = not reached.
+         */
+        fun onlineOf(out: String): Boolean? = when (out.trim().lineSequence().lastOrNull()?.trim()?.toIntOrNull()) {
+            0 -> true
+            null, 126, 127 -> null
+            else -> false
+        }
+
+        /** A serial adb reaches over the network: `192.168.0.7:5555`, `adb-R58M…._adb-tls-connect._tcp`. An emulator's (`emulator-5554`) is not. */
+        fun overNetwork(serial: String): Boolean = "_adb-tls-" in serial || Regex(".+:\\d+").matches(serial)
 
         /**
          * The `+Ns` the system logs when [app]'s activity calls `reportFullyDrawn()`

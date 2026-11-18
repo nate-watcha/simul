@@ -34,11 +34,12 @@ data class DeviceSetting(val namespace: String, val key: String, val value: Stri
 
 /**
  * Everything a `device:` block (config.yaml top level or a scenario's `setup`) asks the runner
- * to pin: the app's language and the emulator `settings`.
+ * to pin: the app's language, the network and the emulator `settings`.
  *
  * ```yaml
  * device:
  *   locale: ko-KR                        # per-app language: `cmd locale set-app-locales <app>`
+ *   network: off                         # this scenario runs without a network (airplane mode); on is the default
  *   settings:
  *     secure.credential_service: ""      # put an empty string
  *     secure.autofill_service: null      # settings delete (key unset)
@@ -50,8 +51,11 @@ data class DeviceSetting(val namespace: String, val key: String, val value: Stri
  * and before the launch (see [DeviceOps.setup]), and it applies on physical devices too — it
  * touches only the app under test, like the clear itself. The system language is never changed
  * (that needs root and a framework restart).
+ *
+ * [network] is whether the device has one while the scenario runs: null = not said, which means on — every
+ * scenario gets a device that reaches the internet unless it asks for the opposite (see [DeviceNetwork]).
  */
-data class DevicePins(val locale: String? = null, val settings: List<DeviceSetting> = emptyList()) {
+data class DevicePins(val locale: String? = null, val settings: List<DeviceSetting> = emptyList(), val network: Boolean? = null) {
     companion object {
         val NONE = DevicePins()
         /** A language tag, or a comma-separated list of them: `ko`, `ko-KR`, `zh-Hant-TW`, `ko-KR,en-US`. */
@@ -64,16 +68,23 @@ data class DevicePins(val locale: String? = null, val settings: List<DeviceSetti
         fun parse(deviceBlock: Any?, where: String): DevicePins {
             if (deviceBlock == null) return NONE
             val device = deviceBlock as? Map<*, *>
-                ?: throw IllegalArgumentException("$where: `device:` must be a block with `locale:` and/or `settings:`")
-            val unknown = device.keys.map { it.toString() } - setOf("locale", "settings")
-            require(unknown.isEmpty()) { "$where: unknown key(s) under device: $unknown (only `locale`, `settings`)" }
+                ?: throw IllegalArgumentException("$where: `device:` must be a block with `locale:`, `network:` and/or `settings:`")
+            val unknown = device.keys.map { it.toString() } - setOf("locale", "network", "settings")
+            require(unknown.isEmpty()) { "$where: unknown key(s) under device: $unknown (only `locale`, `network`, `settings`)" }
             val locale = device["locale"]?.let { v ->
                 require(v is String && LOCALE.matches(v)) {
                     "$where: device.locale must be a language tag like `ko-KR` (or a list `ko-KR,en-US`), got '$v'"
                 }
                 v
             }
-            return DevicePins(locale, parseSettings(device["settings"], where))
+            val network = device["network"]?.let { v ->
+                when (v) {
+                    "on" -> true
+                    "off" -> false
+                    else -> throw IllegalArgumentException("$where: device.network must be `on` or `off`, got '$v'")
+                }
+            }
+            return DevicePins(locale, parseSettings(device["settings"], where), network)
         }
 
         private fun parseSettings(settings: Any?, where: String): List<DeviceSetting> {

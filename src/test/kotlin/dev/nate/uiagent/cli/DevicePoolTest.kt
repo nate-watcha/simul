@@ -73,11 +73,15 @@ class DevicePoolTest {
     private class Worker(override val name: String, val log: MutableList<String>, val onRun: (Worker, Int) -> Unit = { _, _ -> }) : PoolWorker {
         @Volatile override var alive = true
         val ran: MutableList<Int> = Collections.synchronizedList(mutableListOf())
-        override fun run(index: Int) {
+        /** Indices this worker cannot start: it hands them back ([PoolWorker.run] false). */
+        var refuses: Set<Int> = emptySet()
+        override fun run(index: Int): Boolean {
+            if (index in refuses) { alive = false; return false }
             log += "$name start $index"
             onRun(this, index)
             ran += index
             log += "$name end $index"
+            return true
         }
     }
 
@@ -115,7 +119,7 @@ class DevicePoolTest {
             override val alive = true
             val ran = mutableListOf<Int>()
             override fun start() { gate.await(2, TimeUnit.SECONDS) }
-            override fun run(index: Int) { ran += index }
+            override fun run(index: Int): Boolean { ran += index; return true }
         }
         val a = Thread { while (dying.alive) Thread.sleep(5); gate.countDown() }.apply { start() }
         val left = handOut(first = emptyList(), then = listOf(listOf(0, 1, 2)), workers = listOf(dying, other))
@@ -145,6 +149,35 @@ class DevicePoolTest {
         assertTrue(left.isEmpty())
         assertEquals(listOf("a: boom"), stopped.toList())
         assertEquals(listOf(1), workers[1].ran.toList())
+    }
+
+    @Test
+    fun `a scenario a device could not start goes to another device with the rest of its piece`() {
+        val log = Collections.synchronizedList(mutableListOf<String>())
+        // `a` finds out on its second scenario that it can run nothing any more (its network is gone)
+        val a = Worker("a", log).apply { refuses = setOf(1) }
+        val gate = CountDownLatch(1)
+        val b = object : PoolWorker by Worker("b", log) {
+            val ran = mutableListOf<Int>()
+            override fun start() { gate.await(2, TimeUnit.SECONDS) }
+            override fun run(index: Int): Boolean { ran += index; return true }
+        }
+        val t = Thread { while (a.alive) Thread.sleep(5); gate.countDown() }.apply { start() }
+        val left = handOut(first = emptyList(), then = listOf(listOf(0, 1, 2)), workers = listOf(a, b))
+        t.join()
+        assertTrue(left.isEmpty())
+        assertEquals(listOf(0), a.ran.toList())
+        assertEquals(listOf(1, 2), b.ran, "the one it could not start first, then what came after it")
+    }
+
+    @Test
+    fun `a way in a device could not start is handed out again before the screens`() {
+        val log = Collections.synchronizedList(mutableListOf<String>())
+        val a = Worker("a", log).apply { refuses = setOf(0) }
+        val b = Worker("b", log)
+        val left = handOut(first = listOf(listOf(0)), then = listOf(listOf(1, 2)), workers = listOf(a, b))
+        assertTrue(left.isEmpty())
+        assertEquals(listOf(0, 1, 2), b.ran.toList(), "$log")
     }
 
     // ------------------------------------------------------------------ over devices
@@ -191,5 +224,22 @@ class DevicePoolTest {
         assertTrue(results.all { it.outcome.status == "CRASH" && it.outcome.reason == "not run — device not responding: adb shell does not answer" },
             results.joinToString { "${it.outcome.status} ${it.outcome.reason}" })
         assertTrue(devices.all { it.setups.isEmpty() && it.display == null })
+    }
+
+    @Test
+    fun `when no device has a network every scenario is a row that says so, and none was run`() {
+        val p = project()
+        val runs = p.scenarioVariants()
+        val devices = listOf("emulator-5554", "emulator-5556").map { s -> FakeOps().apply { named = s; offline = true } }
+        val out = Collections.synchronizedList(mutableListOf<String>())
+
+        val results = runOverDevices(p, runs, devices, RunMode.LLM, p.config.llm, video = false, runsDir = null, out = out::add, pause = {})
+
+        assertEquals(runs.map { it.second.name }, results.map { it.outcome.name })
+        assertTrue(results.all { it.outcome.status == "CRASH" && it.outcome.reason!!.startsWith("not run — device has no network") },
+            results.joinToString { "${it.outcome.status} ${it.outcome.reason}" })
+        assertTrue(devices.all { it.setups.isEmpty() }, "no scenario was started on a device without a network")
+        assertTrue(devices.all { it.airplaneLog == listOf("airplane on", "airplane off") }, "each was given one chance to come back")
+        assertTrue(out.any { "goes back to be run on another device" in it }, "$out")
     }
 }

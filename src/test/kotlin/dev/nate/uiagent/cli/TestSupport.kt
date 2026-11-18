@@ -62,6 +62,27 @@ internal class FakeOps(private val versionName: String? = "5.4.0") : DeviceOps {
     override fun settingDelete(namespace: String, key: String) {
         settings.remove("$namespace.$key"); settingLog += "delete $namespace.$key"
     }
+    /** Airplane mode on the device. */
+    var airplane = false
+    /** The device does not reach the internet although airplane mode is off (an emulator that booted without a network). */
+    var offline = false
+    /** Does airplane mode on and off bring an [offline] device back? */
+    var healsOnToggle = false
+    /** false = the device has no `nc` to try a connection with. */
+    var canTell = true
+    /** Every airplane-mode write in order: `airplane on` / `airplane off`. */
+    val airplaneLog = mutableListOf<String>()
+    /** How many times the device was asked whether it reaches the internet. */
+    var onlineAsked = 0
+    override fun online(): Boolean? { onlineAsked++; return if (canTell) !(airplane || offline) else null }
+    override fun airplaneMode(): Boolean? = airplane
+    override fun setAirplaneMode(on: Boolean) {
+        if (airplane && !on && healsOnToggle) offline = false
+        airplane = on; airplaneLog += "airplane ${if (on) "on" else "off"}"
+    }
+    /** adb reaches the device over the network (wireless debugging). */
+    var wireless = false
+    override fun reachedOverNetwork(): Boolean = wireless
     /** The app's per-app locale; null = follows the system. */
     var appLocale: String? = null
     /** Every locale write in order: `locale ko-KR` / `locale system`. */
