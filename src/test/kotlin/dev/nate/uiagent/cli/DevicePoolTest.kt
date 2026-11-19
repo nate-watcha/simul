@@ -242,4 +242,75 @@ class DevicePoolTest {
         assertTrue(devices.all { it.airplaneLog == listOf("airplane on", "airplane off") }, "each was given one chance to come back")
         assertTrue(out.any { "goes back to be run on another device" in it }, "$out")
     }
+
+    // ------------------------------------------------------------------ recording over devices
+
+    /** A project of two screens, each with a way in and scenarios that start from it. */
+    private fun projectWithEntries(): SimulProject {
+        val root = tempDir()
+        File(root, ".simul/config.yaml").apply { parentFile.mkdirs() }.writeText("app: com.example.app\nllm:\n  url: http://localhost:8080\n")
+        fun md(path: String, front: String, step: String) =
+            File(root, ".simul/scenarios/$path.md").apply { parentFile.mkdirs() }.writeText("---\n$front---\n1. $step\n")
+        md("홈/_entry", "setup:\n  launch: true\n", "\"홈\"이 보이는지 확인한다")
+        md("검색/_entry", "setup:\n  deeplink: app://search\n", "\"검색\"이 보이는지 확인한다")
+        for (name in listOf("홈/a", "홈/b", "검색/c")) md(name, "name: ${name.substringAfter('/')}\n", "\"열기\"를 누른다")
+        return SimulProject.find(root)!!
+    }
+
+    /** What stands in for the devices: every run as `<serial> <start|end> <scenario> <mode>`, in the order it happened. */
+    private class Recorded(val project: SimulProject, val failing: Set<String> = emptySet(), val slow: Set<String> = emptySet()) {
+        val log: MutableList<String> = Collections.synchronizedList(mutableListOf())
+        val runOne: (BatchSession, File, Scenario, RunMode, (String) -> Unit) -> BatchResult = { _, md, scenario, mode, say ->
+            val device = Thread.currentThread().name.removePrefix("simul-")
+            log += "$device start ${scenario.name} ${mode.name.lowercase()}"
+            if (scenario.name in slow) Thread.sleep(150)
+            say("ran ${scenario.name}")
+            log += "$device end ${scenario.name} ${mode.name.lowercase()}"
+            BatchResult(outcomeWithout(project, md, scenario, if (scenario.name in failing) "FAILED" else "PASSED", ""), null)
+        }
+    }
+
+    private fun twoDevices() = listOf("emulator-5554", "emulator-5558").map { s -> FakeOps().apply { named = s } }
+
+    @Test
+    fun `a recording runs over the devices - every way in is recorded before a scenario that starts from one`() {
+        val p = projectWithEntries()
+        val runs = withEntries(p, p.scenarioVariants(), RunMode.LLM)
+        val entries = runs.filter { it.first.name == SimulProject.ENTRY_FILE }.map { it.second.name }
+        assertEquals(2, entries.size, "${runs.map { it.second.name }}")
+        // one way in is slow: the device that finished the other waits for it instead of starting a screen
+        val rec = Recorded(p, slow = setOf(entries[0]))
+
+        val results = runOverDevices(p, runs, twoDevices(), RunMode.LLM, p.config.llm, video = false, runsDir = null, out = {}, runOne = rec.runOne)
+
+        assertEquals(runs.map { it.second.name }, results.map { it.outcome.name })
+        assertTrue(results.all { it.outcome.passed })
+        val firstScenario = rec.log.indexOfFirst { it.contains(" start ") && entries.none { e -> " $e " in it } }
+        assertTrue(entries.all { e -> rec.log.indexOfFirst { it.contains(" end $e ") } in 0 until firstScenario }, "${rec.log}")
+        assertEquals(2, rec.log.filter { it.contains(" start ") && entries.any { e -> " $e " in it } }.map { it.substringBefore(' ') }.toSet().size,
+            "the ways in were recorded side by side, one on each device: ${rec.log}")
+        assertTrue(rec.log.all { it.endsWith(" llm") })
+    }
+
+    @Test
+    fun `with replay after, a recording that passed is replayed on the device that recorded it before it takes anything else`() {
+        val p = projectWithEntries()
+        val runs = withEntries(p, p.scenarioVariants(), RunMode.LLM)
+        val rec = Recorded(p, failing = setOf("b"))
+
+        val results = runOverDevices(p, runs, twoDevices(), RunMode.LLM, p.config.llm, video = false, runsDir = null, out = {},
+            thenReplay = true, runOne = rec.runOne)
+
+        // in the order of the runs: each recording, then its replay — none for the recording that failed
+        val expected = runs.flatMap { (_, sc) -> if (sc.name == "b") listOf(sc.name) else listOf(sc.name, sc.name) }
+        assertEquals(expected, results.map { it.outcome.name })
+        assertEquals(1, results.count { it.outcome.status == "FAILED" })
+        assertTrue(rec.log.none { " b replay" in it }, "${rec.log}")
+        for ((_, sc) in runs.filter { it.second.name != "b" }) {
+            val device = rec.log.first { " start ${sc.name} llm" in it }.substringBefore(' ')
+            val own = rec.log.filter { it.startsWith("$device ") }
+            val at = own.indexOf("$device end ${sc.name} llm")
+            assertEquals("$device start ${sc.name} replay", own[at + 1], "${rec.log}")
+        }
+    }
 }
