@@ -58,11 +58,14 @@ internal object Devices {
  * [runs] over several devices at once: one [BatchSession] per device, each taking the next piece of work when it
  * is free — a faster device takes more, and what a device that stopped answering (or lost its network for good)
  * had left goes to the others, the scenario it found that out on included.
- * Returns one [BatchResult] per run, in the order of [runs].
+ * Returns the [BatchResult]s in the order of [runs] — one per run, and with [thenReplay] the replay of a recording
+ * that passed right after it, as `--mode both` on one device lists them.
  *
  * What is handed out, and in which order:
  *  1. every way in (`_entry.md`) among [runs], one at a time — all of them before anything else, as a run on one
- *     device orders them, so a scenario never starts before its way in has been judged;
+ *     device orders them, so a scenario never starts before its way in has been judged. A recording needs
+ *     exactly this: a scenario plays its way in from the trace the way in's own recording wrote, whichever
+ *     device recorded it — and no way in starts from another, so they are recorded side by side;
  *  2. the rest by screen (the directory of the file), largest first, each screen's scenarios on one device in
  *     the order given. Scenarios of one screen are the ones most likely to write the same account's data — an
  *     edit of the name and an edit of the link of one profile — and stay one after the other, as they always ran.
@@ -70,6 +73,11 @@ internal object Devices {
  * The devices share the record of ways in that failed, so the scenarios that start from one are skipped on
  * every device. Each scenario's lines are printed together when it ends: the log reads as a run on one device
  * does, with the device named in the scenario's first line.
+ *
+ * A recording asks the model from every device at once — as many requests in flight as there are devices. The
+ * runner does not queue them: the key's limit of parallel requests has to cover the devices attached.
+ *
+ * [runOne] runs one scenario on a device's session — [BatchSession.run], unless a test stands in for the device.
  */
 internal fun runOverDevices(
     project: SimulProject,
@@ -81,9 +89,12 @@ internal fun runOverDevices(
     runsDir: File?,
     out: (String) -> Unit = ::println,
     pause: (Long) -> Unit = Thread::sleep,
+    thenReplay: Boolean = false,
+    runOne: (BatchSession, File, Scenario, RunMode, (String) -> Unit) -> BatchResult =
+        { session, md, scenario, m, log -> session.run(md, scenario, m, llm, video, scenarioLog = log) },
 ): List<BatchResult> {
     val (entries, rest) = runs.indices.partition { runs[it].first.name == SimulProject.ENTRY_FILE }
-    val results = arrayOfNulls<BatchResult>(runs.size)
+    val results = arrayOfNulls<List<BatchResult>>(runs.size)
     val broken = ConcurrentHashMap<String, String>()
     val print = Any()
 
@@ -102,19 +113,21 @@ internal fun runOverDevices(
             val (md, scenario) = runs[index]
             val block = mutableListOf<String>().also { lines = it }
             try {
-                val r = try {
-                    session.run(md, scenario, mode, llm, video, scenarioLog = log)
+                fun one(m: RunMode) = try {
+                    runOne(session, md, scenario, m, log)
                 } catch (t: Throwable) {
                     // the session turns a scenario's crash into a row itself; what still gets here is the runner's own
                     log("CRASH ${scenario.name}: $t")
                     BatchResult(outcomeWithout(project, md, scenario, "CRASH", t.toString()), null)
                 }
+                val r = one(mode)
                 // the device could not start it: not this scenario's result — another device takes it
                 if (r.deviceGone) {
                     log("  ${scenario.name} goes back to be run on another device")
                     return false
                 }
-                results[index] = r
+                // `--mode both`: what was just recorded is replayed where it was recorded, before the device takes anything else
+                results[index] = if (thenReplay && r.outcome.passed) listOf(r, one(RunMode.REPLAY)) else listOf(r)
                 return true
             } finally {
                 lines = null
@@ -135,14 +148,14 @@ internal fun runOverDevices(
         val stopped = pool.firstOrNull { !it.alive }?.session
         for (index in untaken) {
             val (md, scenario) = runs[index]
-            results[index] = stopped?.run(md, scenario, mode, llm, video)
-                ?: BatchResult(outcomeWithout(project, md, scenario, "CRASH", "not run — no device took it"), null)
+            results[index] = listOf(stopped?.run(md, scenario, mode, llm, video)
+                ?: BatchResult(outcomeWithout(project, md, scenario, "CRASH", "not run — no device took it"), null))
         }
     } finally {
         pool.forEach { runCatching { it.session.close() } }
     }
-    return results.mapIndexed { i, r ->
-        r ?: BatchResult(outcomeWithout(project, runs[i].first, runs[i].second, "CRASH", "not run — the runner stopped while it ran"), null)
+    return results.flatMapIndexed { i, r ->
+        r ?: listOf(BatchResult(outcomeWithout(project, runs[i].first, runs[i].second, "CRASH", "not run — the runner stopped while it ran"), null))
     }
 }
 

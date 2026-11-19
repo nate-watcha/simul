@@ -125,15 +125,14 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     val batchStart = System.currentTimeMillis()
     val startedAt = RunSummaryJson.stamp(batchStart)
 
-    // the devices attached are the devices it runs on; a recording stays on one — a scenario's way in is recorded
-    // before the scenario that starts from it, and that order is one device's
+    // the devices attached are the devices it runs on — a recording too: every way in is recorded before the
+    // scenarios that start from one, and that order holds over the devices (runOverDevices)
     val serials = if (dryRun) Devices.ADB_PICKS else try { Devices.forRun(project.config.app) } catch (e: IllegalStateException) { return err(e.message ?: "no device") }
-    val devices = (if (mode == RunMode.LLM) serials.take(1) else serials).map { AdbOps(statesDir = project.statesDir, serial = it) }
-    if (serials.size > devices.size) println("devices: ${serials.size} online — a recording runs on one (${serials.first()})")
+    val devices = serials.map { AdbOps(statesDir = project.statesDir, serial = it) }
     val ops = devices.first()
     if (devices.size > 1) {
         println("devices: ${devices.size} — ${serials.joinToString(", ")}")
-        for (r in runOverDevices(project, runs, devices, mode, llm, video, runsDir)) {
+        for (r in runOverDevices(project, runs, devices, mode, llm, video, runsDir, thenReplay = thenReplay)) {
             outcomes += r.outcome
             r.result?.let { results += it }
             if (r.outcome.status != "SKIPPED") anyRan = true
