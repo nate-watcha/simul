@@ -82,14 +82,14 @@ class AdbDeviceTest {
     }
 
     @Test
-    fun `inputText is android input text aimed at the field's resource-id, or at the focused element`() {
+    fun `inputText is android input text aimed at the field's resource-id with or without its package, or at the focused element`() {
         val calls = mutableListOf<List<String>>()
         val device = AdbDevice(onCommand = calls::add, retryDelayMs = 0) { "" }
-        device.inputText("타짜", "com.frograms.wplay:id/search_input")
+        device.inputText("타짜", "search_input")
         device.inputText("타짜", null)
         assertEquals(
             listOf(
-                listOf("android", "input", "text", "--match", "first", "타짜", "id=/^com\\.frograms\\.wplay:id\\/search_input$/"),
+                listOf("android", "input", "text", "--match", "first", "타짜", "id=/^(?:[A-Za-z0-9_.]+:id\\/)?search_input$/"),
                 listOf("android", "input", "text", "--match", "first", "타짜", "focused=true"),
             ),
             calls,

@@ -171,9 +171,15 @@ class AdbDevice(
      * whatever holds input focus. No keyboard takes part — IME composition and autocomplete are
      * not exercised — but EditText's TextWatcher and Compose's onValueChange fire as for typed
      * text, so search-as-you-type screens react the same.
+     *
+     * The id the controller hands over is the short one the layout shows (`search`), while a View's
+     * resource-id on the device is `<package>:id/search` — so the package prefix is optional in the
+     * regex. Without it no View field ever matched (실측 2026-11-19, stone 검색 탭의
+     * AutoCompleteTextView: "No matching elements" on every type); Compose testTags carry no prefix
+     * and matched all along.
      */
     override fun inputText(text: String, resourceId: String?) {
-        val selector = resourceId?.let { "id=/^${regexEscape(it)}$/" } ?: "focused=true"
+        val selector = resourceId?.let { "id=/^(?:[A-Za-z0-9_.]+:id\\/)?${regexEscape(it)}$/" } ?: "focused=true"
         val argv = androidArgs("input") + listOf("text", "--match", "first", text, selector)
         restless = false
         onCommand(argv)
