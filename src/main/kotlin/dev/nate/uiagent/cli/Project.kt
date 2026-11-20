@@ -19,11 +19,11 @@ class SimulProject(val appRoot: File) {
     val statesDir = File(dir, "states")
     val config: SimulConfig = SimulConfig.load(File(dir, "config.yaml"))
 
-    /** All scenario markdown files, sorted for stable ordering — a screen's way in (`_entry.md`) ahead of the scenarios that start from it. */
+    /** All scenario markdown files, sorted for stable ordering — a screen's way in (`_entry.md`, or one per mode) ahead of the scenarios that start from it. */
     fun scenarios(): List<File> =
         scenariosDir.walkTopDown()
             .filter { it.isFile && it.extension == "md" && it.name != ScreenMd.FILE }
-            .sortedWith(compareBy({ it.parentFile.relativeTo(scenariosDir).path }, { it.name != ENTRY_FILE }, { it.name }))
+            .sortedWith(compareBy({ it.parentFile.relativeTo(scenariosDir).path }, { !isEntry(it) }, { it.name }))
             .toList()
 
     /**
@@ -36,14 +36,78 @@ class SimulProject(val appRoot: File) {
     /**
      * The file that says how [md]'s screen is entered, when [md] is not that file: the `_entry.md` of its own
      * directory, else of the nearest directory above that has one — a part of a screen is there as soon as the
-     * screen is open, so it has no way in to write and starts from the screen's.
+     * screen is open, so it has no way in to write and starts from the screen's. Where the ways in are one per
+     * mode ([Modes]) it is the one of [md]'s mode, and for a file common to the modes the first mode's.
      */
     fun entryFileOf(md: File): File? {
-        if (md.name == ENTRY_FILE || screenOf(md).isEmpty()) return null
-        val top = scenariosDir.absoluteFile
-        return generateSequence(md.absoluteFile.parentFile) { it.parentFile }.takeWhile { it != top }
-            .map { File(it, ENTRY_FILE) }.firstOrNull { it.isFile }
+        if (isEntry(md) || screenOf(md).isEmpty()) return null
+        return entryFileIn(md.absoluteFile.parentFile, modeOf(md))
     }
+
+    /**
+     * The way in a scenario of [mode] in [dir] starts from: of the nearest directory, [dir] or above, that has one.
+     * There a plain `_entry.md` serves every mode; where the ways in are one per mode it is [mode]'s — a place that
+     * has none for it is not there in that mode, and a scenario of that mode cannot be under it — and without a
+     * mode (a file common to the modes) the first of the screen's modes that has one.
+     */
+    private fun entryFileIn(dir: File, mode: String?): File? {
+        val top = scenariosDir.absoluteFile
+        for (d in generateSequence(dir.absoluteFile) { it.parentFile }.takeWhile { it != top }) {
+            val plain = File(d, ENTRY_FILE).takeIf { it.isFile }
+            val byMode = modeEntriesIn(d)
+            if (plain == null && byMode.isEmpty()) continue
+            val here = screenOfDir(d)
+            if (mode != null) return byMode[mode] ?: plain
+                ?: throw IllegalArgumentException("'$here' has no way in for the mode '$mode' (${byMode.values.joinToString(", ") { it.name }}) — a scenario of that mode cannot be under it")
+            return plain ?: modesOf(here).firstNotNullOfOrNull { byMode[it] } ?: byMode.values.first()
+        }
+        return null
+    }
+
+    /** The ways in of [dir] that are one mode's (`_entry@타인.md`), by mode. */
+    private fun modeEntriesIn(dir: File): Map<String, File> =
+        dir.listFiles { f -> f.isFile && f.name != ENTRY_FILE && isEntry(f) }.orEmpty().sortedBy { it.name }
+            .associateBy { Mentions.norm(Modes.of(it.nameWithoutExtension)!!) }
+
+    private fun screenOfDir(dir: File): String = Mentions.norm(dir.absoluteFile.relativeTo(scenariosDir.absoluteFile).path)
+
+    /**
+     * The modes of [screen]: the `modes:` line of its `_screen.md`, or of the nearest screen above that has one —
+     * a tab of a screen with modes is in those modes too. Empty for a screen that is one screen.
+     */
+    fun modesOf(screen: String): List<String> =
+        generateSequence(Mentions.norm(screen).ifEmpty { null }) { at -> at.substringBeforeLast('/', "").ifEmpty { null } }
+            .firstNotNullOfOrNull { at -> layoutOf(at)?.modes?.takeIf { it.isNotEmpty() } }.orEmpty()
+
+    /**
+     * The mode [md]'s name says it is of (`헤더@타인.md` → `타인`), one of its screen's `modes:`; null for a file
+     * common to the modes, and for every file of a screen without modes.
+     */
+    fun modeOf(md: File): String? {
+        val mode = Modes.of(md.nameWithoutExtension)?.let(Mentions::norm) ?: return null
+        val modes = modesOf(screenOf(md))
+        val where = md.absoluteFile.relativeTo(scenariosDir.absoluteFile).path
+        require(modes.isNotEmpty()) { "$where: `@$mode` in a file's name is a mode of its screen — no ${ScreenMd.FILE} at or above it has a `modes:` line" }
+        require(mode in modes) { "$where: `@$mode` is not a mode of its screen (modes: ${modes.joinToString(", ")})" }
+        return mode
+    }
+
+    /**
+     * The mode of the place [md] is in when only one mode has that place: the nearest directory with a way in has
+     * it for that mode alone (a tab only the owner sees). Null where the place is there in every mode.
+     */
+    private fun placeModeOf(md: File): String? {
+        val top = scenariosDir.absoluteFile
+        for (d in generateSequence(md.absoluteFile.parentFile) { it.parentFile }.takeWhile { it != top }) {
+            val byMode = modeEntriesIn(d)
+            if (File(d, ENTRY_FILE).isFile) return null
+            if (byMode.isNotEmpty()) return byMode.keys.singleOrNull()
+        }
+        return null
+    }
+
+    /** What a scenario that starts from the way in [entry] names it by ([Modes.key]). */
+    fun entryKeyOf(entry: File): String = Modes.key(screenOf(entry), Modes.of(entry.nameWithoutExtension)?.let(Mentions::norm))
 
     /** Every screen of the project: the directories that hold a scenario, in themselves or below, named as [screenOf] names them. */
     fun screens(): List<String> = scenarios().map(::screenOf).filter { it.isNotEmpty() }
@@ -95,12 +159,15 @@ class SimulProject(val appRoot: File) {
     fun load(md: File): Scenario {
         require(md.name != ScreenMd.FILE) { "${ScreenMd.FILE} says what a screen is made of — it is not a scenario and is not run" }
         layoutsFor(screenOf(md)) // read here so a line that names no directory is refused with the scenario, not found in the report
-        val scenario = mentioned(ScenarioMd.parse(md))
+        val mode = modeOf(md)
+        val parsed = mentioned(ScenarioMd.parse(md))
         // every screen's way in is the same file name: unnamed, it is called by its screen in logs, summaries and report directories
-        if (md.name == ENTRY_FILE) return scenario.also(::checkEntry).let { if (it.name == md.nameWithoutExtension) it.copy(name = entryName(screenOf(md))) else it }
+        if (isEntry(md)) return parsed.copy(mode = mode).also(::checkEntry)
+            .let { if (it.name == Modes.base(md.nameWithoutExtension)) it.copy(name = entryName(screenOf(md), mode)) else it }
+        val scenario = parsed.copy(mode = mode ?: placeModeOf(md))
         val own = scenario.setup
         val screen = own?.entry
-            ?: entryFileOf(md)?.takeIf { own?.deeplink == null && own?.launch != true }?.let(::screenOf)
+            ?: (if (own?.deeplink == null && own?.launch != true) entryFileOf(md)?.let(::entryKeyOf) else null)
             ?: return scenario
         val way = entryOf(screen) ?: throw IllegalArgumentException("scenario '${scenario.name}': setup.entry '$screen' — that screen has no $ENTRY_FILE, nor has a screen above it")
         val entry = way.setup
@@ -140,21 +207,23 @@ class SimulProject(val appRoot: File) {
     /**
      * The way in of [screen] with the trace that plays it (null until it is recorded): its own `_entry.md`, or — for a
      * part of a screen, which has none — that of the nearest screen above ([ScreenEntry.screen] is the one whose file
-     * it is). Null when there is no such screen, or no way in on the way up.
+     * it is). Null when there is no such screen, or no way in on the way up. [screen] is a key ([Modes]): with a
+     * mode after it (`프로필/홈@타인`) the way in is that mode's, without one the first mode's where there are several.
      */
     fun entryOf(screen: String): ScreenEntry? {
-        if (dirOf(screen) == null) return null
-        val owner = generateSequence(Mentions.norm(screen)) { at -> at.substringBeforeLast('/', "").ifEmpty { null } }
-            .firstOrNull { at -> dirOf(at)?.let { File(it, ENTRY_FILE).isFile } == true } ?: return null
-        val md = File(dirOf(owner)!!, ENTRY_FILE)
+        val whole = dirOf(screen)
+        val dir = whole ?: dirOf(Modes.screenOf(screen)) ?: return null
+        val mode = if (whole != null) null else Modes.modeOf(screen)?.let(Mentions::norm)
+        val md = entryFileIn(dir, mode) ?: return null
         val entry = load(md)
         val trace = traceFileFor(md).takeIf { it.isFile }?.let { runCatching { TraceJson.read(it) }.getOrNull() }
-        return ScreenEntry(owner, entry.setup!!, entry.steps, entry.precondition, trace, md.relativeTo(scenariosDir).path)
+        return ScreenEntry(entryKeyOf(md), entry.setup!!, entry.steps, entry.precondition, trace, md.relativeTo(scenariosDir).path)
     }
 
     /**
      * The committed trace sits next to the scenario: `<name>.trace.json` — or, for a scenario
-     * that declares `states:`, one per state: `<name>@<state>.trace.json`.
+     * that declares `states:`, one per state: `<name>@<state>.trace.json`. A file of one mode carries the mode in
+     * its own name, and so does its trace: `헤더@타인.trace.json`.
      */
     fun traceFileFor(md: File, state: String? = null): File =
         File(md.parentFile, md.nameWithoutExtension + (state?.let { "@$it" } ?: "") + TRACE_SUFFIX)
@@ -164,7 +233,10 @@ class SimulProject(val appRoot: File) {
     /** [traceFileFor] inverted: the scenario file a trace sits next to, and the state it is the trace of (null = stateless). */
     fun scenarioOfTrace(trace: File): Pair<File, String?> {
         val base = trace.name.removeSuffix(TRACE_SUFFIX)
-        return File(trace.absoluteFile.parentFile, base.substringBefore('@') + ".md") to base.substringAfter('@', "").ifEmpty { null }
+        val dir = trace.absoluteFile.parentFile
+        // `헤더@타인` is the file of a mode; a state comes after the file's name, whatever is in it
+        File(dir, "$base.md").takeIf { it.isFile }?.let { return it to null }
+        return File(dir, base.substringBeforeLast('@') + ".md") to base.substringAfterLast('@', "").ifEmpty { null }
     }
 
     /**
@@ -193,8 +265,18 @@ class SimulProject(val appRoot: File) {
         /** A screen's way in, in its directory (see [load]). */
         const val ENTRY_FILE = "_entry.md"
 
-        /** What an unnamed way in is called: `프로필 수정 진입`. */
-        fun entryName(screen: String): String = screen.replace('/', ' ').ifEmpty { "root" } + " 진입"
+        /** The stem of a way in's file name: `_entry.md`, and `_entry@타인.md` for one mode's. */
+        const val ENTRY_STEM = "_entry"
+
+        /** [file] is a screen's way in: `_entry.md`, or one mode's `_entry@<mode>.md`. */
+        fun isEntry(file: File): Boolean = isEntryStem(file.name.removeSuffix(".md")) && file.name.endsWith(".md")
+
+        /** `_entry` or `_entry@<mode>` — a way in's file name without `.md`, which is what a result calls it. */
+        fun isEntryStem(stem: String): Boolean = stem == ENTRY_STEM || stem.startsWith("$ENTRY_STEM${Modes.SEP}")
+
+        /** What an unnamed way in is called: `프로필 수정 진입`, and in a mode `프로필 타인 진입`. */
+        fun entryName(screen: String, mode: String? = null): String =
+            screen.replace('/', ' ').ifEmpty { "root" } + (mode?.let { " $it" } ?: "") + " 진입"
 
         /** Walk up from [from] looking for a `.simul/` directory. */
         fun find(from: File): SimulProject? {

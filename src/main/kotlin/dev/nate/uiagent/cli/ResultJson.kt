@@ -80,14 +80,17 @@ object ResultJson {
         val mentions: List<String> = emptyList(),
         /** What the scenario's screen and the screens above it are made of (their `_screen.md`), by screen. */
         val screens: Map<String, ScreenLayout> = emptyMap(),
+        /** The mode of its screen the scenario is of ([Scenario.mode]); null when it is common to the modes. */
+        val screenMode: String? = null,
     )
 
     /**
      * A scenario's way in: the [deeplink] it opens or a plain [launch], from the account state [appState].
      * [via] is the screen whose way in (`_entry.md`) it started from: the address is that entry's, and the
-     * entry's steps were played before the scenario's own.
+     * entry's steps were played before the scenario's own — and [mode] the mode that way in is of, where the
+     * screen has one per mode: the mode the scenario ran in.
      */
-    data class Setup(val deeplink: String?, val launch: Boolean, val appState: String?, val via: String? = null) {
+    data class Setup(val deeplink: String?, val launch: Boolean, val appState: String?, val via: String? = null, val mode: String? = null) {
         /** `watcha://my`, or `앱 실행` for a plain launch; null when the scenario names neither. */
         val entry: String? get() = deeplink ?: if (launch) "앱 실행" else null
     }
@@ -130,12 +133,18 @@ object ResultJson {
                     })
                 }
             })
+            // the modes of the screens that are one screen in several, by screen, and the one this scenario is of
+            meta.screens.filterValues { it.modes.isNotEmpty() }.takeIf { it.isNotEmpty() }?.let { withModes ->
+                put("modes", buildJsonObject { withModes.forEach { (screen, layout) -> put(screen, buildJsonArray { layout.modes.forEach { add(JsonPrimitive(it)) } }) } })
+            }
+            meta.screenMode?.let { put("screen_mode", it) }
             meta.setup?.let { s ->
                 put("setup", buildJsonObject {
                     s.deeplink?.let { put("deeplink", it) }
                     if (s.launch) put("launch", true)
                     s.appState?.let { put("app_state", it) }
                     s.via?.let { put("via", it) }
+                    s.mode?.let { put("mode", it) }
                 })
             }
             // the scenario's `values:` as this run picked them — absent when it declares none
@@ -240,6 +249,8 @@ object ResultJson {
         val mentions: List<String> = emptyList(),
         /** What the scenario's screen and the screens above it are made of (their `_screen.md`), by screen. */
         val screens: Map<String, ScreenLayout> = emptyMap(),
+        /** The mode of its screen the scenario is of (`screen_mode`); null when it is common to the modes, or its screen has none. */
+        val screenMode: String? = null,
         val traceRecordedAt: String?,
         /** PASSED | FAILED | SKIPPED_SETUP */
         val status: String,
@@ -354,6 +365,7 @@ object ResultJson {
             owner = o.str("owner"),
             description = o.str("description") ?: "",
             mentions = o.strList("mentions"),
+            screenMode = o.str("screen_mode"),
             screens = o.obj("screens")?.mapNotNull { (screen, v) ->
                 (v as? JsonArray)?.let { arr ->
                     screen to ScreenLayout(arr.mapNotNull { item ->
@@ -362,7 +374,7 @@ object ResultJson {
                             is JsonPrimitive -> item.contentOrNull?.let { ScreenLayout.Slot(part = it) }
                             else -> null
                         }
-                    })
+                    }, modes = o.obj("modes")?.get(screen)?.let { m -> (m as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } }.orEmpty())
                 }
             }?.toMap() ?: emptyMap(),
             traceRecordedAt = o.str("trace_recorded_at"),
@@ -403,7 +415,7 @@ object ResultJson {
                 )
             } ?: emptyList(),
             setupEvents = events(o, "setup_events"),
-            setup = o.obj("setup")?.let { s -> Setup(s.str("deeplink"), s.bool("launch") == true, s.str("app_state"), s.str("via")) },
+            setup = o.obj("setup")?.let { s -> Setup(s.str("deeplink"), s.bool("launch") == true, s.str("app_state"), s.str("via"), s.str("mode")) },
             sections = o.arr("sections")?.mapNotNull { el ->
                 val sec = el as? JsonObject ?: return@mapNotNull null
                 Section(sec.str("title") ?: return@mapNotNull null, sec.str("description") ?: "", sec.bool("preparation") == true,

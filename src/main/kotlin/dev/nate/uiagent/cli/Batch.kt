@@ -167,8 +167,8 @@ class BatchSession(
         // a scenario that did not pass may be the device's doing — and then so would every one after it
         if (!result.passed) checkDevice(recheck = true)
         // a way in that stopped because the device did says nothing about the way in
-        if (md.name == SimulProject.ENTRY_FILE && deviceDown == null) {
-            val screen = project.screenOf(md)
+        if (SimulProject.isEntry(md) && deviceDown == null) {
+            val screen = project.entryKeyOf(md)
             if (result.passed) brokenEntries -= screen
             else brokenEntries[screen] = result.steps.firstOrNull { it.status == StepStatus.FAILED }?.let { "step ${it.index} — ${it.reason ?: "failed"}" } ?: "failed"
         }

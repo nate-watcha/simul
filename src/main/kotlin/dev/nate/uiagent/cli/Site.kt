@@ -32,8 +32,8 @@ object Site {
     /** Where the recording's per-scenario directories sit under the report dir. */
     const val RECORD_DIR = "record"
 
-    /** The file name of a screen's way in (`_entry.md`), as a result names it. */
-    const val ENTRY_NAME = "_entry"
+    /** The file name of a screen's way in (`_entry.md`), as a result names it — one mode's is `_entry@<mode>`. */
+    const val ENTRY_NAME = SimulProject.ENTRY_STEM
 
     /** How the reason of a scenario begins that was not run because its screen's way in had failed (see BatchSession.run). */
     const val WAY_IN_FAILED = "not run — the way in to"
@@ -81,16 +81,30 @@ object Site {
      * scenario's checks ([check] null) — mentions [to] (`@화면`). It is written, run and counted on the screen
      * [from]; the report shows it on [to]'s page too. [look] tells the two kinds apart by how the check got there:
      * opened at a place of its own, it looked at what a change elsewhere left on [to]; on foot, it is a way to [to].
+     * [mode] is the mode of [to] it was seen in, where [to] is a screen with modes: the one the look was opened in
+     * (the `@mode` of its `setup.entry`, else the first the place has — what the runner opens), or for a walk the
+     * mode the scenario is of. Null when it is of no one mode, or was opened at an address.
      */
-    class Link(val from: Screen, val row: Row, val check: Check?, val to: String, val text: String, val status: String, val look: Boolean)
+    class Link(val from: Screen, val row: Row, val check: Check?, val to: String, val text: String, val status: String, val look: Boolean, val mode: String? = null)
 
     /** Every mention among [screens]' scenarios, in the screens' order. A screen's way in mentions nothing: it is that screen's. */
-    fun links(screens: List<Screen>): List<Link> = screens.flatMap { screen ->
-        screen.scenarios.flatMap { row ->
-            val t = row.timeline
-            val whole = when (row.kind) { Kind.FAILED -> "FAILED"; Kind.PASSED -> "PASSED"; Kind.SETUP -> "NONE" }
-            t.mentions.map { Link(screen, row, null, it, t.description, whole, look = false) } +
-                row.checks.filter { it.title != null }.flatMap { c -> c.mentions.map { Link(screen, row, c, it, c.description, c.status, c.opened) } }
+    fun links(screens: List<Screen>): List<Link> {
+        val by = screens.associateBy { Mentions.norm(it.feature) }
+        // the mode a look was opened in: its entry says it (`프로필/홈@타인`), else it is the first mode that place has
+        fun openedIn(c: Check): String? {
+            val key = c.entry?.let(Mentions::norm) ?: return null
+            val place = by[key] ?: return Modes.modeOf(key)
+            return place.only ?: place.modes.firstOrNull()
+        }
+        return screens.flatMap { screen ->
+            screen.scenarios.flatMap { row ->
+                val t = row.timeline
+                val whole = when (row.kind) { Kind.FAILED -> "FAILED"; Kind.PASSED -> "PASSED"; Kind.SETUP -> "NONE" }
+                t.mentions.map { Link(screen, row, null, it, t.description, whole, look = false, mode = row.mode) } +
+                    row.checks.filter { it.title != null }.flatMap { c ->
+                        c.mentions.map { Link(screen, row, c, it, c.description, c.status, c.opened, if (c.opened) openedIn(c) else row.mode) }
+                    }
+            }
         }
     }
 
@@ -143,8 +157,28 @@ object Site {
         val subtree: List<Screen> get() = listOf(this) + children.flatMap { it.subtree }
         /** The topmost screen it is nested in (itself for a root). */
         val root: Screen get() = parent?.root ?: this
-        /** The screen's way in (`_entry.md`), when its directory has one and it ran. */
-        val entry: Row? get() = rows.firstOrNull { it.isEntry }
+        /** The screen's way in (`_entry.md`), when its directory has one and it ran — the first mode's, where each mode has one. */
+        val entry: Row? get() = ways.firstOrNull()
+        /** The screen's ways in: the one, or one per mode in the modes' order. */
+        val ways: List<Row> get() = rows.filter { it.isEntry }.sortedBy { r -> modes.indexOf(r.mode).let { if (it < 0) Int.MAX_VALUE else it } }
+        /**
+         * The modes of the screen ([ScreenLayout.modes]): its own, or those of the screen it is nested in — a tab of
+         * a screen with modes is in those modes. Empty for a screen that is one screen.
+         */
+        var modes: List<String> = emptyList()
+            internal set
+        /**
+         * The one mode that has this place — a tab only the owner sees: everything in it and under it is of that mode,
+         * and it is so by where it is (its way in is that mode's alone, or a scenario in it says no mode of its own).
+         * A place both modes have whose checks so far are all one mode's files is not one. Null for a place every
+         * mode has, or a screen without modes.
+         */
+        val only: String? get() {
+            if (modes.isEmpty()) return null
+            val all = rowsOf(subtree)
+            val mode = all.map { it.mode }.distinct().singleOrNull() ?: return null
+            return mode.takeIf { ways.isNotEmpty() || all.any { Modes.of(it.result.name) == null } }
+        }
         /** It is entered by a way of its own: its directory has one, or a scenario of it says it started from it. */
         val hasOwnWayIn: Boolean get() = entry != null || rows.any { r -> r.result.setup?.via?.let(Mentions::norm) == Mentions.norm(feature) }
         /** The scenarios that test the screen: all but its way in. */
@@ -183,10 +217,16 @@ object Site {
         }
         // what each screen is made of, as any of the run's results carries it
         val layouts = rows.flatMap { it.result.screens.entries }.associate { (screen, layout) -> Mentions.norm(screen) to layout }
+        // a screen's modes are those of every screen nested in it: shortest paths first, so an upper screen's are set before a lower one asks
+        for (screen in by.values.sortedBy { it.feature.count { c -> c == '/' } }) {
+            screen.modes = layouts[Mentions.norm(screen.feature)]?.modes?.takeIf { it.isNotEmpty() }
+                ?: by[Mentions.norm(screen.feature.substringBeforeLast('/', ""))]?.modes.orEmpty()
+        }
         val kids = by.values.filter { '/' in it.feature }.groupBy { by.getValue(Mentions.norm(it.feature.substringBeforeLast('/'))) }
         for (screen in by.values) {
             val children = kids[screen].orEmpty()
-            val layout = layouts[Mentions.norm(screen.feature)]
+            // a file that only names the screen's modes says nothing of what it is made of
+            val layout = layouts[Mentions.norm(screen.feature)]?.takeIf { it.slots.isNotEmpty() }
             if (children.isEmpty() && layout == null) continue
             val under = children.associateBy { Mentions.norm(it.label) }
             for (c in children) {
@@ -219,16 +259,21 @@ object Site {
             .flatMap(::under)
     }
 
-    /** [row] was not run because the way in of [screen] had failed. */
-    fun waitsFor(row: Row, screen: String): Boolean =
-        row.waitsForEntry && row.result.reason?.let(Mentions::norm)?.contains("'${Mentions.norm(screen)}'") == true
+    /** [row] was not run because the way in of [screen] had failed — the one of [mode], where the screen has one per mode. */
+    fun waitsFor(row: Row, screen: String, mode: String? = null): Boolean =
+        row.waitsForEntry && row.result.reason?.let(Mentions::norm)?.contains("'${Mentions.norm(Modes.key(screen, mode))}'") == true
 
     class Row(val result: ResultJson.Result, val kind: Kind, val record: ScenarioOutcome? = null, val recording: ResultJson.Result? = null) {
         val id get() = result.id
-        /** This row is its screen's way in (`_entry.md`), not a scenario of it. */
-        val isEntry get() = result.name == ENTRY_NAME
+        /** This row is its screen's way in (`_entry.md`, or one mode's `_entry@<mode>.md`), not a scenario of it. */
+        val isEntry get() = SimulProject.isEntryStem(result.name)
+        /** The mode of its screen the scenario is of ([Scenario.mode]); null when it is common to the modes. */
+        val mode: String? get() = result.screenMode
+        /** The name the modes' files of one check share: `헤더` of `헤더@타인`. */
+        val base: String get() = Modes.base(result.name)
         /** What the pages call it: its title — `진입` for a way in that was given none. */
-        val title: String get() = if (isEntry && (result.title == ENTRY_NAME || result.title == SimulProject.entryName(result.feature))) "진입" else result.title
+        val title: String get() = if (isEntry && (result.title == result.name || result.title == ENTRY_NAME ||
+                result.title == SimulProject.entryName(result.feature) || result.title == SimulProject.entryName(result.feature, mode))) "진입" else result.title
         /** It was not run because its screen's way in had failed: the entry's failure is the one to read. */
         val waitsForEntry get() = kind == Kind.SETUP && result.reason?.startsWith(WAY_IN_FAILED) == true
         /** The run the pages tell this scenario by: tonight's recording when it failed and left its steps, else the replay. */

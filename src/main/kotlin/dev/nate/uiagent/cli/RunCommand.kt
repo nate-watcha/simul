@@ -147,7 +147,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
                 println("${scenario.name} (${scenarioPath(project, md, scenario)})")
                 println("  mode: $planned  trace: ${TraceState.of(md, trace).name.lowercase()}  tags: ${scenario.tags}" +
                     (scenario.state?.let { "  state: $it" } ?: ""))
-                scenario.via?.let { println("  starts from the way in to '$it' (${SimulProject.ENTRY_FILE})") }
+                scenario.via?.let { println("  starts from the way in to '$it' (${project.entryOf(it)?.file ?: SimulProject.ENTRY_FILE})") }
                 scenario.steps.forEachIndexed { idx, s ->
                     scenario.sections.firstOrNull { it.first == idx }?.let { sec ->
                         println("  ## ${sec.title}" + (if (sec.preparation) " — by the model, in every mode" else "") +
@@ -232,7 +232,7 @@ internal fun withEntries(project: SimulProject, targets: List<Pair<File, Scenari
         md.takeIf { it.absoluteFile !in asked && TraceState.of(it, project.traceFileFor(it)) != TraceState.OK }
             ?.let { it to project.load(it) }
     }
-    return (added + targets).sortedBy { (md, _) -> md.name != SimulProject.ENTRY_FILE }
+    return (added + targets).sortedBy { (md, _) -> !SimulProject.isEntry(md) }
 }
 
 /**
@@ -341,7 +341,8 @@ internal fun executeScenario(
         screens = project.layoutsFor(project.screenOf(md)),
         traceRecordedAt = traceRecordedAt(traceFile, project.appRoot),
         env = ResultJson.Env(ops.appVersionName(project.config.app), ops.deviceName(), ops.androidCliVersion()),
-        setup = scenario.setup?.let { ResultJson.Setup(it.deeplink, it.launch, scenario.precondition, scenario.via) },
+        setup = scenario.setup?.let { ResultJson.Setup(it.deeplink, it.launch, scenario.precondition, scenario.via?.let(Modes::screenOf), scenario.via?.let(Modes::modeOf)) },
+        screenMode = scenario.mode,
     ), reportDir)
 
     result.updatedTrace?.let { updated ->
