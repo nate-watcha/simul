@@ -317,4 +317,78 @@ class CliProjectTest {
         File(my, "_entry.md").writeText("---\ntabs: [홈, 활동]\nsetup:\n  deeplink: app://my\n---\n1. 스텝\n")
         assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(my, "_entry.md")) }.message!!, "_screen.md")
     }
+
+    @Test
+    fun `a screen in several modes - a file of one mode says so in its name and starts from that mode's way in, a common one from the first mode's`() {
+        val root = makeProject()
+        val profile = File(root, ".simul/scenarios/프로필")
+        for (d in listOf("상단 바", "프로필 헤더", "홈/이번 주", "좋아요/좋아한 인물", "취향 매칭")) File(profile, d).mkdirs()
+        File(profile, "_screen.md").writeText("---\nmodes: [본인, 타인]\nparts: [상단 바, 프로필 헤더, [취향 매칭, 홈, 좋아요]]\n---\n")
+        fun entry(address: String, step: String) = "---\nsetup:\n  appState: member\n  deeplink: $address\n---\n1. $step\n"
+        File(profile, "_entry@본인.md").writeText(entry("app://my", "\"프로필 수정\"이 보이는지 확인한다"))
+        File(profile, "_entry@타인.md").writeText(entry("app://users/1", "\"팔로우\"가 보이는지 확인한다"))
+        // parts: there in both modes, with what each mode alone has and what both share
+        File(profile, "상단 바/알림@본인.md").writeText("---\nname: 알림\n---\n1. \"알림\"을 누른다\n")
+        File(profile, "상단 바/차단@타인.md").writeText("1. \"더보기\"를 누른다\n")
+        File(profile, "프로필 헤더/링크 열기.md").writeText("---\nname: 링크 열기\n---\n1. 링크를 누른다\n")
+        // a tab both modes have, each a tap away; the same check in each mode
+        File(profile, "홈/_entry@본인.md").writeText(entry("app://my", "\"프로필 홈\" 탭을 누른다"))
+        File(profile, "홈/_entry@타인.md").writeText(entry("app://users/1", "\"프로필 홈\" 탭을 누른다"))
+        File(profile, "홈/이번 주/헤더@본인.md").writeText("---\nname: 헤더\n---\n하단 내비게이션의 캘린더로 간다.\n\n1. \"전체 보기\"를 누른다\n")
+        File(profile, "홈/이번 주/헤더@타인.md").writeText("---\nname: 헤더\n---\n이 유저의 캘린더 탭으로 간다.\n\n1. \"전체 보기\"를 누른다\n")
+        File(profile, "홈/이번 주/날짜.md").writeText("---\nname: 날짜\n---\n1. 날짜를 누른다\n")
+        // a tab only one mode has: its way in is that mode's alone, and nothing under it says the mode again
+        File(profile, "좋아요/_entry@본인.md").writeText(entry("app://my", "\"좋아요\" 탭을 누른다"))
+        File(profile, "좋아요/좋아한 인물/행.md").writeText("---\nname: 행\n---\n1. 행을 누른다\n")
+        File(profile, "취향 매칭/_entry@타인.md").writeText(entry("app://users/1", "\"취향 매칭\" 탭을 누른다"))
+        val p = SimulProject(root)
+
+        assertEquals(listOf("본인", "타인"), p.layoutOf("프로필")?.modes)
+        assertEquals(listOf("본인", "타인"), p.modesOf("프로필/홈/이번 주"), "a place of a screen with modes is in those modes")
+        assertEquals(emptyList(), p.modesOf("billing"))
+        assertEquals(listOf("_entry@본인.md", "_entry@타인.md"), p.scenarios().filter { it.parentFile == profile }.map { it.name }, "each mode's way in, ahead of the scenarios")
+
+        // the way in of a mode: named by its screen and mode, and it is what a file of that mode starts from
+        val other = p.load(File(profile, "_entry@타인.md"))
+        assertEquals(listOf("프로필 타인 진입", "타인", null), listOf(other.name, other.mode, other.via))
+        val block = p.load(File(profile, "상단 바/차단@타인.md"))
+        assertEquals(listOf("차단", "타인", "프로필@타인", "app://users/1"), listOf(block.name, block.mode, block.via, block.setup?.deeplink), "unnamed, it is called by its file without the mode")
+        assertEquals("프로필@본인" to "본인", p.load(File(profile, "상단 바/알림@본인.md")).let { it.via to it.mode })
+        assertEquals("프로필/홈@타인" to "타인", p.load(File(profile, "홈/이번 주/헤더@타인.md")).let { it.via to it.mode }, "the nearest way in above, of its mode")
+        // a file common to the modes runs once, in the first of them
+        assertEquals("프로필@본인" to null, p.load(File(profile, "프로필 헤더/링크 열기.md")).let { it.via to it.mode })
+        assertEquals("프로필/홈@본인" to null, p.load(File(profile, "홈/이번 주/날짜.md")).let { it.via to it.mode })
+        // a place only one mode has: its scenarios are of that mode without saying so
+        assertEquals("프로필/좋아요@본인" to "본인", p.load(File(profile, "좋아요/좋아한 인물/행.md")).let { it.via to it.mode })
+
+        // an entry is looked up by key: with a mode that mode's, without one the first that is there
+        assertEquals("프로필/홈@타인" to "프로필/홈/_entry@타인.md", p.entryOf("프로필/홈@타인")?.let { it.screen to it.file })
+        assertEquals("프로필/홈@본인", p.entryOf("프로필/홈/이번 주")?.screen)
+        assertEquals("프로필/취향 매칭@타인", p.entryOf("프로필/취향 매칭")?.screen, "the only mode it has")
+        assertEquals("app://users/1", p.entryOf("프로필/프로필 헤더@타인")?.setup?.deeplink)
+
+        // each file has its trace beside it, and a trace names its file back
+        val trace = p.traceFileFor(File(profile, "홈/이번 주/헤더@타인.md"))
+        assertEquals("헤더@타인.trace.json", trace.name)
+        assertEquals(File(profile, "홈/이번 주/헤더@타인.md").absoluteFile to null, p.scenarioOfTrace(trace))
+        assertEquals("날짜.md" to "member", p.scenarioOfTrace(File(profile, "홈/이번 주/날짜@member.trace.json")).let { it.first.name to it.second })
+
+        // a recording records the way in of the mode it starts from first
+        val header = File(profile, "홈/이번 주/헤더@타인.md")
+        assertEquals(listOf("_entry@타인.md", "헤더@타인.md"), withEntries(p, listOf(header to p.load(header)), RunMode.LLM).map { it.first.name })
+        assertEquals(0, cliMain(arrayOf("run", "--all", "--dry-run"), root))
+
+        // a mode in a name is one of the screen's; a place a mode does not have holds no scenario of it
+        File(profile, "상단 바/설정@타안.md").writeText("1. 스텝\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(profile, "상단 바/설정@타안.md")) }.message!!, "`@타안` is not a mode of its screen (modes: 본인, 타인)")
+        File(profile, "상단 바/설정@타안.md").delete()
+        File(profile, "좋아요/빈 계정@타인.md").writeText("1. 스텝\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(profile, "좋아요/빈 계정@타인.md")) }.message!!, "has no way in for the mode '타인'")
+        File(profile, "좋아요/빈 계정@타인.md").delete()
+        val plain = File(root, ".simul/scenarios/billing").apply { mkdirs() }
+        File(plain, "coupon@타인.md").writeText("1. 스텝\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.load(File(plain, "coupon@타인.md")) }.message!!, "has a `modes:` line")
+        File(profile, "_screen.md").writeText("---\nmodes: 본인, 타인\n---\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.layoutOf("프로필") }.message!!, "`modes:` is a list on its line")
+    }
 }

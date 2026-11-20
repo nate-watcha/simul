@@ -93,7 +93,7 @@ internal fun runOverDevices(
     runOne: (BatchSession, File, Scenario, RunMode, (String) -> Unit) -> BatchResult =
         { session, md, scenario, m, log -> session.run(md, scenario, m, llm, video, scenarioLog = log) },
 ): List<BatchResult> {
-    val (entries, rest) = runs.indices.partition { runs[it].first.name == SimulProject.ENTRY_FILE }
+    val (entries, rest) = runs.indices.partition { SimulProject.isEntry(runs[it].first) }
     val results = arrayOfNulls<List<BatchResult>>(runs.size)
     val broken = ConcurrentHashMap<String, String>()
     val print = Any()

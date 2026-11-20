@@ -240,6 +240,92 @@ object SitePages {
     private fun pathName(feature: String) = feature.ifEmpty { "(root)" }.replace("/", " › ")
     /** A screen's own name, without the screens above it. */
     private fun leaf(feature: String) = feature.substringAfterLast('/')
+
+    // ---- a screen's modes ([Modes]): where a mode stands among its screen's is what its chip and the page's switch go by
+    private fun modeAt(modes: List<String>, mode: String?): Int? = mode?.let { modes.indexOf(it) }?.takeIf { it >= 0 }
+    /** ` data-m=1` on what is of one mode: the page's switch hides it in the others. */
+    private fun modeAttr(modes: List<String>, mode: String?) = modeAt(modes, mode)?.let { " data-m=$it" } ?: ""
+    private fun modeChip(modes: List<String>, mode: String?, text: String? = null) =
+        modeAt(modes, mode)?.let { "<i class=\"mc m${it % 4}\">${esc(text ?: mode!!)}</i>" } ?: ""
+    private fun modesOf(row: Site.Row): List<String> = tree[Mentions.norm(row.result.feature)]?.modes.orEmpty()
+    private fun statusOf(rows: List<Site.Row>) = when (Site.kindOf(rows)) { Site.Kind.FAILED -> "FAILED"; Site.Kind.PASSED -> "PASSED"; Site.Kind.SETUP -> "NONE" }
+
+    /** One line of a screen's table of what differs between its modes: its place, what it is called, where on the page it is, and by mode what that mode has there. */
+    private class Diff(val place: String, val name: String, val href: String, val cells: Map<String, String>)
+
+    /**
+     * What differs between the modes of [page], top to bottom as the page is drawn: a check written per mode (the
+     * files of one name, `헤더@본인` and `헤더@타인`, are one line — each mode's cell its sentence), a check only one
+     * mode has, and a place only one mode has (a tab, a part, a screen that opens) as one line for all that is in
+     * it. What no line names is common to the modes. Nothing here is written by hand: it is read off the modes the
+     * scenarios are of.
+     */
+    private fun diffs(page: Site.Screen, u: String): List<Diff> {
+        val out = mutableListOf<Diff>()
+        fun cell(rows: List<Site.Row>, text: String): String {
+            val n = rows.sumOf { it.checks.size }
+            return "<span class=dl>${icon(statusOf(rows))}<span>$text${if (n > 1) " <span class=dk>확인 $n</span>" else ""}</span></span>"
+        }
+        fun whole(s: Site.Screen, kind: String, path: String, href: String) {
+            val rows = Site.rowsOf(s.subtree).filterNot { it.isEntry }
+            val what = (s.children.map { it.label } + s.scenarios.map { it.title }).distinct().joinToString(" · ") { esc(it) }
+            out += Diff(listOf(kind, path).filter { it.isNotEmpty() }.joinToString(" · "), s.label, href, mapOf(s.only!! to cell(rows, what)))
+        }
+        fun own(s: Site.Screen, path: String) {
+            s.scenarios.groupBy { it.base }.values.filter { g -> g.any { it.mode != null } }.forEach { g ->
+                out += Diff(path, g.first().title, "#" + anchorOf(g.first().result),
+                    g.filter { it.mode != null }.groupBy { it.mode!! }
+                        .mapValues { (_, rs) -> rs.joinToString("") { r -> cell(listOf(r), esc(plain(r.timeline.description).ifEmpty { r.title })) } })
+            }
+        }
+        fun walk(s: Site.Screen, path: String) {
+            fun child(c: Site.Screen, kind: String) {
+                if (c.only != null) whole(c, kind, path, "#" + sid(c))
+                else walk(c, listOf(path, c.label).filter { it.isNotEmpty() }.joinToString(" › "))
+            }
+            val tabsAt = s.slots.indexOfFirst { it.tabs.isNotEmpty() }
+            s.slots.forEachIndexed { i, slot ->
+                if (i == tabsAt) own(s, path)
+                slot.part?.let { child(it, "부분") }
+                slot.tabs.forEach { child(it, "탭") }
+            }
+            if (tabsAt < 0) own(s, path)
+            s.opens.filter { it.only != null }.forEach { whole(it, "여기서 열리는 화면", path, u + screenPageOf(it.feature)) }
+        }
+        walk(page, "")
+        return out
+    }
+
+    /** The head of a screen with modes: the switch between them, how many checks are common and how many each mode alone has, and what an unmarked line means. */
+    private fun modeHead(sb: StringBuilder, screen: Site.Screen) {
+        val modes = screen.modes
+        val rows = Site.rowsOf(screen.onPage).filterNot { it.isEntry }
+        val common = rows.filter { it.mode == null }
+        sb.append("<div class=modeline><span>한 화면이 ${modes.size}가지 모드로 동작합니다.</span><span class=seg role=group aria-label=\"모드\"><button type=button data-set=all aria-pressed=true>전체</button>")
+        modes.forEachIndexed { i, m -> sb.append("<button type=button data-set=$i aria-pressed=false>${esc(m)}</button>") }
+        sb.append("</span></div><div class=sums><span class=sum>모드 공통 <b>${common.sumOf { it.checks.size }}</b></span>")
+        modes.forEachIndexed { i, m -> sb.append("<span class=\"sum m${i % 4}\">${esc(m)}에서만 <b>${rows.filter { it.mode == m }.sumOf { it.checks.size }}</b></span>") }
+        // a common check runs once: say in which mode, when the run tells
+        val ranIn = common.mapNotNull { it.result.setup?.mode }.distinct().singleOrNull()
+        sb.append("</div><span class=legend>표시가 없는 줄은 모드 공통이고 한 번만 돕니다${ranIn?.let { " — ${esc(it)}에서 돌린 결과입니다" } ?: ""}. ")
+        sb.append(modes.joinToString("") { modeChip(modes, it) } + " 표시가 있는 줄은 그 모드에서만 돕니다.</span>")
+    }
+
+    /** The table of what differs between the modes of [screen] ([diffs]), ahead of everything else on its page. */
+    private fun diffTable(sb: StringBuilder, screen: Site.Screen, u: String) {
+        val modes = screen.modes
+        val lines = diffs(screen, u)
+        val common = Site.rowsOf(screen.onPage).filter { !it.isEntry && it.mode == null }.sumOf { it.checks.size }
+        sb.append("<section class=blk><h3>모드별 차이</h3>")
+        if (lines.isEmpty()) { sb.append("<p class=dnote>모드마다 다른 확인이 없습니다.</p></section>"); return }
+        sb.append("<div class=dw><table class=diff><thead><tr><th>자리</th>${modes.joinToString("") { "<th>${modeChip(modes, it)}</th>" }}</tr></thead><tbody>")
+        for (d in lines) {
+            sb.append("<tr><td>${if (d.place.isNotEmpty()) "<span class=pl>${esc(d.place)}</span>" else ""}<a class=dn href=\"${attr(d.href)}\">${esc(d.name)}</a></td>")
+            modes.forEachIndexed { i, m -> sb.append("<td class=\"dc dc$i\">${d.cells[m] ?: "<span class=no0>—</span>"}</td>") }
+            sb.append("</tr>")
+        }
+        sb.append("</tbody></table></div><p class=dnote>이 표에 없는 확인 ${common}개는 모드마다 같습니다.</p></section>")
+    }
     /** `시나리오 3 · 확인 8 · 전부 통과` of [rows]. */
     private fun tally(rows: List<Site.Row>): String {
         val (p, n) = passedOf(rows)
@@ -495,7 +581,7 @@ object SitePages {
             sb.append("<a${if (s === screen) " class=on" else ""} href=\"${attr(u + screenPageOf(s.feature))}\" data-q=\"${attr(q)}\" data-ev=\"${attr(evIds(its))}\"><i class=\"dot ${kind.cls}\"></i><span class=nm>${esc(s.name)}</span><span class=\"c${if (kind == Site.Kind.FAILED) " bad" else ""}\">$sp/$sn</span></a>")
             if (s === screen.root && (s.children.isNotEmpty() || s.slots.isNotEmpty())) navKids(sb, s, screen, u)
         }
-        sb.append("</nav><div class=doc>")
+        sb.append("</nav><div class=doc${if (screen.modes.isNotEmpty()) " data-mode=all" else ""}>")
 
         // ---- the screen: what it looks like when entered
         sb.append("<header class=shead>")
@@ -507,8 +593,11 @@ object SitePages {
             screen.parts.size.takeIf { it > 0 }?.let { "부분 $it" }, screen.tabs.size.takeIf { it > 0 }?.let { "탭 $it" },
             screen.opens.size.takeIf { it > 0 }?.let { "여기서 열리는 화면 $it" },
         ).joinToString("") { " · $it" }
-        sb.append("<span class=dim>${tally(on)} · ${esc(humanDuration(on.sumOf { it.timeline.durationMs }))}$nested</span></div></header>")
+        sb.append("<span class=dim>${tally(on)} · ${esc(humanDuration(on.sumOf { it.timeline.durationMs }))}$nested</span>")
+        if (screen.modes.isNotEmpty()) modeHead(sb, screen)
+        sb.append("</div></header>")
 
+        if (screen.modes.isNotEmpty()) diffTable(sb, screen, u)
         screenBody(sb, screen, u, pages, links)
 
         sb.append("</div><script>").append(SCREEN_JS).append("</script>")
@@ -550,7 +639,7 @@ object SitePages {
         val here = Mentions.norm(screen.feature)
 
         // ---- how one gets here, and what other screens change that shows here
-        incomingBlocks(sb, links.filter { it.to == here && it.from !== screen }, here, u, pages) { screen.entry?.let { entryRows(sb, screen, it, u) } }
+        incomingBlocks(sb, links.filter { it.to == here && it.from !== screen }, here, u, pages) { screen.ways.forEach { entryRows(sb, screen, it, u) } }
 
         // ---- the screen's own scenarios: those of the account most of them run in, then each other account's
         fun ownScenarios() {
@@ -561,7 +650,8 @@ object SitePages {
             for ((state, rows) in byState.entries.sortedBy { it.key != main }) {
                 val title = if (state == main) own else "다른 계정으로 보면 <code class=e>${esc(state.ifEmpty { "계정 없음" })}</code>"
                 sb.append("<section class=blk>${title?.let { "<h3>$it</h3>" } ?: ""}<div class=fl>")
-                for (row in rows) scenarioLine(sb, row, u, pages)
+                // in a place only one mode has, the place says the mode: its lines do not say it again
+                for (row in rows) scenarioLine(sb, row, u, pages, chip = screen.only == null)
                 sb.append("</div></section>")
             }
         }
@@ -574,7 +664,8 @@ object SitePages {
             if (i == tabsAt) ownScenarios()
             val part = slot.part
             if (part != null) {
-                sb.append("<section class=part id=\"${attr(sid(part))}\"><div class=ph><span class=pk>부분</span><h2>${esc(part.label)}</h2><span class=dim>${tally(Site.rowsOf(part.onPage))}</span></div>")
+                val mark = part.only?.takeIf { screen.only == null }?.let { modeChip(part.modes, it, "${it}만") } ?: ""
+                sb.append("<section class=part id=\"${attr(sid(part))}\"${modeAttr(part.modes, part.only)}><div class=ph><span class=pk>부분</span><h2>${esc(part.label)}</h2>$mark<span class=dim>${tally(Site.rowsOf(part.onPage))}</span></div>")
                 screenBody(sb, part, u, pages, links)
                 sb.append("</section>")
                 continue
@@ -586,11 +677,11 @@ object SitePages {
             for (t in tabs) {
                 val its = Site.rowsOf(t.onPage)
                 val (p, n) = passedOf(its)
-                sb.append("<button type=button role=tab class=\"${Site.kindOf(its).cls}\" id=\"${attr("tab-" + sid(t))}\" aria-controls=\"${attr(sid(t))}\" aria-selected=${t === open}><span class=tn>${esc(t.label)}</span><span class=tc>$p/$n</span></button>")
+                sb.append("<button type=button role=tab class=\"${Site.kindOf(its).cls}\" id=\"${attr("tab-" + sid(t))}\" aria-controls=\"${attr(sid(t))}\" aria-selected=${t === open}${modeAttr(t.modes, t.only)}><span class=tn>${esc(t.label)}</span>${t.only?.let { modeChip(t.modes, it, "${it}만") } ?: ""}<span class=tc>$p/$n</span></button>")
             }
             sb.append("</div>")
             for (t in tabs) {
-                sb.append("<div role=tabpanel id=\"${attr(sid(t))}\" aria-labelledby=\"${attr("tab-" + sid(t))}\"${if (t === open) "" else " hidden"}><div class=tphead><b>${esc(t.label)}</b><span class=dim>${tally(Site.rowsOf(t.onPage))}</span></div>")
+                sb.append("<div role=tabpanel id=\"${attr(sid(t))}\" aria-labelledby=\"${attr("tab-" + sid(t))}\"${modeAttr(t.modes, t.only)}${if (t === open) "" else " hidden"}><div class=tphead><b>${esc(t.label)}</b>${t.only?.let { modeChip(t.modes, it, "$it 모드에만 있는 탭") } ?: ""}<span class=dim>${tally(Site.rowsOf(t.onPage))}</span></div>")
                 screenBody(sb, t, u, pages, links)
                 sb.append("</div>")
             }
@@ -610,7 +701,8 @@ object SitePages {
                 // how it opens is what its way in says of itself
                 val how = o.entry?.timeline?.description?.takeIf { it.isNotEmpty() }?.let { "<span class=oh>${esc(plain(it))}</span>" } ?: ""
                 val what = Site.rowsOf(o.onPage).filterNot { it.isEntry }.joinToString(" · ") { esc(it.title) }
-                sb.append("<a class=\"oc ${kind.cls}\" href=\"${attr(u + screenPageOf(o.feature))}\">${icon(status)}<b>${esc(o.label)}</b><span class=\"c${if (kind == Site.Kind.FAILED) " bad" else ""}\">$p/$n</span>$how<span class=on>$what</span></a>")
+                val mark = o.only?.let { "<span class=oh>${modeChip(o.modes, it, "${it}만")}</span>" } ?: ""
+                sb.append("<a class=\"oc ${kind.cls}\" href=\"${attr(u + screenPageOf(o.feature))}\"${modeAttr(o.modes, o.only)}>${icon(status)}<b>${esc(o.label)}</b><span class=\"c${if (kind == Site.Kind.FAILED) " bad" else ""}\">$p/$n</span>$mark$how<span class=on>$what</span></a>")
             }
             sb.append("</div></section>")
         }
@@ -655,33 +747,38 @@ object SitePages {
         val t = row.timeline
         val addr = r.setup?.entry?.let { "<code class=e>${esc(it)}</code>" } ?: ""
         val more = " <a class=more href=\"${attr(u + pageOf(r))}\">스텝·영상 ›</a>"
+        // a way in that is one mode's: marked with it, and gone when the page shows another mode
+        val dm = modeAttr(screen.modes, row.mode)
+        val mc = modeChip(screen.modes, row.mode)
         if (t.steps.isEmpty()) {
-            sb.append("<div class=\"in skipped\">${icon("NONE")}<span class=ip>진입</span><span class=it>$addr <span class=st2>${esc(r.reason ?: "돌지 않음")}</span></span></div>")
+            sb.append("<div class=\"in skipped\"$dm>${icon("NONE")}<span class=ip>${mc}진입</span><span class=it>$addr <span class=st2>${esc(r.reason ?: "돌지 않음")}</span></span></div>")
             return
         }
         val status = if (row.kind == Site.Kind.PASSED) "PASSED" else "FAILED"
         // a part has no way in of its own: its scenarios start from this one too
         val here = Mentions.norm(screen.feature)
         val under = screen.subtree.flatMap { it.scenarios }
-        val waiting = under.count { Site.waitsFor(it, here) }
-        val from = under.count { it.result.setup?.via?.let(Mentions::norm) == here } + waiting
+        val waiting = under.count { Site.waitsFor(it, here, row.mode) }
+        val from = under.count { it.result.setup?.via?.let(Mentions::norm) == here && (row.mode == null || it.result.setup?.mode == row.mode) } + waiting
         val note = if (from > 0) "<span class=st2>이 화면의 시나리오 ${from}개가 여기서 시작한다</span>" else ""
         val why = if (status != "FAILED") "" else
             "<br><span class=reason>${esc(t.failedStepOf?.let { f -> "${noOf(t, f)}. ${f.text} · ${humanReason(f.reason)}" } ?: row.recordFailure ?: t.reason ?: "failed")}" +
                 (if (waiting > 0) " — 시나리오 ${waiting}개를 돌리지 못했다" else "") + "</span>"
         val moves = t.steps.filterNot { verifies(it.text) }
         if (moves.isEmpty()) {
-            sb.append("<div class=\"in ${cls(status)}\">${icon(status)}<span class=ip>딥링크</span><span class=it>$addr<span class=st2>이 주소가 바로 연다</span>$note$more$why</span></div>")
+            sb.append("<div class=\"in ${cls(status)}\"$dm>${icon(status)}<span class=ip>${mc}딥링크</span><span class=it>$addr<span class=st2>이 주소가 바로 연다</span>$note$more$why</span></div>")
         } else {
-            sb.append("<div class=\"in skipped\"><i class=\"ic none\">–</i><span class=ip>딥링크</span><span class=it>없음</span></div>")
-            sb.append("<div class=\"in ${cls(status)}\">${icon(status)}<span class=ip>진입</span><span class=it>$addr 를 열고 ${moves.joinToString(" / ") { stepText(it.text) }}$note$more$why</span></div>")
+            sb.append("<div class=\"in skipped\"$dm><i class=\"ic none\">–</i><span class=ip>${mc}딥링크</span><span class=it>없음</span></div>")
+            sb.append("<div class=\"in ${cls(status)}\"$dm>${icon(status)}<span class=ip>${mc}진입</span><span class=it>$addr 를 열고 ${moves.joinToString(" / ") { stepText(it.text) }}$note$more$why</span></div>")
         }
     }
 
     /** A check of another screen that mentions this one, as a line here: where it is written (a link to it), and what it says. */
     private fun linkRow(sb: StringBuilder, l: Site.Link, u: String, pages: Map<String, String>, here: String) {
         val path = listOfNotNull(pathName(l.from.feature), l.row.title, l.check?.title).joinToString(" › ") { esc(it) }
-        sb.append("<div class=\"in ${cls(l.status)}\">${icon(l.status)}<a class=ip href=\"${attr(u + scenarioHref(l.row.result))}\">$path</a><span class=it>${mentions(l.text, u, pages, here)}")
+        // seen in one mode of this screen: marked with it, and gone when the page shows another
+        val modes = tree[here]?.modes.orEmpty()
+        sb.append("<div class=\"in ${cls(l.status)}\"${modeAttr(modes, l.mode)}>${icon(l.status)}<a class=ip href=\"${attr(u + scenarioHref(l.row.result))}\">$path</a><span class=it>${modeChip(modes, l.mode)}${mentions(l.text, u, pages, here)}")
         if (l.status == "FAILED") (l.check?.let { whyNot(l.row, it) } ?: orphanFailure(l.row))?.let { sb.append("<br><span class=reason>${esc(it)}</span>") }
         sb.append("</span></div>")
     }
@@ -733,13 +830,14 @@ object SitePages {
      * A scenario of several checks (`##` sections) on its screen's page: a block of its own — its name and how its
      * checks stand, its prose, then every check as a line, read without opening anything. A check opens to its steps.
      */
-    private fun scenarioGroup(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>) {
+    private fun scenarioGroup(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>, chip: Boolean = true) {
+        val modes = modesOf(row)
         val t = row.timeline
         val status = when (row.kind) { Site.Kind.FAILED -> "FAILED"; Site.Kind.PASSED -> "PASSED"; Site.Kind.SETUP -> "NONE" }
         val mark = if (row.recordFailed) " " + chip(Site.Kind.FAILED, "녹화 실패") else if (row.kind == Site.Kind.SETUP) " " + chip(Site.Kind.SETUP) else ""
         // the screens its checks are about: they show on those screens' pages too
         val to = (t.mentions + row.checks.flatMap { it.mentions }).distinct().joinToString("") { "<span class=to>→ ${esc(leaf(it))}</span>" }
-        sb.append("<div class=\"grp ${row.kind.cls}\" id=\"${attr(anchorOf(row.result))}\"><div class=gh>${icon(status)}<b class=fn>${esc(row.title)}</b><span class=gt>${checkTally(row)}</span>$to$mark</div>${eventChips(row, u)}")
+        sb.append("<div class=\"grp ${row.kind.cls}\" id=\"${attr(anchorOf(row.result))}\"${modeAttr(modes, row.mode)}><div class=gh>${icon(status)}<b class=fn>${esc(row.title)}</b>${if (chip) modeChip(modes, row.mode) else ""}<span class=gt>${checkTally(row)}</span>$to$mark</div>${eventChips(row, u)}")
         scenarioNotes(sb, row, u, pages)
         checkLines(sb, row, u, pages)
         sb.append("${scenarioMeta(row, u)}</div>")
@@ -750,15 +848,16 @@ object SitePages {
      * opened, its steps. One that confirms several (`##` sections) is a group ([scenarioGroup]). A scenario that did
      * not pass is open.
      */
-    private fun scenarioLine(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>) {
+    private fun scenarioLine(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>, chip: Boolean = true) {
         val r = row.result
         val checks = row.checks
-        if (!(checks.size == 1 && checks[0].title == null)) return scenarioGroup(sb, row, u, pages)
+        if (!(checks.size == 1 && checks[0].title == null)) return scenarioGroup(sb, row, u, pages, chip)
+        val modes = modesOf(row)
         val c = checks[0]
         val status = when (row.kind) { Site.Kind.FAILED -> "FAILED"; Site.Kind.PASSED -> "PASSED"; Site.Kind.SETUP -> "NONE" }
         val mark = if (row.recordFailed) chip(Site.Kind.FAILED, "녹화 실패") else if (row.kind == Site.Kind.SETUP) chip(Site.Kind.SETUP) else ""
-        sb.append("<details class=\"ft ${row.kind.cls}\" id=\"${attr(anchorOf(r))}\"${if (row.kind != Site.Kind.PASSED) " open" else ""}><summary>${icon(status)}<b class=fn>${esc(row.title)}</b>")
-        sb.append("<span class=fs>${mentions(c.description, u, pages)}$mark${eventChips(row, u)}</span><span class=ckn>${if (c.steps.isEmpty()) "" else "${c.steps.size}스텝"}</span></summary><div class=fb>")
+        sb.append("<details class=\"ft ${row.kind.cls}\" id=\"${attr(anchorOf(r))}\"${modeAttr(modes, row.mode)}${if (row.kind != Site.Kind.PASSED) " open" else ""}><summary>${icon(status)}<b class=fn>${esc(row.title)}</b>")
+        sb.append("<span class=fs>${if (chip) modeChip(modes, row.mode) else ""}${mentions(c.description, u, pages)}$mark${eventChips(row, u)}</span><span class=ckn>${if (c.steps.isEmpty()) "" else "${c.steps.size}스텝"}</span></summary><div class=fb>")
         scenarioNotes(sb, row, u, pages)
         if (c.steps.isNotEmpty()) stepList(sb, c.steps)
         sb.append("${scenarioMeta(row, u)}</div></details>")
@@ -1226,9 +1325,20 @@ object SitePages {
               var on=b===tab;b.setAttribute('aria-selected',on);document.getElementById(b.getAttribute('aria-controls')).hidden=!on;
             });
           }
+          var doc=document.querySelector('.doc[data-mode]'),seg=[].slice.call(document.querySelectorAll('.seg button'));
+          function shown(el){var m=el.getAttribute('data-m'),cur=doc.getAttribute('data-mode');return cur==='all'||m===null||m===cur}
+          function mode(to){
+            doc.setAttribute('data-mode',to);seg.forEach(function(o){o.setAttribute('aria-pressed',o.dataset.set===to)});
+            [].slice.call(document.querySelectorAll('[role=tablist]')).forEach(function(l){
+              var ts=[].slice.call(l.querySelectorAll('[role=tab]')),on=ts.filter(function(t){return t.getAttribute('aria-selected')==='true'})[0];
+              if(on&&!shown(on)){var n=ts.filter(shown)[0];if(n)pick(n)}
+            });
+          }
+          seg.forEach(function(b){b.addEventListener('click',function(){mode(b.dataset.set)})});
           function reveal(){
             var id=decodeURIComponent(location.hash.slice(1)),el=id&&document.getElementById(id);
             if(!el)return;
+            if(doc)for(var h=el;h;h=h.parentElement)if(h.getAttribute&&h.hasAttribute('data-m')&&!shown(h)){mode('all');break}
             for(var p=el;p;p=p.parentElement){
               if(p.getAttribute&&p.getAttribute('role')==='tabpanel')pick(document.getElementById(p.getAttribute('aria-labelledby')));
               if(p.tagName==='DETAILS')p.open=true;
@@ -1253,9 +1363,9 @@ object SitePages {
      */
     private val CSS = """
         :root{color-scheme:dark;--bg:#161614;--card:#1F1F1D;--fg:#ECECE8;--ink2:#D2D2CC;--dim:#A6A6A0;--faint:#7E7E78;--line:#2C2C29;--line2:#3B3B37;--code:#252523;--panel:#252523;--chipbg:#2C2C29;--hover:#252523;--onfg:#161614;
-          --fail:#E0645B;--failfg:#F2A39C;--failbg:#3B1E1B;--onfail:#1B0C0A;--warn:#D9A040;--warnfg:#F0C678;--warnbg:#3A2C12;--info:#7FB0E8;--infobg:#1B2A3D;--ok:#5DB88F;--okfg:#9AD8BA;--okbg:#1C3328;--logbg:#0E0E0D;--logfg:#E6E6E2}
+          --fail:#E0645B;--failfg:#F2A39C;--failbg:#3B1E1B;--onfail:#1B0C0A;--warn:#D9A040;--warnfg:#F0C678;--warnbg:#3A2C12;--info:#7FB0E8;--infobg:#1B2A3D;--ok:#5DB88F;--okfg:#9AD8BA;--okbg:#1C3328;--logbg:#0E0E0D;--logfg:#E6E6E2;--m0:#C3A8F5;--m0bg:#2B2342;--m1:#7FB0E8;--m1bg:#1B2A3D;--m2:#6CC5C9;--m2bg:#17333A}
         @media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#F4F4F1;--card:#FFFFFF;--fg:#1B1B1A;--ink2:#3A3A37;--dim:#5A5A56;--faint:#8A8A84;--line:#E2E2DD;--line2:#D6D6D0;--code:#F4F4F1;--panel:#ECECE7;--chipbg:#E8E8E3;--hover:#FAFAF8;--onfg:#FFFFFF;
-          --fail:#B3261E;--failfg:#8A1C14;--failbg:#FBE9E7;--onfail:#FFFFFF;--warn:#D08A1A;--warnfg:#7A4A00;--warnbg:#FCEFD6;--info:#1F4E8C;--infobg:#E4EEF9;--ok:#2E7D5B;--okfg:#1F5A3C;--okbg:#E3EFE8;--logbg:#1B1B1A;--logfg:#E6E6E2}}
+          --fail:#B3261E;--failfg:#8A1C14;--failbg:#FBE9E7;--onfail:#FFFFFF;--warn:#D08A1A;--warnfg:#7A4A00;--warnbg:#FCEFD6;--info:#1F4E8C;--infobg:#E4EEF9;--ok:#2E7D5B;--okfg:#1F5A3C;--okbg:#E3EFE8;--logbg:#1B1B1A;--logfg:#E6E6E2;--m0:#5A3DA6;--m0bg:#EEE9FA;--m1:#1F4E8C;--m1bg:#E4EEF9;--m2:#136A70;--m2bg:#E0F1F2}}
         *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 'IBM Plex Sans KR',system-ui,-apple-system,'Apple SD Gothic Neo',sans-serif}
         a{color:inherit}main{max-width:1200px;margin:0 auto;padding:28px 24px 48px;display:flex;flex-direction:column;gap:32px}main.detail{gap:24px}
         .topbar{background:var(--card);border-bottom:1px solid var(--line)}.topbar .inner{max-width:1200px;margin:0 auto;padding:0 24px;display:flex;flex-wrap:wrap;align-items:center;gap:24px;min-height:56px}
@@ -1377,6 +1487,22 @@ object SitePages {
         .oc:hover{border-color:var(--line2)}.oc b{font-size:14.5px;font-weight:600}.oc .ic{align-self:center}.oc .c{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
         .oc .oh,.oc .on{grid-column:2/-1;font-size:12.5px;color:var(--dim)}.oc .on{color:var(--faint)}
         .sub2{color:var(--faint);margin-right:6px}
+        .modeline{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;font-size:13.5px;color:var(--ink2);margin-top:4px}
+        .seg{display:inline-flex;gap:3px;background:var(--chipbg);padding:3px;border-radius:8px}.seg button{font:inherit;font-size:13px;border:0;background:none;color:var(--dim);padding:5px 14px;border-radius:6px;cursor:pointer}
+        .seg button[aria-pressed=true]{background:var(--card);color:var(--fg);font-weight:600;box-shadow:0 0 0 1px var(--line2)}.seg button:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+        .mc{display:inline-block;font-style:normal;font-size:11px;font-weight:600;line-height:17px;padding:0 7px;border-radius:4px;white-space:nowrap;margin-right:8px;vertical-align:1px}
+        .mc.m0,.sum.m0{color:var(--m0);background:var(--m0bg)}.mc.m1,.sum.m1{color:var(--m1);background:var(--m1bg)}.mc.m2,.sum.m2{color:var(--m2);background:var(--m2bg)}.mc.m3,.sum.m3{color:var(--warnfg);background:var(--warnbg)}
+        .sums{display:flex;flex-wrap:wrap;gap:6px}.sum{font-size:12.5px;padding:3px 10px;border-radius:6px;background:var(--chipbg);color:var(--ink2);white-space:nowrap}.sum b{font-weight:600;font-variant-numeric:tabular-nums}
+        .legend{font-size:12.5px;color:var(--faint);max-width:72ch}.legend .mc{margin:0 4px 0 0}
+        .ph .mc,.tabrow .mc,.tphead .mc,.gh .mc{margin-right:0}.in .ip .mc{margin-right:6px}
+        .doc[data-mode="0"] [data-m]:not([data-m="0"]),.doc[data-mode="1"] [data-m]:not([data-m="1"]),.doc[data-mode="2"] [data-m]:not([data-m="2"]),.doc[data-mode="3"] [data-m]:not([data-m="3"]){display:none!important}
+        .dw{overflow-x:auto;border:1px solid var(--line2);border-radius:10px;background:var(--card)}table.diff{border-collapse:collapse;width:100%;min-width:560px;font-size:13px}
+        .diff th{text-align:left;padding:8px 14px;background:var(--panel);border-bottom:1px solid var(--line2);font-size:11.5px;font-weight:600;color:var(--dim);white-space:nowrap}.diff th .mc{margin:0}
+        .diff td{padding:9px 14px;border-top:1px solid var(--line);vertical-align:top;color:var(--ink2)}.diff tr:first-child td{border-top:0}.diff td:first-child{width:26%}
+        .diff .pl{display:block;font-size:11.5px;color:var(--faint)}.diff .dn{font-weight:600;color:var(--fg);text-decoration:none}.diff .dn:hover{text-decoration:underline}
+        .diff .dl{display:grid;grid-template-columns:18px minmax(0,1fr);gap:8px;align-items:start}.diff .dl+.dl{margin-top:6px}.diff .dk{font-size:12px;color:var(--faint);white-space:nowrap}.diff .no0{color:var(--faint)}
+        .doc[data-mode="0"] .diff td.dc:not(.dc0),.doc[data-mode="1"] .diff td.dc:not(.dc1),.doc[data-mode="2"] .diff td.dc:not(.dc2),.doc[data-mode="3"] .diff td.dc:not(.dc3){opacity:.4}
+        .dnote{margin:0;font-size:13px;color:var(--dim)}
         @media(max-width:900px){aside.replay{position:static}main.screen{grid-template-columns:minmax(0,1fr)}.snav{position:static;max-height:none}.frow{grid-template-columns:52px minmax(0,1fr)}.frow .side{grid-column:2;align-items:flex-start;text-align:left}.tools{margin-left:0}}
         @media(max-width:640px){main{padding:20px 16px 40px}.secgrid{padding-left:0}.secgrid::before{display:none}.secgrid .sec>summary .ord{position:static}.cols2{grid-template-columns:1fr}.in{grid-template-columns:18px minmax(0,1fr)}.in .it{grid-column:2}
           details.ft>summary{grid-template-columns:18px minmax(0,1fr) auto}details.ft>summary>.fs{grid-column:2/-1;grid-row:2}.fb{padding-left:0}ol.st{margin-left:0}.grp>.spd,.grp>.prep,.grp>p,.grp>.fl,.grp>.fm{margin-left:0}

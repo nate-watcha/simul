@@ -79,11 +79,18 @@ data class Scenario(
      * The screen (group directory) whose way in this scenario starts from: its `_entry.md` says where the app
      * is opened and the steps from there, and the runner plays them from that file's trace before this
      * scenario's first step ([SimulProject.load] sets it, and [setup] to the entry's). Null for a scenario that
-     * opens the app by itself.
+     * opens the app by itself. It is a key ([Modes.key]): where the way in is one mode's, the mode follows the
+     * screen (`프로필/홈@타인`).
      */
     val via: String? = null,
     /** The screens [description] mentions (`@화면`), as [SimulProject.load] resolved them against the project's screens. */
     val mentions: List<String> = emptyList(),
+    /**
+     * The mode of its screen this scenario is of ([Modes]): the one its file's name says (`헤더@타인.md`), or the
+     * only one that has the place it is in. Null for a scenario common to the modes — it runs once, in the first
+     * of them — and for every scenario of a screen without modes. [SimulProject.load] sets it.
+     */
+    val mode: String? = null,
 ) {
     /** The app state this scenario requires: appState name, "guest" for clearData, or null
      *  (undeclared — runs against whatever state the device happens to be in). */
@@ -230,7 +237,7 @@ object ScenarioMd {
     fun parse(text: String, file: File? = null): Scenario {
         val (front, body) = splitFrontmatter(text)
         val y = if (front != null) MiniYaml.parse(front) else emptyMap()
-        val name = MiniYaml.string(y, "name") ?: file?.nameWithoutExtension ?: "scenario"
+        val name = MiniYaml.string(y, "name") ?: file?.nameWithoutExtension?.let(Modes::base) ?: "scenario"
         val states = MiniYaml.list(y, "states")
         require(states.distinct().size == states.size) { "scenario '$name': duplicate entries in states: $states" }
         require(states.all(Scenario::isValidStateName)) { "scenario '$name': state names must be [A-Za-z0-9._-]+ (states: $states)" }

@@ -638,4 +638,102 @@ class SiteTest {
         val nav = alarm.substringAfter("<nav class=snav").substringBefore("<div class=doc>")
         assertTrue("data-ev=\" w_toggle 530 5301 \"" in nav && "data-ev=\" 115 530 \"" in nav, nav)
     }
+
+    @Test
+    fun `a screen in several modes - what differs between them heads its page as a table, and the page can be read in one mode`() {
+        val day = File(runs, "2026-11-20")
+        val layout = ScreenLayout(listOf(ScreenLayout.Slot(part = "상단 바"), ScreenLayout.Slot(part = "프로필 헤더"), ScreenLayout.Slot(tabs = listOf("취향 매칭", "홈", "좋아요"))), modes = listOf("본인", "타인"))
+        fun write(feature: String, name: String, title: String, prose: String, mode: String?, ranIn: String?, failed: Boolean = false, checks: Int = 1) {
+            val dir = File(day, "$feature/$name").apply { mkdirs() }
+            val steps = (1..checks).map { n -> StepReport(n, if (SimulProject.isEntryStem(name)) "화면이 보이는지 확인한다" else "스텝 $n", if (failed) StepStatus.FAILED else StepStatus.PASSED, "replay", emptyList(), emptyList(), if (failed) "replay broken" else null, 500, emptyList(), startedMs = n * 1000L) }
+            val sections = if (checks > 1) (1..checks).map { n -> SectionReport("확인 $n", "문장 $n.", StepStatus.PASSED, n..n) } else emptyList()
+            ResultJson.write(ScenarioRunResult(title, if (failed) StepStatus.FAILED else StepStatus.PASSED, steps, null, 5000, startedAtMs = 1_795_000_000_000L, reportDir = dir, sections = sections), "replay",
+                ResultJson.Meta(feature, name, null, "$feature/$name.md", title, null, prose, "2026-11-20", ResultJson.Env("6.5.0", "sdk", "1.1"),
+                    setup = ResultJson.Setup(if (ranIn == "타인") "app://users/1" else "app://my", false, "member", via = if (SimulProject.isEntryStem(name)) null else "프로필", mode = ranIn),
+                    screens = mapOf("프로필" to layout), screenMode = mode), dir)
+        }
+        // each mode's way in
+        write("프로필", "_entry@본인", "프로필 본인 진입", "나의 왓챠 주소로 바로 열린다.", "본인", null)
+        write("프로필", "_entry@타인", "프로필 타인 진입", "유저 주소로 바로 열린다.", "타인", null)
+        // a part both modes have: what each alone has there
+        write("프로필/상단 바", "알림@본인", "알림", "누르면 알림 화면으로 간다.", "본인", "본인")
+        write("프로필/상단 바", "차단@타인", "차단", "더보기에서 차단한다.", "타인", "타인", checks = 3)
+        // a part of common checks: run once, in the first mode
+        write("프로필/프로필 헤더", "link", "링크 열기", "누르면 브라우저로 열린다.", null, "본인")
+        write("프로필/프로필 헤더", "stats", "숫자", "세 숫자.", null, "본인", checks = 2)
+        // a tab both modes have: one check written per mode, one common
+        write("프로필/홈", "헤더@본인", "헤더", "하단 내비게이션의 캘린더로 간다.", "본인", "본인")
+        write("프로필/홈", "헤더@타인", "헤더", "이 유저의 캘린더 탭으로 간다.", "타인", "타인", failed = true)
+        write("프로필/홈", "card", "카드", "누르면 상세로 간다.", null, "본인")
+        // a tab only one mode has: its way in is that mode's, and its scenarios say no mode of their own
+        write("프로필/좋아요", "_entry@본인", "프로필 좋아요 본인 진입", "\"좋아요\" 탭을 누르면 열린다.", "본인", null)
+        write("프로필/좋아요", "row", "행", "누르면 인물로 간다.", "본인", "본인")
+        write("프로필/취향 매칭", "_entry@타인", "프로필 취향 매칭 타인 진입", "\"취향 매칭\" 탭을 누르면 열린다.", "타인", null)
+        write("프로필/취향 매칭", "empty", "평가 부족", "안내로 바뀐다.", "타인", "타인")
+
+        // another screen's check that opens this one to look: by the first mode unless its entry names another
+        File(day, "작품상세/rating").apply { mkdirs() }.let { dir ->
+            val steps = (1..3).map { n -> StepReport(n, "스텝 $n", StepStatus.PASSED, "replay", emptyList(), emptyList(), null, 500, emptyList(), startedMs = n * 1000L) }
+            ResultJson.write(ScenarioRunResult("평가", StepStatus.PASSED, steps, null, 5000, startedAtMs = 1_795_000_000_000L, reportDir = dir, sections = listOf(
+                SectionReport("평가", "별을 누르면 저장된다.", StepStatus.PASSED, 1..1),
+                SectionReport("평가 뒤 홈", "@프로필/홈 맨 앞에 나온다.", StepStatus.PASSED, 2..2, open = Scenario.Open(screen = "프로필/홈"), mentions = listOf("프로필/홈")),
+                SectionReport("남이 보면", "@프로필/홈 에도 나온다.", StepStatus.PASSED, 3..3, open = Scenario.Open(screen = "프로필/홈@타인"), mentions = listOf("프로필/홈")))), "replay",
+                ResultJson.Meta("작품상세", "rating", null, "작품상세/rating.md", "평가", null, "작품의 별점.", "2026-11-20", ResultJson.Env("6.5.0", "sdk", "1.1"),
+                    setup = ResultJson.Setup("app://contents/1", false, "member")), dir)
+        }
+
+        val read = ResultJson.read(File(day, "프로필/홈/헤더@타인/result.json"))!!
+        assertEquals(listOf("타인", "타인", listOf("본인", "타인")), listOf(read.screenMode, read.setup?.mode, read.screens.getValue("프로필").modes), "a result says the mode it is of, the one it ran in, and its screen's")
+
+        val screens = Site.screens(Site.classify(Site.load(day)))
+        val by = screens.associateBy { it.feature }
+        assertEquals(listOf("본인", "타인"), by.getValue("프로필/홈").modes, "a tab of a screen with modes is in those modes")
+        assertEquals(listOf("_entry@본인", "_entry@타인"), by.getValue("프로필").ways.map { it.result.name }, "a way in per mode, in the modes' order")
+        assertEquals(mapOf("프로필" to null, "프로필/상단 바" to null, "프로필/프로필 헤더" to null, "프로필/홈" to null, "프로필/좋아요" to "본인", "프로필/취향 매칭" to "타인"),
+            screens.filter { it.feature.startsWith("프로필") }.associate { it.feature to it.only }, "a place is one mode's by its way in, not by the files that happen to be in it")
+
+        SitePages.build(day, day)
+        val page = File(day, "프로필/_screen.html").readText()
+        // the head: the switch, the counts, what an unmarked line is
+        assertTrue("<div class=doc data-mode=all>" in page)
+        assertTrue("<button type=button data-set=all aria-pressed=true>전체</button><button type=button data-set=0 aria-pressed=false>본인</button><button type=button data-set=1 aria-pressed=false>타인</button>" in page)
+        assertTrue("<span class=sum>모드 공통 <b>4</b></span><span class=\"sum m0\">본인에서만 <b>3</b></span><span class=\"sum m1\">타인에서만 <b>5</b></span>" in page, page.substringAfter("class=sums").take(400))
+        assertTrue("표시가 없는 줄은 모드 공통이고 한 번만 돕니다 — 본인에서 돌린 결과입니다." in page)
+
+        // the table, ahead of the page and in its order: a check of one mode, a check written per mode, a place of one mode
+        val table = page.substringAfter("<h3>모드별 차이</h3>").substringBefore("</table>")
+        assertTrue(page.indexOf("<h3>모드별 차이</h3>") < page.indexOf("<h3>들어오는 길</h3>"), "it heads the page")
+        val lines = table.substringAfter("<tbody>").split("<tr>").drop(1)
+        assertEquals(listOf("상단 바|알림", "상단 바|차단", "탭|취향 매칭", "홈|헤더", "탭|좋아요"),
+            lines.map { it.substringAfter("<span class=pl>").substringBefore("</span>") + "|" + it.substringAfter("class=dn").substringAfter(">").substringBefore("</a>") })
+        assertTrue("<td class=\"dc dc0\"><span class=dl><i class=\"ic passed\">✓</i><span>누르면 알림 화면으로 간다.</span></span></td><td class=\"dc dc1\"><span class=no0>—</span></td>" in lines[0], lines[0])
+        assertTrue("<span>더보기에서 차단한다. <span class=dk>확인 3</span></span>" in lines[1], "a scenario of several checks says how many")
+        assertTrue("<a class=dn href=\"#홈/헤더@본인\">헤더</a>" in lines[3] && "<i class=\"ic passed\">✓</i><span>하단 내비게이션의 캘린더로 간다.</span>" in lines[3] &&
+            "<td class=\"dc dc1\"><span class=dl><i class=\"ic failed\">✕</i><span>이 유저의 캘린더 탭으로 간다.</span></span></td>" in lines[3], "the files of one name are one line, each mode's cell its sentence and how it went: ${lines[3]}")
+        assertTrue("<a class=dn href=\"#s:좋아요\">좋아요</a>" in lines[4] && "<td class=\"dc dc0\"><span class=dl><i class=\"ic passed\">✓</i><span>행</span></span></td><td class=\"dc dc1\"><span class=no0>—</span></td>" in lines[4], lines[4])
+        assertTrue("이 표에 없는 확인 4개는 모드마다 같습니다." in page)
+
+        // the page itself: each way in, and every line of one mode marked and hidden in the other
+        assertTrue("<div class=\"in passed\" data-m=0><i class=\"ic passed\">✓</i><span class=ip><i class=\"mc m0\">본인</i>딥링크</span><span class=it><code class=e>app://my</code>" in page, page.substringAfter("<h3>들어오는 길</h3>").take(600))
+        assertTrue("<div class=\"in passed\" data-m=1><i class=\"ic passed\">✓</i><span class=ip><i class=\"mc m1\">타인</i>딥링크</span>" in page)
+        assertTrue("id=\"상단_바/알림@본인\" data-m=0><summary><i class=\"ic passed\">✓</i><b class=fn>알림</b><span class=fs><i class=\"mc m0\">본인</i>누르면 알림 화면으로 간다." in page, page.substringAfter("id=\"s:상단_바\"").take(700))
+        assertTrue("id=\"상단_바/차단@타인\" data-m=1><div class=gh><i class=\"ic passed\">✓</i><b class=fn>차단</b><i class=\"mc m1\">타인</i>" in page)
+        assertTrue("id=\"프로필_헤더/link\"><summary>" in page, "a common line carries no mark")
+        // a tab only one mode has: marked on the tab, hidden with it, and its lines say nothing more
+        assertTrue("aria-controls=\"s:좋아요\" aria-selected=false data-m=0><span class=tn>좋아요</span><i class=\"mc m0\">본인만</i><span class=tc>2/2</span></button>" in page, page.substringAfter("role=tablist").take(900))
+        assertTrue("<div role=tabpanel id=\"s:취향_매칭\" aria-labelledby=\"tab-s:취향_매칭\" data-m=1 hidden>" in page || "<div role=tabpanel id=\"s:취향_매칭\" aria-labelledby=\"tab-s:취향_매칭\" data-m=1>" in page)
+        assertTrue("id=\"좋아요/row\" data-m=0><summary><i class=\"ic passed\">✓</i><b class=fn>행</b><span class=fs>누르면 인물로 간다." in page)
+        assertTrue("id=\"상단_바\" data-m" !in page, "a part both modes have is not one mode's")
+        // what another screen changed that shows here was seen in one mode: the line is that mode's
+        val looks = page.substringAfter("<h3>다른 화면의 변경 반영").substringBefore("</section>")
+        assertTrue("<div class=\"in passed\" data-m=0><i class=\"ic passed\">✓</i><a class=ip href=\"../작품상세/_screen.html#rating\">작품상세 › 평가 › 평가 뒤 홈</a><span class=it><i class=\"mc m0\">본인</i>" in looks, looks)
+        assertTrue("작품상세 › 평가 › 남이 보면</a><span class=it><i class=\"mc m1\">타인</i>" in looks && "<div class=\"in passed\" data-m=1>" in looks, "its entry names the other mode")
+
+        // a screen without modes is as it was
+        write("인물상세", "like", "좋아요", "누르면 좋아요가 된다.", null, null)
+        File(day, "인물상세/like/result.json").let { f -> f.writeText(f.readText().replace(Regex("\"modes\"[^}]*\\},\\s*"), "").replace(Regex("\"screens\"[^}]*\\},\\s*"), "")) }
+        SitePages.build(day, day)
+        val plain = File(day, "인물상세/_screen.html").readText()
+        assertTrue("<div class=doc>" in plain && "모드별 차이" !in plain && "class=seg" !in plain.substringAfter("</style>"))
+    }
 }
