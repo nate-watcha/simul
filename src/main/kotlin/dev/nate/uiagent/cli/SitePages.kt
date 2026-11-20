@@ -305,10 +305,9 @@ object SitePages {
         modes.forEachIndexed { i, m -> sb.append("<button type=button data-set=$i aria-pressed=false>${esc(m)}</button>") }
         sb.append("</span></div><div class=sums><span class=sum>모드 공통 <b>${common.sumOf { it.checks.size }}</b></span>")
         modes.forEachIndexed { i, m -> sb.append("<span class=\"sum m${i % 4}\">${esc(m)}에서만 <b>${rows.filter { it.mode == m }.sumOf { it.checks.size }}</b></span>") }
-        // a common check runs once: say in which mode, when the run tells
-        val ranIn = common.mapNotNull { it.result.setup?.mode }.distinct().singleOrNull()
-        sb.append("</div><span class=legend>표시가 없는 줄은 모드 공통이고 한 번만 돕니다${ranIn?.let { " — ${esc(it)}에서 돌린 결과입니다" } ?: ""}. ")
-        sb.append(modes.joinToString("") { modeChip(modes, it) } + " 표시가 있는 줄은 그 모드에서만 돕니다.</span>")
+        // a line without a mark is the same rule in every mode: nothing of modes is said on it, here or on the line
+        sb.append("</div><span class=legend>표시가 없는 줄은 모드와 상관없이 같은 동작입니다. ")
+        sb.append(modes.joinToString("") { modeChip(modes, it) } + " 표시가 있는 줄만 그 모드에서 다르게 동작합니다.</span>")
     }
 
     /** The table of what differs between the modes of [screen] ([diffs]), ahead of everything else on its page. */
