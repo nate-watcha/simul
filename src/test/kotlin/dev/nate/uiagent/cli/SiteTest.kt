@@ -698,7 +698,7 @@ class SiteTest {
         assertTrue("<div class=doc data-mode=all>" in page)
         assertTrue("<button type=button data-set=all aria-pressed=true>전체</button><button type=button data-set=0 aria-pressed=false>본인</button><button type=button data-set=1 aria-pressed=false>타인</button>" in page)
         assertTrue("<span class=sum>모드 공통 <b>4</b></span><span class=\"sum m0\">본인에서만 <b>3</b></span><span class=\"sum m1\">타인에서만 <b>5</b></span>" in page, page.substringAfter("class=sums").take(400))
-        assertTrue("표시가 없는 줄은 모드 공통이고 한 번만 돕니다 — 본인에서 돌린 결과입니다." in page)
+        assertTrue("표시가 없는 줄은 모드와 상관없이 같은 동작입니다." in page && "에서 돌린 결과" !in page, "a common line says nothing of modes")
 
         // the table, ahead of the page and in its order: a check of one mode, a check written per mode, a place of one mode
         val table = page.substringAfter("<h3>모드별 차이</h3>").substringBefore("</table>")
