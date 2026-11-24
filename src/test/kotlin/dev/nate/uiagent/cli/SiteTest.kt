@@ -736,4 +736,66 @@ class SiteTest {
         val plain = File(day, "인물상세/_screen.html").readText()
         assertTrue("<div class=doc>" in plain && "모드별 차이" !in plain && "class=seg" !in plain.substringAfter("</style>"))
     }
+
+    @Test
+    fun `the same behaviour on each mode's data is one line with what it was run on, and a check written per mode reads under one name`() {
+        val day = File(runs, "2026-11-24")
+        val layout = ScreenLayout(listOf(ScreenLayout.Slot(part = "프로필 헤더"), ScreenLayout.Slot(tabs = listOf("홈"))), modes = listOf("본인", "타인"))
+        val owner = mapOf("본인" to "구름", "타인" to "WATCHA")
+        // [each]: one of the runs of a file that runs in each mode, the one in that mode
+        fun write(feature: String, name: String, title: String, prose: String, mode: String?, ranIn: String, each: Boolean = false, failed: Boolean = false) {
+            val dir = File(day, "$feature/$name" + if (each) ".$ranIn" else "").apply { mkdirs() }
+            val text = if (SimulProject.isEntryStem(name)) "화면이 보이는지 확인한다" else if (each) "\"${owner[ranIn]}님의 팔로워\"가 보이는지 확인한다" else "스텝"
+            val steps = listOf(StepReport(1, text, if (failed) StepStatus.FAILED else StepStatus.PASSED, "replay", emptyList(), emptyList(), if (failed) "replay broken" else null, 500, emptyList(), startedMs = 1000L))
+            ResultJson.write(ScenarioRunResult(title, if (failed) StepStatus.FAILED else StepStatus.PASSED, steps, null, 5000, startedAtMs = 1_795_000_000_000L, reportDir = dir), "replay",
+                ResultJson.Meta(feature, name, if (each) ranIn else null, "$feature/$name.md", title, null, prose, "2026-11-24", ResultJson.Env("6.5.0", "sdk", "1.1"),
+                    setup = ResultJson.Setup(if (ranIn == "타인") "app://users/1" else "app://my", false, "member", via = if (SimulProject.isEntryStem(name)) null else "프로필", mode = ranIn),
+                    screens = mapOf("프로필" to layout), screenMode = if (each) ranIn else mode,
+                    modeData = if (each) mapOf("주인" to owner.getValue(ranIn)) else emptyMap(), perMode = each), dir)
+        }
+        write("프로필", "_entry@본인", "프로필 본인 진입", "나의 왓챠 주소로 바로 열린다.", "본인", "본인")
+        write("프로필", "_entry@타인", "프로필 타인 진입", "유저 주소로 바로 열린다.", "타인", "타인")
+        write("프로필/프로필 헤더", "소개", "소개", "소개 글은 \"더보기\"로 펼친다.", null, "본인")
+        write("프로필/프로필 헤더", "팔로워 목록", "팔로워 목록", "누르면 주인의 팔로워 목록으로 간다.", null, "본인", each = true)
+        write("프로필/프로필 헤더", "팔로워 목록", "팔로워 목록", "누르면 주인의 팔로워 목록으로 간다.", null, "타인", each = true, failed = true)
+        write("프로필/프로필 헤더", "팔로우@타인", "팔로우", "프로필의 팔로우 버튼.", "타인", "타인")
+        write("프로필/홈", "헤더@본인", "헤더", "하단 내비게이션의 캘린더로 간다.", "본인", "본인")
+        write("프로필/홈", "헤더@타인", "헤더", "이 프로필의 캘린더 탭으로 간다.", "타인", "타인")
+
+        val read = ResultJson.read(File(day, "프로필/프로필 헤더/팔로워 목록.타인/result.json"))!!
+        assertEquals(listOf("프로필/프로필 헤더/팔로워 목록.타인", "타인", mapOf("주인" to "WATCHA"), true), listOf(read.id, read.screenMode, read.modeData, read.perMode))
+
+        val rows = Site.classify(Site.load(day))
+        val runs = rows.filter { it.result.name == "팔로워 목록" }
+        assertEquals(listOf(null to "본인", null to "타인"), runs.map { it.mode to it.ranIn }, "it is common to the modes: the mode is where a run was, not what the scenario is of")
+        assertEquals(listOf("구름", "WATCHA"), runs.map { it.runLabel })
+        assertEquals(rows.size - 1, Site.lines(rows).size, "its two runs are one line")
+        assertEquals(Site.Kind.FAILED, Site.specs(runs).single().kind, "told by the worst of them")
+
+        SitePages.build(day, day)
+        val page = File(day, "프로필/_screen.html").readText()
+        assertTrue("<span class=sum>모드 공통 <b>2</b></span><span class=\"sum m0\">본인에서만 <b>1</b></span><span class=\"sum m1\">타인에서만 <b>2</b></span>" in page, page.substringAfter("class=sums").take(400))
+        assertTrue("줄 아래 회색 글은 같은 동작을 모드마다 어떤 데이터로 돌려 봤는지입니다." in page)
+        // one line, with no mark of a mode on it: the data under its sentence, the run that failed saying so
+        val line = page.substringAfter("id=\"프로필_헤더/팔로워 목록.본인\"").substringBefore("</details>")
+        assertTrue(line.startsWith(" open><summary><i class=\"ic failed\">✕</i><b class=fn>팔로워 목록</b><span class=fs><a id=\"프로필_헤더/팔로워 목록.타인\"></a>누르면 주인의 팔로워 목록으로 간다."), line.take(300))
+        assertTrue("<span class=ran>주인: <span data-m=0>구름</span><span class=sep> · </span><span class=bad data-m=1>WATCHA 실패</span></span>" in line, line)
+        assertTrue("class=\"mc " !in line, "nothing of modes on it")
+        assertEquals(1, Regex("<b class=fn>팔로워 목록</b>").findAll(page).count())
+        // opened: each run's steps, which is where the data shows
+        assertTrue("<div class=run data-m=0><span class=rv>구름</span>" in line && "구름님의 팔로워" in line && "<div class=run data-m=1><span class=rv>WATCHA</span>" in line && "WATCHA님의 팔로워" in line, line)
+        // the table is what differs: the data-only line is not on it
+        val table = page.substringAfter("<h3>모드별 차이</h3>").substringBefore("</table>")
+        assertEquals(listOf("팔로우", "헤더"), table.substringAfter("<tbody>").split("<tr>").drop(1).map { it.substringAfter("class=dn").substringAfter(">").substringBefore("</a>") })
+        assertTrue("이 표에 없는 확인 2개는 모드마다 같습니다." in page)
+        // a check written per mode: two lines that read as one — the name on the first, a mode's sentence on each
+        assertTrue("<details class=\"ft passed lead\" id=\"홈/헤더@본인\" data-m=0>" in page && "<details class=\"ft passed cont\" id=\"홈/헤더@타인\" data-m=1>" in page, page.substringAfter("id=\"s:홈\"").take(900))
+        assertTrue("<details class=\"ft passed\" id=\"프로필_헤더/팔로우@타인\" data-m=1>" in page, "a check one mode has stands alone")
+
+        // each run has its page, and the way between them is by what it ran on
+        val detail = File(day, "프로필/프로필 헤더/팔로워 목록.타인.html").readText()
+        assertTrue("<i class=\"dot passed\"></i>구름</a>" in detail && "aria-selected=\"true\"" in detail.substringAfter("role=tablist").substringBefore("WATCHA</a>").substringAfterLast("<a ") && "<i class=\"dot failed\"></i>WATCHA</a>" in detail, detail.substringAfter("role=tablist").take(500))
+        // where rows are listed one by one, a run says what it ran on
+        assertTrue("팔로워 목록 <span class=rl>WATCHA</span>" in File(day, "index.html").readText())
+    }
 }

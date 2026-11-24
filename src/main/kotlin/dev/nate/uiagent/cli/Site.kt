@@ -97,7 +97,8 @@ object Site {
             return place.only ?: place.modes.firstOrNull()
         }
         return screens.flatMap { screen ->
-            screen.scenarios.flatMap { row ->
+            // the runs of one file in each mode say one thing about the other screen, once
+            specs(screen.scenarios).flatMap { row ->
                 val t = row.timeline
                 val whole = when (row.kind) { Kind.FAILED -> "FAILED"; Kind.PASSED -> "PASSED"; Kind.SETUP -> "NONE" }
                 t.mentions.map { Link(screen, row, null, it, t.description, whole, look = false, mode = row.mode) } +
@@ -200,6 +201,16 @@ object Site {
     /** The worst of [rows]; a screen that only holds other screens has none and nothing against it. */
     fun kindOf(rows: List<Row>): Kind = rows.minOfOrNull { it.kind } ?: Kind.PASSED
 
+    /**
+     * [rows] as the lines of spec they are: the runs of one file in each mode ([Row.ranIn]) are one line — told by
+     * the worst of them — and every other row its own.
+     */
+    fun specs(rows: List<Row>): List<Row> = lines(rows).map { g -> g.minBy { it.kind } }
+
+    /** [rows] with the runs of one file in each mode together, in the rows' order. */
+    fun lines(rows: List<Row>): List<List<Row>> =
+        rows.groupBy { if (it.ranIn != null) it.result.feature + "/" + it.result.name else it.id }.values.toList()
+
     /** The rows of [screens] together. */
     fun rowsOf(screens: List<Screen>): List<Row> = screens.flatMap { it.rows }
 
@@ -267,8 +278,17 @@ object Site {
         val id get() = result.id
         /** This row is its screen's way in (`_entry.md`, or one mode's `_entry@<mode>.md`), not a scenario of it. */
         val isEntry get() = SimulProject.isEntryStem(result.name)
-        /** The mode of its screen the scenario is of ([Scenario.mode]); null when it is common to the modes. */
-        val mode: String? get() = result.screenMode
+        /**
+         * The mode of its screen the scenario is of ([Scenario.mode]); null when it is common to the modes — one that
+         * runs in each mode on that mode's data ([ranIn]) is common: the same behaviour, told as one line.
+         */
+        val mode: String? get() = result.screenMode.takeUnless { result.perMode }
+        /** The mode this run was in, for one of the runs of a file that runs in each ([Scenario.perMode]); null otherwise. */
+        val ranIn: String? get() = result.screenMode.takeIf { result.perMode }
+        /** The values of its mode the scenario names, by name ([Scenario.data]). */
+        val data: Map<String, String> get() = result.modeData
+        /** What tells this run from the file's other ones in a word: the value it ran on (`WATCHA`), the mode where it names several. */
+        val runLabel: String? get() = ranIn?.let { data.values.singleOrNull() ?: it }
         /** The name the modes' files of one check share: `헤더` of `헤더@타인`. */
         val base: String get() = Modes.base(result.name)
         /** What the pages call it: its title — `진입` for a way in that was given none. */
@@ -351,7 +371,10 @@ object Site {
         val onDisk = resultsUnder(dir, skip = recordDir)
         val ids = onDisk.map { it.id }.toSet()
         val missing = summary?.scenarios.orEmpty().filter { idOf(it) !in ids }.map { placeholder(dir, summary!!, it) }
-        val results = (onDisk + missing).sortedWith(compareBy({ it.feature }, { it.name }, { it.state ?: "" }))
+        // a run the replay left no directory for knows only its name: it is one of a file's runs in each mode when another of them says so
+        val perMode = onDisk.filter { it.perMode }.associateBy { it.feature to it.name }
+        val results = (onDisk + missing.map { m -> perMode[m.feature to m.name]?.let { m.copy(title = it.title, description = it.description, screenMode = m.state, perMode = true, screens = it.screens) } ?: m })
+            .sortedWith(compareBy({ it.feature }, { it.name }, { it.state ?: "" }))
         val recordings = if (recordDir.isDirectory) resultsUnder(recordDir).associateBy { it.id } else emptyMap()
         return Run(dir, summary, results, record, recordings)
     }

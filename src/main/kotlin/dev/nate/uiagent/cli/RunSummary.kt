@@ -96,7 +96,7 @@ data class FailedStep(
  * for a variant of a `states:` scenario (`billing/play.md@member`). [traceRelPath] inverts it.
  */
 fun scenarioPath(project: SimulProject, md: File, scenario: Scenario): String =
-    md.relativeToOrSelf(project.scenariosDir).path + (scenario.state?.let { "@$it" } ?: "")
+    md.relativeToOrSelf(project.scenariosDir).path + (scenario.run?.let { "@$it" } ?: "")
 
 /** The trace file (relative to `.simul/scenarios/`) a [scenarioPath] records into. */
 fun traceRelPath(path: String): String {
@@ -135,7 +135,7 @@ fun outcomeOf(project: SimulProject, md: File, scenario: Scenario, r: ScenarioRu
         reason = null,
         llm = r.llm,
         video = r.video?.file?.relativeToOrSelf(project.appRoot)?.path,
-        description = fillValues(scenario.description, r.values),
+        description = ModeData.plain(fillValues(scenario.description, r.values), scenario.data.keys),
     )
 }
 
