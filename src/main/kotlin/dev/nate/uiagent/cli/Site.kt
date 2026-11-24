@@ -338,9 +338,19 @@ object Site {
      */
     fun idOf(o: ScenarioOutcome): String {
         val feature = areaOf(o.path)
-        val name = o.path.substringAfterLast('/').removeSuffix(".md")
-        val state = o.name.substringAfter('@', "").ifEmpty { null }
+        val (name, state) = runOf(o)
         return (if (feature.isEmpty()) "" else "$feature/") + name + (state?.let { ".$it" } ?: "")
+    }
+
+    /**
+     * The file's name and the run of it a summary line is: its path says both — `play.md@member`, the run after the
+     * file ([scenarioPath]) — and a line written without the run in its path says it in its `name@state`.
+     */
+    private fun runOf(o: ScenarioOutcome): Pair<String, String?> {
+        val file = o.path.substringAfterLast('/')
+        val at = file.indexOf(".md@")
+        return if (at >= 0) file.substring(0, at) to file.substring(at + ".md@".length)
+        else file.removeSuffix(".md") to o.name.substringAfter('@', "").ifEmpty { null }
     }
 
     /** A result for a summary line the replay left no directory for: the summary's status and reason, no steps. */
@@ -348,7 +358,7 @@ object Site {
         val id = idOf(o)
         return ResultJson.Result(
             dir = File(dir, id), scenario = o.name, title = o.name,
-            feature = areaOf(o.path), name = o.path.substringAfterLast('/').removeSuffix(".md"), state = o.name.substringAfter('@', "").ifEmpty { null },
+            feature = areaOf(o.path), name = runOf(o).first, state = runOf(o).second,
             file = o.path, owner = null, description = o.description, traceRecordedAt = null,
             status = o.status, failedStep = null, reason = o.reason, mode = o.mode ?: summary.mode,
             startedAt = summary.startedAt, startedAtMs = 0, durationMs = o.durationMs, layoutHash = "",

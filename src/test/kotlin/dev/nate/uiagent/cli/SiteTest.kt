@@ -771,6 +771,9 @@ class SiteTest {
         assertEquals(listOf("구름", "WATCHA"), runs.map { it.runLabel })
         assertEquals(rows.size - 1, Site.lines(rows).size, "its two runs are one line")
         assertEquals(Site.Kind.FAILED, Site.specs(runs).single().kind, "told by the worst of them")
+        // a summary line names its run in its path, as a run names itself: the line and the directory are one scenario
+        assertEquals("프로필/프로필 헤더/팔로워 목록.타인", Site.idOf(ScenarioOutcome("팔로워·팔로잉@타인", "프로필/프로필 헤더/팔로워 목록.md@타인", emptyList(), "PASSED", "replay", 1_000, null, false, 1, 0, 0, null, null)))
+        assertEquals("billing/coupon.member", Site.idOf(ScenarioOutcome("coupon@member", "billing/coupon.md", emptyList(), "PASSED", "replay", 1_000, null, false, 1, 0, 0, null, null)))
 
         SitePages.build(day, day)
         val page = File(day, "프로필/_screen.html").readText()
