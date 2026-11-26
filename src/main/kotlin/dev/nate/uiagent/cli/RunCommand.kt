@@ -94,7 +94,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
             val variants = try { project.load(md).variants() } catch (e: IllegalArgumentException) {
                 return err("${md.relativeToOrSelf(cwd)}: ${e.message}")
             }
-            val named = if (ofTrace == null) variants else variants.filter { it.state == ofTrace.second }
+            val named = if (ofTrace == null) variants else variants.filter { it.run == ofTrace.second }
                 .ifEmpty { return err("$p: ${md.name} has no such run (its traces: ${variants.joinToString { project.traceFileFor(md, it).name }})") }
             named.filter { stateFilter == null || it.precondition == stateFilter }.map { md to it }
         }
@@ -146,7 +146,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
                 val planned = if (mode == RunMode.AUTO) (if (trace.isFile) "replay" else "skip (no trace)") else mode.name.lowercase()
                 println("${scenario.name} (${scenarioPath(project, md, scenario)})")
                 println("  mode: $planned  trace: ${TraceState.of(md, trace).name.lowercase()}  tags: ${scenario.tags}" +
-                    (scenario.state?.let { "  state: $it" } ?: ""))
+                    (scenario.state?.let { "  state: $it" } ?: "") + (if (scenario.data.isEmpty()) "" else "  with: " + scenario.data.entries.joinToString(", ") { (k, v) -> "$k=$v" }))
                 scenario.via?.let { println("  starts from the way in to '$it' (${project.entryOf(it)?.file ?: SimulProject.ENTRY_FILE})") }
                 scenario.steps.forEachIndexed { idx, s ->
                     scenario.sections.firstOrNull { it.first == idx }?.let { sec ->
@@ -332,17 +332,20 @@ internal fun executeScenario(
     ResultJson.write(full, mode.name.lowercase(), ResultJson.Meta(
         feature = areaOf(relPath),
         name = md.nameWithoutExtension,
-        state = scenario.state,
+        state = scenario.run,
         file = relPath,
-        title = scenario.title ?: scenario.name,
+        // one of a file's runs in each mode is called as the file is: the mode is not part of what it confirms
+        title = scenario.title ?: if (scenario.perMode) scenario.name.removeSuffix("@${scenario.mode}") else scenario.name,
         owner = scenario.owner,
-        description = fillValues(scenario.description, result.values),
+        description = ModeData.plain(fillValues(scenario.description, result.values), scenario.data.keys),
         mentions = scenario.mentions,
         screens = project.layoutsFor(project.screenOf(md)),
         traceRecordedAt = traceRecordedAt(traceFile, project.appRoot),
         env = ResultJson.Env(ops.appVersionName(project.config.app), ops.deviceName(), ops.androidCliVersion()),
         setup = scenario.setup?.let { ResultJson.Setup(it.deeplink, it.launch, scenario.precondition, scenario.via?.let(Modes::screenOf), scenario.via?.let(Modes::modeOf)) },
         screenMode = scenario.mode,
+        modeData = scenario.data,
+        perMode = scenario.perMode,
     ), reportDir)
 
     result.updatedTrace?.let { updated ->
@@ -391,7 +394,7 @@ object ReportDirs {
      */
     fun inRuns(runsDir: File, project: SimulProject, md: File, scenario: Scenario): File {
         val relPath = md.relativeToOrSelf(project.scenariosDir).path
-        val key = md.nameWithoutExtension + (scenario.state?.let { ".$it" } ?: "")
+        val key = md.nameWithoutExtension + (scenario.run?.let { ".$it" } ?: "")
         val dir = File(runsDir, listOf(areaOf(relPath), key).filter { it.isNotEmpty() }.joinToString("/"))
         if (dir.isDirectory) dir.deleteRecursively()
         dir.mkdirs()

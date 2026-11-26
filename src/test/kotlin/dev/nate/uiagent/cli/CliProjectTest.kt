@@ -391,4 +391,77 @@ class CliProjectTest {
         File(profile, "_screen.md").writeText("---\nmodes: 본인, 타인\n---\n")
         assertContains(assertFailsWith<IllegalArgumentException> { p.layoutOf("프로필") }.message!!, "`modes:` is a list on its line")
     }
+
+    @Test
+    fun `a mode's values - a common file that names one runs once in each mode on that mode's data, with a trace each`() {
+        val root = makeProject()
+        val profile = File(root, ".simul/scenarios/프로필")
+        for (d in listOf("프로필 헤더", "홈/취향분석", "좋아요")) File(profile, d).mkdirs()
+        File(profile, "_screen.md").writeText("---\nmodes:\n  본인:\n    주인: 구름\n  타인:\n    주인: WATCHA\nparts: [프로필 헤더, [홈, 좋아요]]\n---\n")
+        fun entry(address: String, step: String) = "---\nsetup:\n  appState: member\n  deeplink: $address\n---\n1. $step\n"
+        File(profile, "_entry@본인.md").writeText(entry("app://my", "\"프로필 수정\"이 보이는지 확인한다"))
+        File(profile, "_entry@타인.md").writeText(entry("app://users/1", "\"\$주인\"이 보이는지 확인한다"))
+        File(profile, "홈/_entry@본인.md").writeText(entry("app://my", "\"프로필 홈\" 탭을 누른다"))
+        File(profile, "홈/_entry@타인.md").writeText(entry("app://users/1", "\"프로필 홈\" 탭을 누른다"))
+        File(profile, "좋아요/_entry@본인.md").writeText(entry("app://my", "\"좋아요\" 탭을 누른다"))
+        // the same in every mode, whoever's profile it is: once
+        File(profile, "프로필 헤더/소개.md").writeText("소개 글은 \"더보기\"로 펼친다.\n\n1. \"더보기\"를 누른다\n")
+        // the same behaviour on the mode's data — said in the prose alone, or in a step
+        File(profile, "프로필 헤더/팔로워 목록.md").writeText("누르면 \$주인의 팔로워 목록으로 간다.\n\n1. \"팔로워\"를 누른다\n")
+        File(profile, "홈/취향분석/헤더.md").writeText("\"전체 보기\"를 누르면 \$주인의 취향분석 상세로 간다.\n\n1. \"취향분석 전체 보기\"를 누른다\n2. \"\$주인님의 취향분석\"이 보이는지 확인한다\n")
+        // of one mode: its file's, or its place's — that mode's value, one run
+        File(profile, "프로필 헤더/팔로우@타인.md").writeText("\$주인을 팔로우한다.\n\n1. \"\$주인\" 옆의 \"팔로우\"를 누른다\n")
+        File(profile, "좋아요/행.md").writeText("1. \"\$주인님이 좋아한 인물\"이 보이는지 확인한다\n")
+        val p = SimulProject(root)
+
+        assertEquals(listOf("본인", "타인"), p.layoutOf("프로필")?.modes, "the modes are the block's, in its order")
+        assertEquals(mapOf("본인" to mapOf("주인" to "구름"), "타인" to mapOf("주인" to "WATCHA")), p.modeDataOf("프로필/홈/취향분석"), "a place of the screen has its values")
+
+        assertEquals(listOf(null), p.load(File(profile, "프로필 헤더/소개.md")).variants().map { it.run }, "a file that names no value runs once")
+        val followers = p.load(File(profile, "프로필 헤더/팔로워 목록.md")).variants()
+        assertEquals(listOf("팔로워 목록@본인", "팔로워 목록@타인"), followers.map { it.name })
+        assertEquals(listOf("프로필@본인" to "app://my", "프로필@타인" to "app://users/1"), followers.map { it.via to it.setup?.deeplink }, "each from its mode's way in")
+        assertEquals(listOf("본인", "타인"), followers.map { it.run })
+        assertTrue(followers.all { it.perMode && it.description == "누르면 \$주인의 팔로워 목록으로 간다." }, "the prose keeps the name: it is the line of spec")
+        assertEquals(listOf(mapOf("주인" to "구름"), mapOf("주인" to "WATCHA")), followers.map { it.data })
+
+        val headerMd = File(profile, "홈/취향분석/헤더.md")
+        val header = p.load(headerMd).variants()
+        assertEquals(listOf("프로필/홈@본인", "프로필/홈@타인"), header.map { it.via })
+        assertEquals(listOf("\"구름님의 취향분석\"이 보이는지 확인한다", "\"WATCHA님의 취향분석\"이 보이는지 확인한다"), header.map { it.steps[1] }, "a step is run with the value in place")
+        assertEquals(listOf("헤더@본인.trace.json", "헤더@타인.trace.json"), header.map { p.traceFileFor(headerMd, it).name })
+        assertEquals(headerMd.absoluteFile to "타인", p.scenarioOfTrace(p.traceFileFor(headerMd, header[1])))
+        assertEquals(header[1], p.load(headerMd).variant("타인"))
+        assertEquals("프로필/홈/취향분석/헤더.md@타인", scenarioPath(p, headerMd, header[1]))
+
+        val follow = p.load(File(profile, "프로필 헤더/팔로우@타인.md"))
+        assertEquals(listOf("\"WATCHA\" 옆의 \"팔로우\"를 누른다", "타인", null, false), listOf(follow.steps[0], follow.mode, follow.run, follow.perMode), "a file of one mode is filled with that mode's")
+        val liked = p.load(File(profile, "좋아요/행.md"))
+        assertEquals(listOf("\"구름님이 좋아한 인물\"이 보이는지 확인한다", "본인", 1), listOf(liked.steps[0], liked.mode, liked.variants().size), "a place one mode has is that mode")
+        assertEquals("\"WATCHA\"이 보이는지 확인한다", p.load(File(profile, "_entry@타인.md")).steps[0], "a mode's way in may name its values too")
+
+        assertEquals(5 + 7, p.scenarioVariants().count { it.first.path.contains("프로필") }, "five ways in, and 1 + 2 + 2 + 1 + 1 runs")
+        // a trace names one run; the whole project still lays out
+        p.traceFileFor(headerMd, header[1]).writeText("{}")
+        assertEquals(0, cliMain(arrayOf("run", p.traceFileFor(headerMd, header[1]).path, "--dry-run"), root))
+        assertEquals(0, cliMain(arrayOf("run", "--all", "--dry-run"), root))
+
+        // where a name ends: the longest of the screen's names — and a Latin one where Latin letters do
+        assertEquals("구름님의 A, \$ownerName, \$없는값", ModeData.fill("\$주인님의 \$owner, \$ownerName, \$없는값", mapOf("주인" to "구름", "owner" to "A")))
+        assertEquals("주인의 목록" to listOf("주인"), ModeData.plain("\$주인의 목록", listOf("주인")) to ModeData.used("\$주인의 목록", listOf("주인", "코드")))
+
+        // what cannot be: its own address, states on top of modes, a name its `values:` has too, modes that differ in names
+        fun refused(name: String, text: String): String {
+            val md = File(profile, "프로필 헤더/$name.md").apply { writeText(text) }
+            return assertFailsWith<IllegalArgumentException> { p.load(md) }.message!!.also { md.delete() }
+        }
+        assertContains(refused("own", "---\nsetup:\n  deeplink: app://x\n---\n\$주인의 것.\n\n1. 스텝\n"), "it cannot open the app itself")
+        assertContains(refused("states", "---\nstates: [member, guest]\n---\n\$주인의 것.\n\n1. 스텝\n"), "`states:` would run each of those again")
+        File(profile, "_screen.md").writeText("---\nmodes:\n  본인:\n    owner: 구름\n  타인:\n    owner: WATCHA\n---\n")
+        assertContains(refused("values", "---\nvalues:\n  owner: [a, b]\n---\n1. \"\$owner\"를 입력한다\n"), "its `values:` cannot name it too")
+        File(profile, "_screen.md").writeText("---\nmodes:\n  본인:\n    주인: 구름\n  타인:\n    이름: WATCHA\n---\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.layoutOf("프로필") }.message!!, "every mode has the same values (주인); 타인 has 이름")
+        File(profile, "_screen.md").writeText("---\nmodes:\n  본인:\n  타인:\n    주인: WATCHA\n---\n")
+        assertContains(assertFailsWith<IllegalArgumentException> { p.layoutOf("프로필") }.message!!, "under `modes:` each mode is a line")
+    }
 }

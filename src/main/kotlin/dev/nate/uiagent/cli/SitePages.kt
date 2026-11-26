@@ -248,6 +248,8 @@ object SitePages {
     private fun modeChip(modes: List<String>, mode: String?, text: String? = null) =
         modeAt(modes, mode)?.let { "<i class=\"mc m${it % 4}\">${esc(text ?: mode!!)}</i>" } ?: ""
     private fun modesOf(row: Site.Row): List<String> = tree[Mentions.norm(row.result.feature)]?.modes.orEmpty()
+    /** A row's name where rows are listed one by one: one of a file's runs in each mode says what it ran on. */
+    private fun titleOf(row: Site.Row) = esc(row.title) + (row.runLabel?.let { " <span class=rl>${esc(it)}</span>" } ?: "")
     private fun statusOf(rows: List<Site.Row>) = when (Site.kindOf(rows)) { Site.Kind.FAILED -> "FAILED"; Site.Kind.PASSED -> "PASSED"; Site.Kind.SETUP -> "NONE" }
 
     /** One line of a screen's table of what differs between its modes: its place, what it is called, where on the page it is, and by mode what that mode has there. */
@@ -299,7 +301,8 @@ object SitePages {
     /** The head of a screen with modes: the switch between them, how many checks are common and how many each mode alone has, and what an unmarked line means. */
     private fun modeHead(sb: StringBuilder, screen: Site.Screen) {
         val modes = screen.modes
-        val rows = Site.rowsOf(screen.onPage).filterNot { it.isEntry }
+        val all = Site.rowsOf(screen.onPage).filterNot { it.isEntry }
+        val rows = Site.specs(all)
         val common = rows.filter { it.mode == null }
         sb.append("<div class=modeline><span>한 화면이 ${modes.size}가지 모드로 동작합니다.</span><span class=seg role=group aria-label=\"모드\"><button type=button data-set=all aria-pressed=true>전체</button>")
         modes.forEachIndexed { i, m -> sb.append("<button type=button data-set=$i aria-pressed=false>${esc(m)}</button>") }
@@ -307,14 +310,17 @@ object SitePages {
         modes.forEachIndexed { i, m -> sb.append("<span class=\"sum m${i % 4}\">${esc(m)}에서만 <b>${rows.filter { it.mode == m }.sumOf { it.checks.size }}</b></span>") }
         // a line without a mark is the same rule in every mode: nothing of modes is said on it, here or on the line
         sb.append("</div><span class=legend>표시가 없는 줄은 모드와 상관없이 같은 동작입니다. ")
-        sb.append(modes.joinToString("") { modeChip(modes, it) } + " 표시가 있는 줄만 그 모드에서 다르게 동작합니다.</span>")
+        sb.append(modes.joinToString("") { modeChip(modes, it) } + " 표시가 있는 줄만 그 모드에서 다르게 동작합니다.")
+        // the same behaviour on each mode's data is one line too: what it was run on is said under it, quietly
+        if (all.any { it.ranIn != null }) sb.append(" 줄 아래 회색 글은 같은 동작을 모드마다 어떤 데이터로 돌려 봤는지입니다.")
+        sb.append("</span>")
     }
 
     /** The table of what differs between the modes of [screen] ([diffs]), ahead of everything else on its page. */
     private fun diffTable(sb: StringBuilder, screen: Site.Screen, u: String) {
         val modes = screen.modes
         val lines = diffs(screen, u)
-        val common = Site.rowsOf(screen.onPage).filter { !it.isEntry && it.mode == null }.sumOf { it.checks.size }
+        val common = Site.specs(Site.rowsOf(screen.onPage).filter { !it.isEntry && it.mode == null }).sumOf { it.checks.size }
         sb.append("<section class=blk><h3>모드별 차이</h3>")
         if (lines.isEmpty()) { sb.append("<p class=dnote>모드마다 다른 확인이 없습니다.</p></section>"); return }
         sb.append("<div class=dw><table class=diff><thead><tr><th>자리</th>${modes.joinToString("") { "<th>${modeChip(modes, it)}</th>" }}</tr></thead><tbody>")
@@ -326,7 +332,8 @@ object SitePages {
         sb.append("</tbody></table></div><p class=dnote>이 표에 없는 확인 ${common}개는 모드마다 같습니다.</p></section>")
     }
     /** `시나리오 3 · 확인 8 · 전부 통과` of [rows]. */
-    private fun tally(rows: List<Site.Row>): String {
+    private fun tally(all: List<Site.Row>): String {
+        val rows = Site.specs(all)
         val (p, n) = passedOf(rows)
         val failed = rows.count { it.kind == Site.Kind.FAILED }
         return "시나리오 ${rows.count { !it.isEntry }} · 확인 $n · ${if (failed > 0) "<b class=bad>실패 $failed</b>" else if (p == n) "전부 통과" else "통과 $p"}"
@@ -338,7 +345,7 @@ object SitePages {
     private fun entryLine(e: Site.Entry) = "<span class=entry><code class=e>${esc(e.entry)}</code>" +
         e.states.entries.joinToString("") { (state, n) -> "<span>${esc(state)} $n</span>" } + "</span>"
     /** `통과 24/25`: the checks of [rows] that passed, of all. */
-    private fun passedOf(rows: List<Site.Row>) = rows.flatMap { it.checks }.let { c -> c.count { it.status == "PASSED" } to c.size }
+    private fun passedOf(rows: List<Site.Row>) = Site.specs(rows).flatMap { it.checks }.let { c -> c.count { it.status == "PASSED" } to c.size }
     /** Why a failed scenario none of whose checks failed did: its preparation, or a recording that left no steps. */
     private fun orphanFailure(row: Site.Row): String? {
         if (row.kind != Site.Kind.FAILED || row.checks.any { it.status == "FAILED" }) return null
@@ -497,7 +504,7 @@ object SitePages {
         sb.append("<article class=frow>")
         if (thumb != null) sb.append("<a class=shot href=\"${attr(pageOf(r))}\"><img src=\"${attr(thumb)}\" alt=\"실패 시점 스크린샷\" loading=lazy></a>")
         else sb.append("<div class=\"shot empty\"></div>")
-        sb.append("<div class=body><div class=path>${chip(Site.Kind.FAILED, if (row.recordFailed) "녹화 실패" else "FAILED")}<a href=\"${attr(scenarioHref(r))}\">${esc(pathName(r.feature))}</a><span>›</span><a class=title href=\"${attr(pageOf(r))}\">${esc(row.title)}</a>")
+        sb.append("<div class=body><div class=path>${chip(Site.Kind.FAILED, if (row.recordFailed) "녹화 실패" else "FAILED")}<a href=\"${attr(scenarioHref(r))}\">${esc(pathName(r.feature))}</a><span>›</span><a class=title href=\"${attr(pageOf(r))}\">${titleOf(row)}</a>")
         step?.let { t.sectionOf(it.n) }?.let { sec ->
             sb.append("<span>›</span><span>${esc(sec.title)}</span>")
             // the screens the failed check is about: the failure shows on their pages too
@@ -524,7 +531,7 @@ object SitePages {
     /** A scenario that never ran (its setup failed, or it has no trace): not a verdict on the app. */
     private fun setupRow(sb: StringBuilder, row: Site.Row) {
         val r = row.result
-        sb.append("<article class=frow><div class=\"shot none\"></div><div class=body><div class=path>${chip(Site.Kind.SETUP)}<a href=\"${attr(scenarioHref(r))}\">${esc(pathName(r.feature))}</a><span>›</span><a class=title href=\"${attr(pageOf(r))}\">${esc(row.title)}</a></div>")
+        sb.append("<article class=frow><div class=\"shot none\"></div><div class=body><div class=path>${chip(Site.Kind.SETUP)}<a href=\"${attr(scenarioHref(r))}\">${esc(pathName(r.feature))}</a><span>›</span><a class=title href=\"${attr(pageOf(r))}\">${titleOf(row)}</a></div>")
         sb.append("<div class=note>${esc(r.reason ?: "setup failed")} — 앱 판정이 아니라 환경 문제입니다.</div></div><div class=side><span>${esc(stateOf(r))}</span></div></article>")
     }
 
@@ -533,7 +540,7 @@ object SitePages {
         val r = row.result
         // what the search finds it by: its name and the names of the events it sends — and an event's id, typed whole
         val q = listOf(row.title, r.title, r.name, evNames(listOf(row))).joinToString(" ").lowercase()
-        sb.append("<tr class=\"sub ${row.kind.cls}\" data-q=\"${attr(q)}\" data-ev=\"${attr(evIds(listOf(row)))}\"><td><i class=\"dot ${row.kind.cls}\"></i>${if (within.isEmpty()) "" else "<span class=dim>${esc(within)}</span>"}<a href=\"${attr(pageOf(r))}\">${esc(row.title)}</a>")
+        sb.append("<tr class=\"sub ${row.kind.cls}\" data-q=\"${attr(q)}\" data-ev=\"${attr(evIds(listOf(row)))}\"><td><i class=\"dot ${row.kind.cls}\"></i>${if (within.isEmpty()) "" else "<span class=dim>${esc(within)}</span>"}<a href=\"${attr(pageOf(r))}\">${titleOf(row)}</a>")
         if (row.recordFailed) sb.append(" ${chip(Site.Kind.FAILED, "녹화 실패")}") else if (row.kind == Site.Kind.SETUP) sb.append(" ${chip(Site.Kind.SETUP)}")
         sb.append("</td><td class=dim>${esc(stateOf(r))}</td><td colspan=3><span class=cl>")
         orphanFailure(row)?.let { sb.append("<span class=failed>${icon("FAILED")}<span class=reason>${esc(it)}</span></span>") }
@@ -650,7 +657,15 @@ object SitePages {
                 val title = if (state == main) own else "다른 계정으로 보면 <code class=e>${esc(state.ifEmpty { "계정 없음" })}</code>"
                 sb.append("<section class=blk>${title?.let { "<h3>$it</h3>" } ?: ""}<div class=fl>")
                 // in a place only one mode has, the place says the mode: its lines do not say it again
-                for (row in rows) scenarioLine(sb, row, u, pages, chip = screen.only == null)
+                val lines = Site.lines(rows)
+                // a check written per mode (`헤더@본인`, `헤더@타인`) reads as one: its name once, a sentence a mode under it
+                fun pairs(a: List<Site.Row>?, b: List<Site.Row>?) = a != null && b != null && a.size == 1 && b.size == 1 &&
+                    a[0].mode != null && b[0].mode != null && a[0].base == b[0].base && single(a[0]) && single(b[0])
+                lines.forEachIndexed { i, g ->
+                    if (g[0].ranIn != null) sameLine(sb, g, u, pages)
+                    else scenarioLine(sb, g[0], u, pages, chip = screen.only == null,
+                        pair = (if (pairs(lines.getOrNull(i - 1), g)) " cont" else "") + (if (pairs(g, lines.getOrNull(i + 1))) " lead" else ""))
+                }
                 sb.append("</div></section>")
             }
         }
@@ -847,19 +862,77 @@ object SitePages {
      * opened, its steps. One that confirms several (`##` sections) is a group ([scenarioGroup]). A scenario that did
      * not pass is open.
      */
-    private fun scenarioLine(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>, chip: Boolean = true) {
+    private fun scenarioLine(sb: StringBuilder, row: Site.Row, u: String, pages: Map<String, String>, chip: Boolean = true, pair: String = "") {
         val r = row.result
         val checks = row.checks
-        if (!(checks.size == 1 && checks[0].title == null)) return scenarioGroup(sb, row, u, pages, chip)
+        if (!single(row)) return scenarioGroup(sb, row, u, pages, chip)
         val modes = modesOf(row)
         val c = checks[0]
         val status = when (row.kind) { Site.Kind.FAILED -> "FAILED"; Site.Kind.PASSED -> "PASSED"; Site.Kind.SETUP -> "NONE" }
         val mark = if (row.recordFailed) chip(Site.Kind.FAILED, "녹화 실패") else if (row.kind == Site.Kind.SETUP) chip(Site.Kind.SETUP) else ""
-        sb.append("<details class=\"ft ${row.kind.cls}\" id=\"${attr(anchorOf(r))}\"${modeAttr(modes, row.mode)}${if (row.kind != Site.Kind.PASSED) " open" else ""}><summary>${icon(status)}<b class=fn>${esc(row.title)}</b>")
+        sb.append("<details class=\"ft ${row.kind.cls}$pair\" id=\"${attr(anchorOf(r))}\"${modeAttr(modes, row.mode)}${if (row.kind != Site.Kind.PASSED) " open" else ""}><summary>${icon(status)}<b class=fn>${esc(row.title)}</b>")
         sb.append("<span class=fs>${if (chip) modeChip(modes, row.mode) else ""}${mentions(c.description, u, pages)}$mark${eventChips(row, u)}</span><span class=ckn>${if (c.steps.isEmpty()) "" else "${c.steps.size}스텝"}</span></summary><div class=fb>")
         scenarioNotes(sb, row, u, pages)
         if (c.steps.isNotEmpty()) stepList(sb, c.steps)
         sb.append("${scenarioMeta(row, u)}</div></details>")
+    }
+
+    /** The scenario confirms one thing: it is a line, not a group of checks. */
+    private fun single(row: Site.Row) = row.checks.let { it.size == 1 && it[0].title == null }
+
+    /**
+     * What the runs [g] of one file were run on, under its sentence: `주인: 구름 · WATCHA` — a name of the mode's
+     * values the file names and each mode's value for it, the run that did not pass saying so. It says the data
+     * and nothing of modes: the line is one behaviour.
+     */
+    private fun ranLine(g: List<Site.Row>): String {
+        val modes = modesOf(g[0])
+        return "<span class=ran>" + g[0].data.keys.withIndex().joinToString(", ") { (i, name) ->
+            esc(name) + ": " + g.joinToString("<span class=sep> · </span>") { r ->
+                val not = if (i > 0) null else when (r.kind) { Site.Kind.FAILED -> "bad" to " 실패"; Site.Kind.SETUP -> "off" to " 안 돌림"; Site.Kind.PASSED -> null }
+                "<span${not?.let { " class=${it.first}" } ?: ""}${modeAttr(modes, r.ranIn)}>${esc(r.data[name] ?: r.ranIn ?: "")}${not?.second ?: ""}</span>"
+            }
+        } + "</span>"
+    }
+
+    /** The other runs' anchors on the line the runs [g] of one file share, so a link to any of them lands on it. */
+    private fun anchors(g: List<Site.Row>) = g.drop(1).joinToString("") { "<a id=\"${attr(anchorOf(it.result))}\"></a>" }
+
+    /**
+     * A file that runs in each mode on that mode's data ([Site.Row.ranIn]) on its screen's page: one line, as any
+     * scenario common to the modes is — the same behaviour — with what it was run on under its sentence
+     * ([ranLine]). Opened, each run's steps, which are where the data shows.
+     */
+    private fun sameLine(sb: StringBuilder, g: List<Site.Row>, u: String, pages: Map<String, String>) {
+        val row = g[0]
+        if (!single(row)) return sameGroup(sb, g, u, pages)
+        val modes = modesOf(row)
+        val kind = Site.kindOf(g)
+        val c = row.checks[0]
+        val mark = if (g.any { it.recordFailed }) chip(Site.Kind.FAILED, "녹화 실패") else if (kind == Site.Kind.SETUP) chip(Site.Kind.SETUP) else ""
+        val steps = g.maxOf { it.checks[0].steps.size }
+        sb.append("<details class=\"ft ${kind.cls}\" id=\"${attr(anchorOf(row.result))}\"${if (kind != Site.Kind.PASSED) " open" else ""}><summary>${icon(statusOf(g))}<b class=fn>${esc(row.title)}</b>")
+        sb.append("<span class=fs>${anchors(g)}${mentions(c.description, u, pages)}$mark${eventChips(row, u)}${ranLine(g)}</span><span class=ckn>${if (steps == 0) "" else "${steps}스텝"}</span></summary><div class=fb>")
+        for (r in g) {
+            sb.append("<div class=run${modeAttr(modes, r.ranIn)}><span class=rv>${esc(r.runLabel ?: "")}</span>")
+            scenarioNotes(sb, r, u, pages)
+            r.checks[0].steps.takeIf { it.isNotEmpty() }?.let { stepList(sb, it) }
+            sb.append("${scenarioMeta(r, u)}</div>")
+        }
+        sb.append("</div></details>")
+    }
+
+    /** [sameLine] for a file of several checks: one group, told by the run that went worst, with the way to every run's steps. */
+    private fun sameGroup(sb: StringBuilder, g: List<Site.Row>, u: String, pages: Map<String, String>) {
+        val modes = modesOf(g[0])
+        val row = g.minBy { it.kind }
+        val t = row.timeline
+        val to = (t.mentions + row.checks.flatMap { it.mentions }).distinct().joinToString("") { "<span class=to>→ ${esc(leaf(it))}</span>" }
+        val mark = if (g.any { it.recordFailed }) " " + chip(Site.Kind.FAILED, "녹화 실패") else if (row.kind == Site.Kind.SETUP) " " + chip(Site.Kind.SETUP) else ""
+        sb.append("<div class=\"grp ${row.kind.cls}\" id=\"${attr(anchorOf(g[0].result))}\">${anchors(g)}<div class=gh>${icon(statusOf(g))}<b class=fn>${esc(row.title)}</b><span class=gt>${checkTally(row)}</span>$to$mark</div>${ranLine(g)}${eventChips(row, u)}")
+        scenarioNotes(sb, row, u, pages)
+        checkLines(sb, row, u, pages)
+        sb.append("<span class=fm>" + g.joinToString(" · ") { r -> "<span${modeAttr(modes, r.ranIn)}>${esc(r.runLabel ?: "")} <a class=more href=\"${attr(u + pageOf(r.result))}\">스텝·영상 ›</a></span>" } + "</span></div>")
     }
 
     /** A check's steps: the ones that check set apart from the ones that get there, the failed one with why. */
@@ -950,7 +1023,7 @@ object SitePages {
         val siblings = all.filter { it.result.feature == r.feature && it.result.name == r.name }
         if (siblings.size > 1 || r.state != null) {
             sb.append("<span class=tabs role=tablist>")
-            for (s in siblings) sb.append("<a role=tab aria-selected=\"${s.id == r.id}\" href=\"${attr(u + pageOf(s.result))}\"><i class=\"dot ${s.kind.cls}\"></i>${esc(s.result.state ?: "default")}</a>")
+            for (s in siblings) sb.append("<a role=tab aria-selected=\"${s.id == r.id}\" href=\"${attr(u + pageOf(s.result))}\"><i class=\"dot ${s.kind.cls}\"></i>${esc(s.runLabel ?: s.result.state ?: "default")}</a>")
             sb.append("</span>")
         }
         sb.append("<span class=right><span class=dim>${esc(".simul/scenarios/${r.file}")}</span></span></div></header>")
@@ -1492,6 +1565,11 @@ object SitePages {
         .mc{display:inline-block;font-style:normal;font-size:11px;font-weight:600;line-height:17px;padding:0 7px;border-radius:4px;white-space:nowrap;margin-right:8px;vertical-align:1px}
         .mc.m0,.sum.m0{color:var(--m0);background:var(--m0bg)}.mc.m1,.sum.m1{color:var(--m1);background:var(--m1bg)}.mc.m2,.sum.m2{color:var(--m2);background:var(--m2bg)}.mc.m3,.sum.m3{color:var(--warnfg);background:var(--warnbg)}
         .sums{display:flex;flex-wrap:wrap;gap:6px}.sum{font-size:12.5px;padding:3px 10px;border-radius:6px;background:var(--chipbg);color:var(--ink2);white-space:nowrap}.sum b{font-weight:600;font-variant-numeric:tabular-nums}
+        .ran{display:block;margin-top:2px;font-size:12.5px;color:var(--faint)}.ran .bad{font-weight:500}.ran .off{color:var(--dim)}.grp>.ran{margin-left:30px}
+        .doc:not([data-mode=all]) .ran .sep{display:none}.rl{font-weight:400;color:var(--faint)}
+        .run{display:flex;flex-direction:column;gap:2px;min-width:0}.run+.run{margin-top:10px}.rv{font-size:12px;color:var(--faint)}
+        .doc[data-mode=all] details.ft.cont{border-top:0}.doc[data-mode=all] details.ft.cont>summary{padding-top:0}.doc[data-mode=all] details.ft.cont .fn{visibility:hidden}
+        .doc[data-mode=all] details.ft.lead>summary{padding-bottom:5px}
         .legend{font-size:12.5px;color:var(--faint);max-width:72ch}.legend .mc{margin:0 4px 0 0}
         .ph .mc,.tabrow .mc,.tphead .mc,.gh .mc{margin-right:0}.in .ip .mc{margin-right:6px}
         .doc[data-mode="0"] [data-m]:not([data-m="0"]),.doc[data-mode="1"] [data-m]:not([data-m="1"]),.doc[data-mode="2"] [data-m]:not([data-m="2"]),.doc[data-mode="3"] [data-m]:not([data-m="3"]){display:none!important}

@@ -91,6 +91,18 @@ data class Scenario(
      * of them — and for every scenario of a screen without modes. [SimulProject.load] sets it.
      */
     val mode: String? = null,
+    /**
+     * The values of the mode this scenario runs in ([ModeData]), when it names one (`$주인`): its steps are filled
+     * with them, its prose keeps the names — the report reads the line as spec and shows the values beside it.
+     */
+    val data: Map<String, String> = emptyMap(),
+    /**
+     * A file common to its screen's modes that names a mode's value is the same behaviour on each mode's data: it
+     * runs once in each, and this is how it starts in each ([SimulProject.load] sets it; see [variants]).
+     */
+    val inModes: List<InMode> = emptyList(),
+    /** This instance is one of those runs, the one in [mode]. */
+    val perMode: Boolean = false,
 ) {
     /** The app state this scenario requires: appState name, "guest" for clearData, or null
      *  (undeclared — runs against whatever state the device happens to be in). */
@@ -102,10 +114,42 @@ data class Scenario(
      * restores the state's snapshot (`.simul/states/<state>.tar`); [GUEST] may also have no
      * snapshot at all, in which case the restore is just the pm clear (see AdbOps.setup).
      */
-    fun variants(): List<Scenario> = if (states.isEmpty()) listOf(this) else states.map(::forState)
+    fun variants(): List<Scenario> = when {
+        inModes.isNotEmpty() -> inModes.map(::forMode)
+        states.isEmpty() -> listOf(this)
+        else -> states.map(::forState)
+    }
 
-    /** This scenario resolved for one declared state; stateless scenarios return themselves. */
-    fun variant(state: String?): Scenario = if (state == null || states.isEmpty()) this else forState(state)
+    /** This scenario resolved for one of its runs ([run]): a declared state, or a mode; one that has neither returns itself. */
+    fun variant(run: String?): Scenario = when {
+        run == null -> this
+        inModes.isNotEmpty() -> forMode(inModes.firstOrNull { it.mode == run } ?: throw IllegalArgumentException("scenario '$name' runs in no mode '$run' (modes: ${inModes.map { it.mode }})"))
+        states.isEmpty() -> this
+        else -> forState(run)
+    }
+
+    /**
+     * What tells this run from the file's others, after an `@` in its name and its trace's: the state of a
+     * `states:` scenario, the mode of one that runs in each. Null for a file that is one run.
+     */
+    val run: String? get() = state ?: mode.takeIf { perMode }
+
+    /** How a file that runs in each mode starts in [mode]: that mode's values, its way in, and the sections as they open there. */
+    data class InMode(val mode: String, val data: Map<String, String>, val via: String?, val setup: Setup?, val sections: List<Section>)
+
+    private fun forMode(m: InMode): Scenario = filled(m.data).copy(
+        name = "$name@${m.mode}", mode = m.mode, perMode = true, via = m.via, setup = m.setup, sections = m.sections, inModes = emptyList(),
+    )
+
+    /** This scenario with [data] in its steps, where they name a value of it. */
+    fun filled(data: Map<String, String>): Scenario = if (data.isEmpty()) this else copy(
+        data = data,
+        steps = steps.map { ModeData.fill(it, data) },
+        stepDefs = stepDefs.map { d -> d.copy(command = ModeData.fill(d.command, data), criteria = d.criteria.map { it.copy(text = ModeData.fill(it.text, data)) }) },
+    )
+
+    /** Everything written in the file that a value can be named in: its prose, its sections' sentences, its steps. */
+    val written: List<String> get() = listOf(description) + sections.map { it.description } + stepDefs.flatMap { d -> listOf(d.command) + d.criteria.map { it.text } }
 
     private fun forState(state: String): Scenario {
         require(state in states) { "scenario '$name' declares no state '$state' (states: $states)" }
@@ -234,7 +278,8 @@ object ScenarioMd {
     private val criterionLineRegex = Regex("""^\s*::\s*(.*)$""")
     private val boundCriterionRegex = Regex("""^([A-Za-z0-9._-]+)\s*(?:→|->)\s*(.*)$""")
 
-    fun parse(text: String, file: File? = null): Scenario {
+    /** [known] are `$name`s declared outside the file — its screen's ([ModeData]) — which its `values:` need not list. */
+    fun parse(text: String, file: File? = null, known: Collection<String> = emptyList()): Scenario {
         val (front, body) = splitFrontmatter(text)
         val y = if (front != null) MiniYaml.parse(front) else emptyMap()
         val name = MiniYaml.string(y, "name") ?: file?.nameWithoutExtension?.let(Modes::base) ?: "scenario"
@@ -272,7 +317,7 @@ object ScenarioMd {
         if (values.isNotEmpty()) {
             // with `values:` declared a `$word` is a reference — one that names nothing is a typo, not text
             val written = stepDefs.flatMap { d -> listOf(d.command) + d.criteria.map { it.text } } + description + sections.map { it.description }
-            val unknown = written.flatMap(::valueRefs).distinct() - values.keys
+            val unknown = written.flatMap(::valueRefs).distinct() - values.keys - known.toSet()
             require(unknown.isEmpty()) {
                 "scenario '$name': ${unknown.joinToString(", ") { "\$$it" }} is not in `values:` (declared: ${values.keys.joinToString(", ")})"
             }
@@ -306,7 +351,7 @@ object ScenarioMd {
         }
     }
 
-    fun parse(file: File): Scenario = parse(file.readText(), file)
+    fun parse(file: File, known: Collection<String> = emptyList()): Scenario = parse(file.readText(), file, known)
 
     private class Body(val steps: List<Scenario.StepDef>, val description: String, val sections: List<Scenario.Section>)
 

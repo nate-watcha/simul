@@ -61,7 +61,7 @@ fun collectStatus(project: SimulProject): StatusReport {
             trace = TraceState.of(md, traceFile),
             precondition = s.precondition,
             lastRun = latestRun(project.reportsDir, s.name),
-            state = s.state,
+            state = s.run,
         )
     }
     val states = (project.statesDir.listFiles { f -> f.isFile && f.extension == "tar" } ?: emptyArray())

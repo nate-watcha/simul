@@ -79,6 +79,11 @@ class SimulProject(val appRoot: File) {
         generateSequence(Mentions.norm(screen).ifEmpty { null }) { at -> at.substringBeforeLast('/', "").ifEmpty { null } }
             .firstNotNullOfOrNull { at -> layoutOf(at)?.modes?.takeIf { it.isNotEmpty() } }.orEmpty()
 
+    /** The values of each mode of [screen] ([ScreenLayout.data]), from the same `_screen.md` its modes are named in. */
+    fun modeDataOf(screen: String): Map<String, Map<String, String>> =
+        generateSequence(Mentions.norm(screen).ifEmpty { null }) { at -> at.substringBeforeLast('/', "").ifEmpty { null } }
+            .firstNotNullOfOrNull { at -> layoutOf(at)?.takeIf { it.modes.isNotEmpty() } }?.data.orEmpty()
+
     /**
      * The mode [md]'s name says it is of (`헤더@타인.md` → `타인`), one of its screen's `modes:`; null for a file
      * common to the modes, and for every file of a screen without modes.
@@ -160,16 +165,43 @@ class SimulProject(val appRoot: File) {
         require(md.name != ScreenMd.FILE) { "${ScreenMd.FILE} says what a screen is made of — it is not a scenario and is not run" }
         layoutsFor(screenOf(md)) // read here so a line that names no directory is refused with the scenario, not found in the report
         val mode = modeOf(md)
-        val parsed = mentioned(ScenarioMd.parse(md))
+        val data = modeDataOf(screenOf(md))
+        val names = data.values.firstOrNull()?.keys.orEmpty()
+        val parsed = mentioned(ScenarioMd.parse(md, names))
         // every screen's way in is the same file name: unnamed, it is called by its screen in logs, summaries and report directories
-        if (isEntry(md)) return parsed.copy(mode = mode).also(::checkEntry)
+        if (isEntry(md)) return parsed.copy(mode = mode).also(::checkEntry).filled(mode?.let(data::get).orEmpty())
             .let { if (it.name == Modes.base(md.nameWithoutExtension)) it.copy(name = entryName(screenOf(md), mode)) else it }
         val scenario = parsed.copy(mode = mode ?: placeModeOf(md))
         val own = scenario.setup
-        val screen = own?.entry
-            ?: (if (own?.deeplink == null && own?.launch != true) entryFileOf(md)?.let(::entryKeyOf) else null)
-            ?: return scenario
-        val way = entryOf(screen) ?: throw IllegalArgumentException("scenario '${scenario.name}': setup.entry '$screen' — that screen has no $ENTRY_FILE, nor has a screen above it")
+        val key = own?.entry ?: (if (own?.deeplink == null && own?.launch != true) entryFileOf(md)?.let(::entryKeyOf) else null)
+        val used = scenario.written.flatMap { ModeData.used(it, names) }.distinct()
+        if (used.isEmpty()) return startedFrom(scenario, key)
+        val name = "scenario '${scenario.name}'"
+        val shared = scenario.values.keys intersect names
+        require(shared.isEmpty()) { "$name: ${shared.joinToString(", ") { "\$$it" }} is a value of its screen's modes (${ScreenMd.FILE}) — its `values:` cannot name it too" }
+        // of one mode — its file's, its place's, or the one its `setup.entry` names: that mode's values, one run
+        (scenario.mode ?: own?.entry?.takeIf { dirOf(it) == null }?.let(Modes::modeOf))?.let { one ->
+            return startedFrom(scenario, key).filled(data[one]?.filterKeys { it in used } ?: throw IllegalArgumentException("$name: setup.entry '${own?.entry}' — '$one' is not a mode of its screen (modes: ${data.keys.joinToString(", ")})"))
+        }
+        // common to the modes: the same behaviour on each mode's data — it runs in each, from that mode's way in
+        val written = used.joinToString(", ") { "\$$it" }
+        require(scenario.states.isEmpty()) { "$name: it names $written, so it runs once in each mode — `states:` would run each of those again; write the states as files of their own" }
+        require(own?.deeplink == null && own?.launch != true) { "$name: it names $written, so it runs once in each mode, from that mode's way in — it cannot open the app itself (setup.deeplink, setup.launch)" }
+        val dir = md.absoluteFile.parentFile
+        val inModes = data.map { (m, its) ->
+            val from = own?.entry?.let { inMode(it, m) } ?: entryFileIn(dir, m)?.let(::entryKeyOf)
+                ?: throw IllegalArgumentException("$name: it names $written, so it runs once in each mode — its screen has no way in ($ENTRY_STEM@$m.md) to start the mode '$m' from")
+            val started = startedFrom(scenario, from)
+            Scenario.InMode(m, its.filterKeys { it in used }, started.via, started.setup, scenario.sections.map { sec -> sec.open?.screen?.let { sec.copy(open = sec.open.copy(screen = inMode(it, m))) } ?: sec })
+        }
+        return startedFrom(scenario, key).copy(inModes = inModes)
+    }
+
+    /** [scenario] as it starts from the way in [key] names ([Modes.key]) — the entry's address, and its account unless the scenario has its own; itself when [key] is null. */
+    private fun startedFrom(scenario: Scenario, key: String?): Scenario {
+        if (key == null) return scenario
+        val own = scenario.setup
+        val way = entryOf(key) ?: throw IllegalArgumentException("scenario '${scenario.name}': setup.entry '$key' — that screen has no $ENTRY_FILE, nor has a screen above it")
         val entry = way.setup
         val ownAccount = own?.appState != null || own?.clearData == true || scenario.states.isNotEmpty()
         return scenario.copy(
@@ -181,6 +213,13 @@ class SimulProject(val appRoot: File) {
                 device = own?.device?.takeIf { it != DevicePins.NONE } ?: entry.device,
             ),
         )
+    }
+
+    /** The way in [key] names as a run in [mode] takes it: that mode's, where the screen has one per mode and [key] names none. */
+    private fun inMode(key: String, mode: String): String {
+        val dir = dirOf(key) ?: return key
+        if (mode !in modesOf(key)) return key
+        return runCatching { entryFileIn(dir, mode) }.getOrNull()?.let { Modes.key(Mentions.norm(key), mode) } ?: key
     }
 
     /** [scenario] with the screens its prose and its sections' sentences mention. */
@@ -222,15 +261,16 @@ class SimulProject(val appRoot: File) {
 
     /**
      * The committed trace sits next to the scenario: `<name>.trace.json` — or, for a scenario
-     * that declares `states:`, one per state: `<name>@<state>.trace.json`. A file of one mode carries the mode in
+     * that declares `states:`, one per state: `<name>@<state>.trace.json`, and for one that runs in each mode
+     * ([Scenario.inModes]) one per mode: `<name>@<mode>.trace.json`. A file of one mode carries the mode in
      * its own name, and so does its trace: `헤더@타인.trace.json`.
      */
-    fun traceFileFor(md: File, state: String? = null): File =
-        File(md.parentFile, md.nameWithoutExtension + (state?.let { "@$it" } ?: "") + TRACE_SUFFIX)
+    fun traceFileFor(md: File, run: String? = null): File =
+        File(md.parentFile, md.nameWithoutExtension + (run?.let { "@$it" } ?: "") + TRACE_SUFFIX)
 
-    fun traceFileFor(md: File, scenario: Scenario): File = traceFileFor(md, scenario.state)
+    fun traceFileFor(md: File, scenario: Scenario): File = traceFileFor(md, scenario.run)
 
-    /** [traceFileFor] inverted: the scenario file a trace sits next to, and the state it is the trace of (null = stateless). */
+    /** [traceFileFor] inverted: the scenario file a trace sits next to, and the run of it — a state, a mode — it is the trace of (null = the file's one run). */
     fun scenarioOfTrace(trace: File): Pair<File, String?> {
         val base = trace.name.removeSuffix(TRACE_SUFFIX)
         val dir = trace.absoluteFile.parentFile

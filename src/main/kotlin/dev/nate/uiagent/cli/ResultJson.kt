@@ -82,6 +82,10 @@ object ResultJson {
         val screens: Map<String, ScreenLayout> = emptyMap(),
         /** The mode of its screen the scenario is of ([Scenario.mode]); null when it is common to the modes. */
         val screenMode: String? = null,
+        /** The values of that mode the scenario names ([Scenario.data]), by name; its prose keeps the names. */
+        val modeData: Map<String, String> = emptyMap(),
+        /** This is one of the runs of a file that runs in each mode ([Scenario.perMode]): [state] is the mode. */
+        val perMode: Boolean = false,
     )
 
     /**
@@ -138,6 +142,9 @@ object ResultJson {
                 put("modes", buildJsonObject { withModes.forEach { (screen, layout) -> put(screen, buildJsonArray { layout.modes.forEach { add(JsonPrimitive(it)) } }) } })
             }
             meta.screenMode?.let { put("screen_mode", it) }
+            // the same behaviour on each mode's data: the values this run was filled with, and that the file runs in each mode
+            if (meta.modeData.isNotEmpty()) put("mode_data", buildJsonObject { meta.modeData.forEach { (k, v) -> put(k, v) } })
+            if (meta.perMode) put("per_mode", true)
             meta.setup?.let { s ->
                 put("setup", buildJsonObject {
                     s.deeplink?.let { put("deeplink", it) }
@@ -178,7 +185,7 @@ object ResultJson {
                 r.sections.forEach { sec ->
                     add(buildJsonObject {
                         put("title", sec.title)
-                        put("description", fillValues(sec.description, r.values))
+                        put("description", ModeData.plain(fillValues(sec.description, r.values), meta.modeData.keys))
                         if (sec.preparation) put("preparation", true)
                         if (sec.mentions.isNotEmpty()) put("mentions", buildJsonArray { sec.mentions.forEach { add(JsonPrimitive(it)) } })
                         // the section's own `setup:` — where and as whom it started when that was not as the scenario does
@@ -251,6 +258,10 @@ object ResultJson {
         val screens: Map<String, ScreenLayout> = emptyMap(),
         /** The mode of its screen the scenario is of (`screen_mode`); null when it is common to the modes, or its screen has none. */
         val screenMode: String? = null,
+        /** The values of that mode the scenario names (`mode_data`): what its steps were filled with. */
+        val modeData: Map<String, String> = emptyMap(),
+        /** One of the runs of a file that runs in each mode (`per_mode`), the one in [screenMode]: the same behaviour on that mode's data. */
+        val perMode: Boolean = false,
         val traceRecordedAt: String?,
         /** PASSED | FAILED | SKIPPED_SETUP */
         val status: String,
@@ -366,6 +377,8 @@ object ResultJson {
             description = o.str("description") ?: "",
             mentions = o.strList("mentions"),
             screenMode = o.str("screen_mode"),
+            modeData = o.obj("mode_data")?.entries?.mapNotNull { (k, v) -> (v as? JsonPrimitive)?.contentOrNull?.let { k to it } }?.toMap().orEmpty(),
+            perMode = o.bool("per_mode") == true,
             screens = o.obj("screens")?.mapNotNull { (screen, v) ->
                 (v as? JsonArray)?.let { arr ->
                     screen to ScreenLayout(arr.mapNotNull { item ->
