@@ -149,14 +149,32 @@ class ScenarioRunner(
     private val chooseValue: (List<String>) -> String = { it.random() },
     /** A screen's way in by the screen's name ([SimulProject.entryOf]) — read when it is needed, so one recorded earlier in this run is found. */
     private val entries: (String) -> ScreenEntry? = { null },
+    /**
+     * A section has ended — passed, failed, or skipped because one before it failed: the scenarios that start
+     * where it ends ([Scenario.After]) are run from here by whoever listens, before the next section starts the
+     * app over. `back` brings the app to the section's end once more, for the second of them: the first walked away.
+     */
+    private val afterSection: (section: String, passed: Boolean, back: () -> Unit) -> Unit = { _, _, _ -> },
 ) {
     private val replayer by lazy { Replayer(controller, log = log) }
 
     /** This scenario run's picks for its `values:` ([run] starts each scenario with none). */
     private var picks = ValuePicks(emptyMap())
 
-    fun run(scenario: Scenario, trace: TraceFile?, mode: RunMode): ScenarioRunResult {
+    /**
+     * [continued]: the scenario starts where another scenario's section ended ([Scenario.After]) and is run
+     * inside that scenario's run — the app is open on the screen it starts from, as the account and with the
+     * device settings of that run, whose logcat it also is. Nothing is set up and nothing is put back.
+     */
+    fun run(scenario: Scenario, trace: TraceFile?, mode: RunMode, continued: Boolean = false): ScenarioRunResult {
         require(mode != RunMode.AUTO) { "AUTO must be resolved to LLM/REPLAY (or skip) by the caller" }
+        if (continued) {
+            try {
+                return runPinned(scenario.copy(setup = null, via = null), trace, mode, mutableListOf(), {}, {})
+            } finally {
+                runCatching { ops.logcatDump(File(reportDir, "logcat.txt")) }
+            }
+        }
         // A scenario's own device settings last exactly as long as the scenario: whatever
         // happens inside (setup failure, step FAILED, harness exception), the next scenario
         // starts from the baseline the run began with.
@@ -275,6 +293,7 @@ class ScenarioRunner(
                     log("  step ${i + 1}: SKIPPED")
                 }
                 close(StepStatus.SKIPPED)
+                if (sectioned) afterSection(part.title, false) {}
                 continue
             }
             if (sectioned) log("  section ${pi + 1}/${parts.size}: ${part.title}" + if (part.preparation) " (by the model)" else "")
@@ -361,6 +380,15 @@ class ScenarioRunner(
             }
             touched = !part.preparation || controller.meter.cost.gestures > gestures0
             close(if (broke) StepStatus.FAILED else StepStatus.PASSED)
+            if (sectioned && !part.preparation) {
+                val g = controller.meter.cost.gestures
+                // the section's steps as this run did them: what it just recorded, or what it replayed
+                val did = newSteps.filter { it.section == part.title }
+                afterSection(part.title, !broke) { backTo(scenario, part, runsAs, wantLocale, did) }
+                // whoever went on from here left the app somewhere else: the next section starts it over
+                if (controller.meter.cost.gestures > g) touched = true
+                controller.forget()
+            }
             if (broke) {
                 if (!part.looksElsewhere) stop = true
                 else if (pi < parts.lastIndex) log("  section '${part.title}' looked at another screen and failed — the sections after it run")
@@ -425,6 +453,29 @@ class ScenarioRunner(
         val screen = open.screen ?: return base to scenario.via
         val entry = entries(screen) ?: throw IllegalStateException("section '${part.title}' starts at screen '$screen', which has no ${SimulProject.ENTRY_FILE}")
         return base.copy(deeplink = entry.setup.deeplink, launch = entry.setup.launch) to screen
+    }
+
+    /**
+     * The app at the end of the section [part] once more: started as the section starts, its steps [did] played
+     * again without the model, as a way in is ([walkIn]). For the second scenario that starts where the section
+     * ends — the first one went on from that screen. A step that does not play again is why that scenario is not run.
+     */
+    private fun backTo(scenario: Scenario, part: Scenario.Section, runsAs: String?, wantLocale: String?, did: List<TraceStep>) {
+        log("  setup: back to where '${part.title}' ended — ${did.size} step(s) played again")
+        controller.forget()
+        val (setup, via) = startOf(scenario, part)
+        setup?.let { enter(it, wantLocale, again = true) }
+        via?.let { walkIn(it, runsAs) }
+        controller.fastObserve = true
+        try {
+            firstObservation()
+            did.forEachIndexed { i, step ->
+                replayer.replayStep(picks.fill(step)).broken?.let { throw IllegalStateException("step ${i + 1} \"${step.text}\" did not play again: ${it.why}") }
+            }
+        } finally {
+            controller.fastObserve = false
+            controller.forget()
+        }
     }
 
     /**
