@@ -21,13 +21,15 @@ import java.io.File
  * rendered for it); the parsed template keeps the per-state criteria in [stepDefs].
  *
  * A file may hold several scenarios of one subject, one `## title` heading each ([sections]): the runner
- * runs them in file order, each from the app started over at the scenario's entry. The first heading may be `## 준비`: what it says is
- * done by the model before the others, in a replay too, so they start from a state that is known
- * whatever the last run left on the server —
+ * runs them in file order, each from the app started over at the scenario's entry. Ahead of the first heading a
+ * `setup:` block may say the state they all start from ([Ensure]): `ensure` is a sentence about the app, `by` what
+ * to do when it does not hold. That is not a test and is not written as one — no heading, no numbered steps — and
+ * it is looked at in every run, a replay too, since what the last run left on the server is only known then —
  *
  * ```
- * ## 준비
- * 1. 팔로우하고 있지 않으면 "팔로우"를 눌러 팔로우한다
+ * setup:
+ *   ensure: 이 유저를 팔로우하고 있다
+ *   by: "팔로우"를 누른다
  *
  * ## 팔로우 취소
  * 팔로우 중인 유저의 팔로우를 취소할 수 있다.
@@ -84,6 +86,8 @@ data class Scenario(
     val values: Map<String, List<String>> = emptyMap(),
     /** The `## title` sections [steps] is split into, in file order; empty for a scenario without headings. */
     val sections: List<Section> = emptyList(),
+    /** The state every section starts from, and how to get there (the body's `setup:` block); null when the file has none. */
+    val ensure: Ensure? = null,
     /**
      * The screen (group directory) whose way in this scenario starts from: its `_entry.md` says where the app
      * is opened and the steps from there, and the runner plays them from that file's trace before this
@@ -246,9 +250,19 @@ data class Scenario(
     data class Criterion(val state: String?, val text: String)
 
     /**
+     * `setup:` in the body, ahead of the first heading — [state] (`ensure:`) is one sentence about the app as it has
+     * to be before the sections run, [by] (`by:`, one step or a list of them) what to do when it is not so, each a
+     * step as a section would write it: one action, its target in quotes. The runner asks the model whether [state]
+     * holds; when it does nothing is touched, when it does not the [by] steps are done, the app is started over at the
+     * scenario's entry and it asks again — as often as it takes to delete what is there one at a time, up to a limit.
+     */
+    data class Ensure(val state: String, val by: List<String>)
+
+    /**
      * One `## title` part of a scenario: its prose and the steps `[first, first + size)` of [Scenario.steps].
-     * The [preparation] section (`## 준비`, always the first) is not a test: its steps go to the model in
-     * every mode, are never traced, and bring the app to the state the sections after it start from.
+     * The [preparation] is not a section of the file but what its [Ensure] becomes for the run — always the first,
+     * its one step the state's sentence: looked at by the model in every mode, never traced, and what brings the app
+     * to the state the sections after it start from.
      */
     data class Section(
         val title: String, val description: String, val first: Int, val size: Int, val preparation: Boolean = false,
@@ -298,8 +312,13 @@ object ScenarioMd {
     /** `## title` — a section of the scenario (other heading levels are documentation). */
     private val sectionRegex = Regex("""^##\s+(\S.*)$""")
 
-    /** The headings that make a section the scenario's preparation (see [Scenario.Section.preparation]). */
-    private val PREPARATION_TITLES = listOf("준비", "Preparation")
+    /** How a preparation was written before the body's `setup:` block ([Scenario.Ensure]): said, so the heading is not read as a test. */
+    private val OLD_PREPARATION_TITLES = listOf("준비", "Preparation")
+    /** What the report calls the part of a run that looked at — and made — the state the scenario starts from. */
+    const val PREPARATION = "준비"
+    private val FILE_SETUP_KEYS = listOf("ensure", "by")
+    /** One of several `by:` steps, on its own indented `- ` line. */
+    private val setupItemRegex = Regex("""^\s+-\s+(\S.*)$""")
 
     /** `setup:` right under a `## title` opens that section's own setup ([Scenario.Open]); its keys are the indented lines after it. */
     private val setupKeyRegex = Regex("""^\s+([A-Za-z]+):\s*(.*)$""")
@@ -328,6 +347,7 @@ object ScenarioMd {
         val stepDefs = parsed.steps
         val description = parsed.description
         val sections = parsed.sections
+        val ensure = parsed.ensure
         val setupMap = y["setup"] as? Map<*, *>
         val setup = if (setupMap != null) {
             Scenario.Setup(
@@ -379,6 +399,7 @@ object ScenarioMd {
             stepDefs = stepDefs,
             values = values,
             sections = sections,
+            ensure = ensure,
         )
     }
 
@@ -398,13 +419,14 @@ object ScenarioMd {
 
     fun parse(file: File, known: Collection<String> = emptyList()): Scenario = parse(file.readText(), file, known)
 
-    private class Body(val steps: List<Scenario.StepDef>, val description: String, val sections: List<Scenario.Section>)
+    private class Body(val steps: List<Scenario.StepDef>, val description: String, val sections: List<Scenario.Section>, val ensure: Scenario.Ensure? = null)
 
     /**
      * Numbered lines start a step; `::` lines directly under one attach criteria to it; a `## title`
-     * line starts a section that owns the steps up to the next one (`## 준비` the preparation). Prose ahead of the first step or
+     * line starts a section that owns the steps up to the next one. Prose ahead of the first step or
      * heading is the scenario's description, prose between a heading and its first step that section's
-     * (other headings and blank lines dropped).
+     * (other headings and blank lines dropped). A `setup:` block ahead of the first heading is the state the
+     * sections start from ([Scenario.Ensure]): it becomes the run's preparation, ahead of every step.
      */
     private fun parseBody(body: String, name: String, states: List<String>): Body {
         val steps = mutableListOf<Scenario.StepDef>()
@@ -413,12 +435,30 @@ object ScenarioMd {
         val opened = mutableListOf<Open>()
         /** Inside the `setup:` block of the last heading: its indented `key: value` lines, up to a blank or an unindented one. */
         var inSetup = false
+        /** The file's own `setup:` block, ahead of the first heading: `ensure:` and `by:` — a step after it, or `- ` lines under it. */
+        var fileSetup: MutableMap<String, MutableList<String>>? = null
+        var inFileSetup = false
+        var listKey: String? = null
         fun attach(raw: String) {
             require(steps.isNotEmpty()) { "scenario '$name': `:: $raw` must follow a numbered step" }
             val c = criterion(raw, name, states) ?: return
             steps[steps.lastIndex] = steps.last().let { it.copy(criteria = it.criteria + c) }
         }
         for (line in body.lines()) {
+            if (inFileSetup) {
+                val key = setupKeyRegex.matchEntire(line)
+                val item = setupItemRegex.matchEntire(line)
+                if (key != null) {
+                    val (k, v) = key.destructured
+                    require(k in FILE_SETUP_KEYS) { "scenario '$name': the `setup:` block ahead of the sections takes ${FILE_SETUP_KEYS.joinToString(" and ") { "`$it`" }} — `$k` is the frontmatter's" }
+                    require(fileSetup!!.put(k, mutableListOf()) == null) { "scenario '$name': setup names `$k` twice" }
+                    if (v.isNotBlank()) fileSetup!![k]!! += v.trim()
+                    listKey = k.takeIf { v.isBlank() }
+                    continue
+                }
+                if (item != null && listKey != null) { fileSetup!![listKey]!! += item.groupValues[1].trim(); continue }
+                inFileSetup = false
+            }
             if (inSetup) {
                 val key = setupKeyRegex.matchEntire(line)
                 if (key != null) {
@@ -448,7 +488,12 @@ object ScenarioMd {
             if (criterion != null) { attach(criterion.groupValues[1].trim()); continue }
             val text = line.trim().takeIf { it.isNotEmpty() && !it.startsWith("#") } ?: continue
             val open = opened.lastOrNull()
-            if (open == null) { if (steps.isEmpty()) prose += text }
+            if (open == null) {
+                if (steps.isEmpty() && text == "setup:") {
+                    require(fileSetup == null) { "scenario '$name': two `setup:` blocks ahead of the sections" }
+                    fileSetup = mutableMapOf(); inFileSetup = true
+                } else if (steps.isEmpty()) prose += text
+            }
             else if (steps.size == open.first) {
                 val first = open.prose.isEmpty() && open.setup == null
                 if (first && text == "setup:") { open.setup = mutableMapOf(); inSetup = true; continue }
@@ -464,22 +509,35 @@ object ScenarioMd {
         val sections = opened.mapIndexed { i, o ->
             val size = (opened.getOrNull(i + 1)?.first ?: steps.size) - o.first
             require(size > 0) { "scenario '$name': section '${o.title}' has no steps" }
-            val preparation = PREPARATION_TITLES.any { it.equals(o.title, ignoreCase = true) }
-            require(!preparation || o.setup == null) { "scenario '$name': `## ${o.title}` prepares the scenario's own entry — it takes no `setup:` of its own" }
+            require(OLD_PREPARATION_TITLES.none { it.equals(o.title, ignoreCase = true) }) {
+                "scenario '$name': `## ${o.title}` — the state a scenario starts from is not a section: write it in a `setup:` block ahead of the first heading, " +
+                    "`ensure:` the state in one sentence and `by:` the step(s) to do when it does not hold"
+            }
             val own = o.setup?.let { m ->
                 require(m.isNotEmpty()) { "scenario '$name': section '${o.title}' setup is empty — ${SECTION_SETUP_KEYS.joinToString(", ")} go indented under it" }
                 require(m["entry"] == null || m["deeplink"] == null) { "scenario '$name': section '${o.title}' setup takes `entry` or `deeplink`, not both" }
                 m["appState"]?.let { require(Scenario.isValidStateName(it)) { "scenario '$name': section '${o.title}' setup: appState '$it' must be [A-Za-z0-9._-]+" } }
                 Scenario.Open(deeplink = m["deeplink"], screen = m["entry"]?.let(Mentions::norm), appState = m["appState"])
             }
-            Scenario.Section(o.title, o.prose.joinToString(" "), o.first, size, preparation = preparation, open = own)
+            Scenario.Section(o.title, o.prose.joinToString(" "), o.first, size, open = own)
         }
         val titles = sections.map { it.title }
         require(titles.distinct().size == titles.size) { "scenario '$name': two sections share a title (${titles.joinToString(", ")})" }
-        // the preparation is ahead of what it prepares for — and of something: alone it prepares nothing
-        require(sections.drop(1).none { it.preparation }) { "scenario '$name': `## ${sections.first { it.preparation }.title}` comes first — it is what runs before the other sections" }
-        require(sections.firstOrNull()?.preparation != true || sections.size > 1) { "scenario '$name': `## ${sections[0].title}` needs a section after it to prepare for" }
-        return Body(steps, prose.joinToString(" "), sections)
+        val ensure = fileSetup?.let { m ->
+            val state = m["ensure"]?.singleOrNull()
+            require(state != null) { "scenario '$name': setup needs `ensure:` — the state the sections start from, in one sentence" }
+            val by = m["by"].orEmpty()
+            require(by.isNotEmpty()) { "scenario '$name': setup needs `by:` — what to do when `ensure` does not hold: one step after it, or `- ` lines under it" }
+            // the sections are what the state is for, and what a trace keys its steps by
+            require(sections.isNotEmpty()) { "scenario '$name': `setup: ensure` is the state `##` sections start from — give the steps a heading" }
+            Scenario.Ensure(state, by)
+        } ?: return Body(steps, prose.joinToString(" "), sections)
+        // the run's preparation: one step, the state's sentence, ahead of every section's
+        return Body(
+            listOf(Scenario.StepDef(ensure.state)) + steps, prose.joinToString(" "),
+            listOf(Scenario.Section(PREPARATION, "", 0, 1, preparation = true)) + sections.map { it.copy(first = it.first + 1) },
+            ensure,
+        )
     }
 
     /** `state → text` binds to a declared state; anything else is an unbound criterion. */

@@ -43,7 +43,7 @@ import java.io.File
  * The report groups scenarios by screen and shows this as the way in.
  *
  * A scenario with `## title` sections lists them under `sections` — title, prose, PASSED/FAILED/SKIPPED
- * (SKIPPED = not reached, an earlier section failed) and `preparation: true` on its `## 준비` section —
+ * (SKIPPED = not reached, an earlier section failed) and `preparation: true` on its preparation (`setup: ensure`) —
  * each owning the steps `from`..`to` of the one flat `steps` list (numbered through the whole scenario,
  * so `steps/NN.png` and `video_ms` mean what they always did). A preparation's steps have `mode: "llm"`
  * in a replay's result too, and their `reason` is what the model said it found or did.
@@ -324,7 +324,7 @@ object ResultJson {
 
     /**
      * One `## title` section of a run: [status] PASSED | FAILED | SKIPPED (not reached), owning the steps
-     * [from]..[to]. [preparation] is the `## 준비` section: done by the model, a test of nothing.
+     * [from]..[to]. [preparation] is the scenario's `setup: ensure`: asked of the model, a test of nothing.
      */
     data class Section(
         val title: String, val description: String, val preparation: Boolean, val status: String, val from: Int, val to: Int,

@@ -242,7 +242,7 @@ class ScenarioMdTest {
     }
 
     @Test
-    fun `sections split the steps by their headings, and the one titled 준비 is the preparation`() {
+    fun `sections split the steps by their headings, and a setup block ahead of them is the state they start from`() {
         val md = """
             ---
             name: 팔로우
@@ -252,9 +252,9 @@ class ScenarioMdTest {
 
             팔로우 버튼은 누를 때마다 바뀐다.
 
-            ## 준비
-
-            1. 팔로우하고 있지 않으면 "팔로우"를 눌러 팔로우한다
+            setup:
+              ensure: 이 유저를 팔로우하고 있다
+              by: "팔로우"를 누른다
 
             ## 팔로우 취소
 
@@ -272,13 +272,26 @@ class ScenarioMdTest {
 
         assertEquals("팔로우 버튼은 누를 때마다 바뀐다.", s.description, "a section's prose is its own, not the scenario's")
         assertEquals(5, s.steps.size, "steps stay one list, numbered through the scenario")
+        assertEquals(Scenario.Ensure("이 유저를 팔로우하고 있다", listOf("\"팔로우\"를 누른다")), s.ensure)
+        assertEquals("이 유저를 팔로우하고 있다", s.steps[0], "the state is the run's first step: what the model is asked")
         assertEquals(listOf("준비" to 0..0, "팔로우 취소" to 1..2, "팔로우 추가" to 3..4), s.sections.map { it.title to it.steps })
         assertEquals(listOf(true, false, false), s.sections.map { it.preparation })
+        assertEquals("팔로우 버튼은 누를 때마다 바뀐다.", s.description, "the block is no prose")
+
+        // several steps go one to a line under `by:`
+        val several = ScenarioMd.parse(md.replace("  by: \"팔로우\"를 누른다", "  by:\n    - \"더보기\"를 누른다\n    - \"팔로우\"를 누른다"))
+        assertEquals(listOf("\"더보기\"를 누른다", "\"팔로우\"를 누른다"), several.ensure!!.by)
+        assertEquals(s.sections, several.sections)
         assertEquals("팔로우 중인 유저의 팔로우를 취소할 수 있다.", s.sections[1].description)
 
-        // the preparation is ahead of what it prepares for, and of something; steps above the first heading belong to no section
-        assertFailsWith<IllegalArgumentException> { ScenarioMd.parse(md.replace("## 준비", "## 먼저").replace("## 팔로우 추가", "## 준비")) }
-        assertFailsWith<IllegalArgumentException> { ScenarioMd.parse("## 준비\n\n1. 팔로우한다") }
+        // it says both what has to hold and what to do when it does not, once, for sections; a file's keys stay in the frontmatter
+        assertFailsWith<IllegalArgumentException> { ScenarioMd.parse(md.replace("  by: \"팔로우\"를 누른다\n", "")) }
+        assertFailsWith<IllegalArgumentException> { ScenarioMd.parse(md.replace("  ensure: 이 유저를 팔로우하고 있다\n", "")) }
+        assertFailsWith<IllegalArgumentException> { ScenarioMd.parse(md.replace("  ensure:", "  appState: member\n  ensure:")) }
+        assertFailsWith<IllegalArgumentException> { ScenarioMd.parse("setup:\n  ensure: 팔로우하고 있다\n  by: \"팔로우\"를 누른다\n\n1. \"팔로우 취소\"를 누른다") }
+        // how it was written before — a `## 준비` section whose one sentence the model had to carry out — is said, not run as a test
+        val old = assertFailsWith<IllegalArgumentException> { ScenarioMd.parse(md.replace("setup:\n  ensure: 이 유저를 팔로우하고 있다\n  by: \"팔로우\"를 누른다", "## 준비\n\n1. 팔로우하고 있지 않으면 \"팔로우\"를 눌러 팔로우한다")) }
+        assertTrue("`ensure:`" in old.message!! && "`by:`" in old.message!!, old.message)
         assertFailsWith<IllegalArgumentException> { ScenarioMd.parse(md.replace("팔로우 버튼은 누를 때마다 바뀐다.", "1. 앞에 놓인 스텝")) }
         assertTrue(ScenarioMd.parse("# 제목\n\n1. 스텝").sections.isEmpty(), "only `##` makes a section")
 

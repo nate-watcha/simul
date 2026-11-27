@@ -115,22 +115,23 @@ class RunnerTest {
         ),
     )
 
-    /** The same two sections behind a preparation that leaves the account following, whatever it found. */
+    /** The same two sections behind the state they start from: following, whatever the last run left. */
     private val prepared = follow.copy(
-        steps = listOf("팔로우하고 있지 않으면 \"팔로우\"를 눌러 팔로우한다") + follow.steps,
+        steps = listOf("이 유저를 팔로우하고 있다") + follow.steps,
         sections = listOf(Scenario.Section("준비", "", 0, 1, preparation = true)) + follow.sections.map { it.copy(first = it.first + 1) },
+        ensure = Scenario.Ensure("이 유저를 팔로우하고 있다", listOf("\"팔로우\"를 누른다")),
     )
 
     /**
      * Taps what a "누른다" step quotes; a step passes when what it quotes is (or was, for a tap) on screen.
-     * The preparation's sentence ("…않으면 …") taps only when there is something to tap and passes either way.
+     * The state's sentence quotes nothing: it is answered from the screen, and nothing is tapped for it.
      */
     private fun followHarness(app: FollowApp) = Harness(app.device) { c, command ->
-        val label = quotedLabels(command).first()
+        val label = quotedLabels(command).firstOrNull()
+            ?: return@Harness c.currentElements.any { it.matchesExact("팔로우 취소") }.let { ScenarioSession.Verdict(it, if (it) "following" else "not following") }
         val there = c.currentElements.any { it.matchesExact(label) }
-        if (there && ("누른다" in command || "않으면" in command)) c.tap(label)
-        if ("않으면" in command) ScenarioSession.Verdict(true, if (there) "followed" else "already following")
-        else ScenarioSession.Verdict(there, if (there) "ok" else "\"$label\" is not on screen")
+        if (there && "누른다" in command) c.tap(label)
+        ScenarioSession.Verdict(there, if (there) "ok" else "\"$label\" is not on screen")
     }
 
     @Test
@@ -166,9 +167,9 @@ class RunnerTest {
 
         assertEquals(StepStatus.PASSED, recorded.status, recorded.steps.firstOrNull { it.status == StepStatus.FAILED }?.reason)
         assertEquals(listOf(true, false, false), recorded.sections.map { it.preparation })
-        assertEquals(listOf(true, false, false), h.executor.sessions, "the preparation has a conversation of its own")
-        assertEquals(2, h.ops.reopens.size, "the preparation tapped, so the first section starts the app over as well")
-        assertEquals(follow.steps, recorded.updatedTrace!!.steps.map { it.text }, "a preparation is never traced")
+        assertEquals(listOf(true, false, true, false, false), h.executor.sessions, "asked, `by` done, asked again — each a conversation of its own — then the sections'")
+        assertEquals(2, h.ops.reopens.size, "the app is started over after `by`, where the question is asked again and the first section begins; then for the second")
+        assertEquals(follow.steps, recorded.updatedTrace!!.steps.map { it.text }, "neither the state nor its `by` steps are traced")
 
         // flipped again at replay: only the preparation asks the model, and both directions still run
         app.following = false
@@ -176,15 +177,18 @@ class RunnerTest {
 
         assertEquals(StepStatus.PASSED, replayed.status, replayed.steps.firstOrNull { it.status == StepStatus.FAILED }?.reason)
         assertEquals(listOf("llm", "replay", "replay", "replay", "replay"), replayed.steps.map { it.mode })
-        assertEquals(6, h.executor.calls, "5 of the recording, 1 for the replay's preparation")
-        assertEquals("followed", replayed.steps[0].reason, "the report says what the model found or did")
+        assertEquals(10, h.executor.calls, "7 of the recording (asked, `by`, asked, 4 steps), 3 for the replay's state")
+        assertEquals("following — after `by` ×1", replayed.steps[0].reason, "the report says what the model found, and that the app was changed")
+        assertEquals(listOf("tap"), replayed.steps[0].actions.map { it.tool })
         assertEquals(true, app.following)
 
-        // already as it should be: the preparation touches nothing, and the app is not started over for the first section
+        // already as it should be: one question, nothing touched, and the app is not started over for the first section
         val reopens = h.ops.reopens.size
         val again = h.runner.run(prepared, trace = recorded.updatedTrace, mode = RunMode.REPLAY)
         assertEquals(StepStatus.PASSED, again.status)
         assertTrue(again.steps[0].actions.isEmpty())
+        assertEquals("following", again.steps[0].reason)
+        assertEquals(11, h.executor.calls)
         assertEquals(reopens + 1, h.ops.reopens.size, "only the second section's")
         // result.json carries the sections for the report
         val read = ResultJson.read(writeResult(again, "replay", h.ops, h.reportDir))!!
@@ -205,6 +209,58 @@ class RunnerTest {
         assertTrue("the preparation needs the model" in result.steps[0].reason!!, result.steps[0].reason)
         assertEquals(listOf(StepStatus.FAILED, StepStatus.SKIPPED, StepStatus.SKIPPED), result.sections.map { it.status })
         assertEquals(5, h.executor.calls, "nothing was asked of a model that is not there")
+    }
+
+    /** A list of records and one "삭제" that removes the first: the state "기록이 없다" takes a round of `by` for each. */
+    private class Records(var count: Int, val deletes: Boolean = true) {
+        private fun screen() = layout(*(if (count == 0) arrayOf(el("기록이 없어요", center = Point(360, 300)))
+            else arrayOf(el("기록 ${count}개", center = Point(360, 300)), el("삭제", interactions = listOf("clickable"), center = Point(360, 600)))))
+        private val shown = StaticDevice(screen())
+        val device = object : Device by shown {
+            override fun tap(x: Int, y: Int) { if (deletes && count > 0) { count--; shown.layout = screen() } }
+        }
+        val harness = Harness(device) { c, command ->
+            val label = quotedLabels(command).firstOrNull()
+                ?: return@Harness c.currentElements.none { it.matchesExact("삭제") }.let { ScenarioSession.Verdict(it, if (it) "no records" else "records are listed") }
+            val there = c.currentElements.any { it.matchesExact(label) }
+            if (there) c.tap(label)
+            ScenarioSession.Verdict(there, if (there) "ok" else "\"$label\" is not on screen")
+        }
+        fun scenario(by: List<String> = listOf("\"삭제\"를 누른다")) = Scenario(
+            name = "records", tags = emptyList(), setup = Scenario.Setup(deeplink = "app://calendar", launch = false),
+            steps = listOf("오늘 기록이 없다", "\"기록이 없어요\"가 보이는지 확인한다"),
+            sections = listOf(Scenario.Section("준비", "", 0, 1, preparation = true), Scenario.Section("빈 날", "", 1, 1)),
+            ensure = Scenario.Ensure("오늘 기록이 없다", by),
+        )
+    }
+
+    @Test
+    fun `the by steps are done again until the state holds — one round for each thing to remove`() {
+        val app = Records(count = 3)
+
+        val result = app.harness.runner.run(app.scenario(), trace = null, mode = RunMode.LLM)
+
+        assertEquals(StepStatus.PASSED, result.status, result.steps.firstOrNull { it.status == StepStatus.FAILED }?.reason)
+        assertEquals(0, app.count)
+        assertEquals("no records — after `by` ×3", result.steps[0].reason)
+        assertEquals(listOf("tap", "tap", "tap"), result.steps[0].actions.map { it.tool })
+    }
+
+    @Test
+    fun `a state the by steps do not bring about is given up on, and the sections do not run`() {
+        val stuck = Records(count = 1, deletes = false)
+        val result = stuck.harness.runner.run(stuck.scenario(), trace = null, mode = RunMode.LLM)
+
+        assertEquals(StepStatus.FAILED, result.status)
+        assertEquals("still not so after `by` ×5: records are listed", result.steps[0].reason)
+        assertEquals(listOf(StepStatus.FAILED, StepStatus.SKIPPED), result.sections.map { it.status })
+
+        // a `by` step that cannot be done ends it at once: the next round would only fail the same way
+        val wrong = Records(count = 1)
+        val named = wrong.harness.runner.run(wrong.scenario(by = listOf("\"지우기\"를 누른다")), trace = null, mode = RunMode.LLM)
+        assertEquals(StepStatus.FAILED, named.status)
+        assertEquals("by 1 (\"지우기\"를 누른다): \"지우기\" is not on screen", named.steps[0].reason)
+        assertEquals(1, wrong.count)
     }
 
     // ------------------------------------------------------------------ device settings
