@@ -38,6 +38,8 @@ internal class FakeOps(private val versionName: String? = "5.4.0") : DeviceOps {
     override fun displayProfile(): String? = display
     var androidCli: String? = "1.0.test"
     override fun androidCliVersion(): String? = androidCli
+    var os: String? = null
+    override fun osVersion(): String? = os
 
     var emulator = true
     override fun isEmulator(): Boolean = emulator
@@ -116,11 +118,12 @@ internal class ScriptedExecutor(private val behavior: (String) -> ScenarioSessio
 }
 
 /** Write a run's result.json the way the CLI does, with placeholder scenario metadata. */
-internal fun writeResult(r: ScenarioRunResult, mode: String, ops: DeviceOps, dir: File): File {
+internal fun writeResult(r: ScenarioRunResult, mode: String, ops: DeviceOps, dir: File, traceOs: String? = null): File {
     ResultJson.write(r, mode, ResultJson.Meta(
         feature = "", name = r.scenario, state = null, file = "${r.scenario}.md", title = r.scenario, owner = null,
         description = "", traceRecordedAt = null,
-        env = ResultJson.Env(ops.appVersionName(null), ops.deviceName(), ops.androidCliVersion()),
+        env = ResultJson.Env(ops.appVersionName(null), ops.deviceName(), ops.androidCliVersion(), ops.osVersion()),
+        traceOs = traceOs,
     ), dir)
     return File(dir, ResultJson.FILE)
 }

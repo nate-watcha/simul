@@ -263,6 +263,14 @@ class ScenarioRunner(
                 log("  warning: trace recorded with android CLI ${trace.androidCli} but this machine has $current — if grounding breaks, suspect the layout output format first")
             }
         }
+        // Screens of the OS and of other apps (share sheet, browser tab) differ between OS versions, and the
+        // evidence a step recorded on them with it.
+        if (mode == RunMode.REPLAY && trace?.os != null) {
+            val current = ops.osVersion()
+            if (current != null && current != trace.os) {
+                log("  warning: trace recorded on ${trace.os} but this device is $current — screens that are not the app's (share sheet, browser) may differ")
+            }
+        }
 
         val reports = mutableListOf<StepReport>()
         var coordDirty = false
@@ -401,7 +409,9 @@ class ScenarioRunner(
             mode == RunMode.LLM || coordDirty ->
                 TraceFile(scenario.name, AGENT_VERSION, ops.appVersionName(app) ?: trace?.appVersionName,
                     newSteps, display = ops.displayProfile() ?: trace?.display,
-                    androidCli = ops.androidCliVersion() ?: trace?.androidCli)
+                    androidCli = ops.androidCliVersion() ?: trace?.androidCli,
+                    // a replay that only refreshed coordinates did not re-record the evidence: it stays the recording's
+                    os = if (mode == RunMode.LLM) ops.osVersion() ?: trace?.os else trace?.os)
             else -> null
         }
         return ScenarioRunResult(
