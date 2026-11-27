@@ -467,6 +467,54 @@ class DeviceControllerTest {
         assertContains(result, "FOUND without scrolling")
     }
 
+    /**
+     * stone 타인 프로필 홈 (2026-11-27, run 45976395199): the tab content recorded at y831 sits at 821 on replay,
+     * and the "취향분석 전체 보기" row inside it is the element nearest the recorded point.
+     */
+    private val tabContent = el(interactions = listOf("scrollable"), center = Point(360, 821), bounds = Bounds(0, 523, 720, 1120))
+    private val tasteHeader = el("취향분석 전체 보기", resourceId = "my_taste_analysis_header", interactions = listOf("clickable", "focusable"),
+        center = Point(360, 828), bounds = Bounds(30, 779, 690, 878), parentId = 0)
+
+    @Test
+    fun `a scroll area handed over by its centre is the nearest scrollable, not a nearer element that does not scroll`() {
+        val before = layout(tabContent, tasteHeader)
+        val after = layout(tabContent, el("이번 주 전체 보기", interactions = listOf("clickable"), center = Point(360, 800), bounds = Bounds(30, 751, 690, 850), parentId = 0))
+        val dev = FakeDevice(before, before, after, after)
+        val c = controller(dev)
+        c.fullLayout()
+
+        val result = c.scrollToFind("@x360y831", "이번 주 전체 보기", "down")
+
+        assertEquals(listOf("swipe"), dev.gestures, result)
+        assertContains(result, "FOUND after 1 scroll(s)")
+    }
+
+    @Test
+    fun `an element exactly at the handed-over point is the one meant, and is told when it does not scroll`() {
+        val dev = FakeDevice(layout(tabContent, tasteHeader), layout(tabContent, tasteHeader))
+        val c = controller(dev)
+        c.fullLayout()
+
+        val result = c.scrollToFind("@x360y828", "이번 주 전체 보기", "down")
+
+        assertTrue(dev.gestures.isEmpty())
+        assertContains(result, "'취향분석 전체 보기' is not scrollable")
+    }
+
+    @Test
+    fun `of two elements exactly at the point, the one that scrolls is the scroll area`() {
+        val label = el("목록 제목", kind = "label", center = Point(360, 821), bounds = Bounds(300, 800, 420, 842))
+        val before = layout(label, tabContent.copy(id = 1), tasteHeader.copy(id = 2, parentId = 1))
+        val after = layout(label, tabContent.copy(id = 1), el("이번 주 전체 보기", id = 2, parentId = 1, interactions = listOf("clickable"), center = Point(360, 800), bounds = Bounds(30, 751, 690, 850)))
+        val dev = FakeDevice(before, before, after, after)
+        val c = controller(dev)
+        c.fullLayout()
+
+        val result = c.scrollToFind("@x360y821", "이번 주 전체 보기", "down")
+
+        assertEquals(listOf("swipe"), dev.gestures, result)
+    }
+
     @Test
     fun `scrollToFind stops when layout stops changing`() {
         val list = el("목록", interactions = listOf("scrollable"), bounds = Bounds(0, 0, 720, 1000))

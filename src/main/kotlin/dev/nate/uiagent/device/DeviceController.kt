@@ -317,18 +317,25 @@ class DeviceController(
      * collapsing header leaves the tab content taller on one run than on another, so the centre
      * a recording wrote is nowhere near any element on replay (실측 2026-11-12, stone 나의 왓챠 활동
      * 탭 빈 계정: recorded at 684 with the header collapsed, 988 on replay, 50px radius, replay
-     * broken at the first scroll). What the handle meant is "the scrollable here", so when
-     * nothing is at the point the nearest scrollable is the container — a named target
-     * resolves as before.
+     * broken at the first scroll). What the handle meant is "the scrollable here", so unless
+     * an element sits exactly at the point the nearest scrollable is the container — a named
+     * target resolves as before.
+     *
+     * Nearest among the scrollables, not among everything: a header a few pixels from the point
+     * was taken for the container when the container itself had moved a few pixels more (실측
+     * 2026-11-27, stone 타인 프로필 홈: recorded at y831, the container at 821 and the "취향분석
+     * 전체 보기" row at 828 on replay — "is not scrollable", no swipe; at 813 and 811 it passed).
+     * The element exactly at the point is still the one meant — a handle the model read off this
+     * very screen — and is told so when it does not scroll.
      */
     private fun resolveScrollable(scrollable: String): Resolution {
-        val r = resolve(scrollable)
-        if (r !is Resolution.NotFound) return r
-        val p = parseSyntheticHandle(scrollable.trim()) ?: return r
-        return grounding?.elements.orEmpty()
-            .filter { "scrollable" in it.interactions }
+        val p = parseSyntheticHandle(scrollable.trim()) ?: return resolve(scrollable)
+        val elements = grounding?.elements ?: return Resolution.NotFound
+        val here = elements.filter { it.center == p }
+        (here.firstOrNull { "scrollable" in it.interactions } ?: here.firstOrNull())?.let { return Resolution.Match(it) }
+        return elements.filter { "scrollable" in it.interactions }
             .minByOrNull { it.center.dist2(p) }
-            ?.let { Resolution.Match(it) } ?: r
+            ?.let { Resolution.Match(it) } ?: Resolution.NotFound
     }
 
     /** Perform one scroll gesture. Returns an error message, or null on success. */
