@@ -376,7 +376,8 @@ internal fun executeScenario(
         mentions = scenario.mentions,
         screens = project.layoutsFor(project.screenOf(md)),
         traceRecordedAt = traceRecordedAt(traceFile, project.appRoot),
-        env = ResultJson.Env(ops.appVersionName(project.config.app), ops.deviceName(), ops.androidCliVersion()),
+        env = ResultJson.Env(ops.appVersionName(project.config.app), ops.deviceName(), ops.androidCliVersion(), ops.osVersion()),
+        traceOs = traceOs(traceFile),
         setup = scenario.setup?.let { ResultJson.Setup(it.deeplink, it.launch, scenario.precondition, scenario.via?.let(Modes::screenOf), scenario.via?.let(Modes::modeOf)) },
         screenMode = scenario.mode,
         modeData = scenario.data,
@@ -417,6 +418,9 @@ internal fun handedOver(project: SimulProject, scenario: Scenario): List<String>
  * clean in git, else its modification date (a fresh, uncommitted recording). Null without a
  * trace. The report uses it to tell "acknowledged but not yet re-recorded".
  */
+/** The OS the committed trace says it was recorded on ("API 37"); null without a trace or for one that does not say. */
+fun traceOs(traceFile: File): String? = if (!traceFile.isFile) null else runCatching { TraceJson.read(traceFile).os }.getOrNull()
+
 fun traceRecordedAt(traceFile: File, appRoot: File): String? {
     if (!traceFile.isFile) return null
     val mtime = SimpleDateFormat("yyyy-MM-dd").format(Date(traceFile.lastModified()))

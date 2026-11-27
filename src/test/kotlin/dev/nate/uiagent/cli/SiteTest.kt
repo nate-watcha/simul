@@ -28,7 +28,7 @@ class SiteTest {
             startedMs = startedMs, marks = marks, expectedEvidence = listOf("list", "toast"), layout = "layout/0$n.json")
 
     /** One scenario directory under [date] with two steps, their layouts and screenshots. */
-    private fun scenario(date: String, feature: String, name: String, state: String?, status: StepStatus, layouts: List<List<dev.nate.uiagent.LogicalElement>>, video: Boolean = false, traceAt: String? = "2026-10-14", setupFailed: Boolean = false) {
+    private fun scenario(date: String, feature: String, name: String, state: String?, status: StepStatus, layouts: List<List<dev.nate.uiagent.LogicalElement>>, video: Boolean = false, traceAt: String? = "2026-10-14", setupFailed: Boolean = false, os: String? = null, traceOs: String? = null) {
         val dir = File(runs, "$date/$feature/$name${state?.let { ".$it" } ?: ""}").apply { mkdirs() }
         val t0 = 1_792_000_000_000L
         layouts.forEachIndexed { i, els ->
@@ -50,12 +50,28 @@ class SiteTest {
             "         ${(t0 + 9000) / 1000}.500  1566  1600 V FA-SVC  : Logging event: origin=auto,name=user_engagement,params=Bundle[{engagement_time_msec=8000}]\n")
         val r = ScenarioRunResult(name, status, steps, null, 2000, startedAtMs = t0, setupFailed = setupFailed, reportDir = dir, video = vid)
         ResultJson.write(r, "replay", ResultJson.Meta(feature, name, state, "$feature/$name.md", "쿠폰을 등록한다", "nate", "설정에서 쿠폰 메뉴로 들어간다.", traceAt,
-            ResultJson.Env("4.21.0", "sdk_gphone64", "1.0.1"), setup = ResultJson.Setup("app://$feature", false, state)), dir)
+            ResultJson.Env("4.21.0", "sdk_gphone64", "1.0.1", os), traceOs = traceOs, setup = ResultJson.Setup("app://$feature", false, state)), dir)
     }
 
     private val screenA = listOf(el("설정", resourceId = "tab_settings", bounds = Bounds(0, 0, 100, 50), center = Point(50, 25)), el(resourceId = "btn_apply", bounds = Bounds(0, 100, 100, 150), center = Point(50, 125), id = 1))
     private val screenB = listOf(el("목록", resourceId = "coupon_list_item", bounds = Bounds(0, 0, 100, 50), center = Point(50, 25)))
     private val screenBNew = screenB + el(resourceId = "price_badge", bounds = Bounds(0, 60, 100, 80), center = Point(50, 70), id = 1)
+
+    @Test
+    fun `a trace replayed on another OS version than it was recorded on says so on its page, small`() {
+        scenario("2026-11-27", "share", "other", null, StepStatus.FAILED, listOf(screenA, screenB), os = "API 35", traceOs = "API 37")
+        scenario("2026-11-27", "share", "same", null, StepStatus.PASSED, listOf(screenA, screenB), os = "API 35", traceOs = "API 35")
+        scenario("2026-11-27", "share", "unknown", null, StepStatus.PASSED, listOf(screenA, screenB), os = "API 35")
+        val day = File(runs, "2026-11-27")
+
+        SitePages.build(day, day)
+
+        val note = "<div class=osnote>녹화한 기기는 API 37, 재생한 기기는 API 35 — "
+        assertTrue(note in File(day, "share/other.html").readText())
+        assertTrue("class=osnote>" !in File(day, "share/same.html").readText(), "the same OS version is nothing to say")
+        assertTrue("class=osnote>" !in File(day, "share/unknown.html").readText(), "nor is a trace that does not say where it was recorded")
+        assertTrue("osnote>" !in File(day, "index.html").readText().substringAfter("</style>"), "and the index stays as it was")
+    }
 
     @Test
     fun `result json round-trips, with the recording's timeline on every step and action`() {

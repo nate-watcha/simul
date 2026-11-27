@@ -35,6 +35,8 @@ data class TraceFile(
     val display: String? = null,
     /** `android` CLI version the recording observed with — replay warns on mismatch. */
     val androidCli: String? = null,
+    /** OS of the device the recording ran on ("API 37") — replay on another one warns, and the report says so. */
+    val os: String? = null,
 )
 
 data class TraceStep(
@@ -101,6 +103,7 @@ object TraceJson {
             put("appVersionName", t.appVersionName?.let(::JsonPrimitive) ?: JsonNull)
             t.display?.let { put("display", it) }
             t.androidCli?.let { put("androidCli", it) }
+            t.os?.let { put("os", it) }
         })
         put("steps", buildJsonArray { t.steps.forEach { add(stepJson(it)) } })
     }
@@ -153,6 +156,7 @@ object TraceJson {
             steps = o.arr("steps")?.map { parseStep(it.jsonObject) } ?: emptyList(),
             display = recorded?.str("display"),
             androidCli = recorded?.str("androidCli"),
+            os = recorded?.str("os"),
         )
     }
 

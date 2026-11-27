@@ -79,6 +79,13 @@ interface DeviceOps {
      */
     fun androidCliVersion(): String?
 
+    /**
+     * The OS of the device as "API 35" (`ro.build.version.sdk`). Screens that are not the app's — the share sheet,
+     * a browser tab, a permission dialog — are built differently from one OS version to the next, so the version
+     * is stamped into traces and results and a replay on another one says so. Null when the device does not answer.
+     */
+    fun osVersion(): String? = null
+
     // ---- display profile enforcement (a device that is the runner's to set up; see DisplayProfile) ----
 
     /** Current effective display as "WxH@dpi" (override if set, else physical); null if unreadable. */
@@ -314,6 +321,10 @@ class AdbOps(
         // stdout is the bare version; the "new version available" notice goes to stderr
         runProcess(listOf(androidBin, "--version")).lineSequence()
             .map { it.trim() }.firstOrNull { it.matches(Regex("\\d+(\\.\\d+)+")) }
+    }.getOrNull()
+
+    override fun osVersion(): String? = runCatching {
+        runProcess(adb("shell", "getprop", "ro.build.version.sdk")).trim().takeIf { it.matches(Regex("\\d+")) }?.let { "API $it" }
     }.getOrNull()
 
     // with the serial when the run names its devices: four emulators of one image are one model

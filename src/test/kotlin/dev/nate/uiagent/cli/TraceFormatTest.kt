@@ -77,6 +77,18 @@ class TraceAndroidCliStampTest {
     }
 
     @Test
+    fun `the OS the recording ran on is stamped when known and omitted otherwise`() {
+        val with = TraceFile("s", AGENT_VERSION, null, emptyList(), display = "720x1280@320", androidCli = "1.1.1", os = "API 37")
+        val text = TraceJson.render(with)
+        assertTrue("\"androidCli\": \"1.1.1\",\n    \"os\": \"API 37\"" in text, text)
+        assertEquals(with, TraceJson.parse(text))
+
+        val without = TraceJson.render(TraceFile("s", AGENT_VERSION, null, emptyList(), androidCli = "1.1.1"))
+        assertTrue("\"os\"" !in without, "a trace recorded before this stays byte-identical")
+        assertEquals(null, TraceJson.parse(without).os)
+    }
+
+    @Test
     fun `state evidence round-trips through trace json and stays optional`() {
         val step = TraceStep("t", emptyList(), listOf("구독"),
             stateEvidence = listOf(StateEvidence("구독", "selected")))

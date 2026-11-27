@@ -1022,6 +1022,8 @@ object SitePages {
 
         sb.append("<span class=right>${avatar(r.owner)}${if (r.owner != null) " · " else ""}${esc(hm(t.startedAt))} · ${esc(humanDuration(t.durationMs))}</span></div>")
         if (r.description.isNotEmpty()) sb.append("<p class=desc>${esc(plain(r.description))}</p>")
+        // a trace replayed on another OS version than it was recorded on: said once, small — screens that are not the app's differ
+        if (rec == null) r.recordedOnOtherOs?.let { sb.append("<div class=osnote>녹화한 기기는 ${esc(it)}, 재생한 기기는 ${esc(r.os ?: "")} — 공유 시트·브라우저처럼 앱 밖의 화면은 다를 수 있음</div>") }
         if (rec != null) {
             val f = rec.failedStepOf
             sb.append("<div class=reason>LLM 녹화 ${esc(hm(rec.startedAt))} · ${esc(humanDuration(rec.durationMs))} — ${esc(stoppedAt(rec))}${f?.reason?.let { " · ${esc(it)}" } ?: ""} — 아래가 그 타임라인</div>")
@@ -1469,7 +1471,8 @@ object SitePages {
         .chip.failed{color:var(--failfg);background:var(--failbg)}.chip.changed{color:var(--warnfg);background:var(--warnbg)}.chip.rerecord{color:var(--info);background:var(--infobg)}.chip.passed{color:var(--okfg);background:var(--okbg)}.chip.setup{color:var(--dim);background:var(--chipbg)}
         .sh{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px}
         .strip i{display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--line2)}.strip{display:inline-flex;gap:3px;vertical-align:middle}.strip.wide i{width:16px;height:14px}.strip i.passed{background:var(--ok)}.strip i.changed{background:var(--warn)}.strip i.failed{background:var(--fail)}.strip i.none,.strip i.skipped{background:var(--line2)}
-        .reason{color:var(--failfg)}.q{font-weight:600}ol.st li .q{color:var(--fg)}ol.st li.failed .q,ol.st li.skipped .q{color:inherit}
+        .reason{color:var(--failfg)}
+.osnote{color:var(--faint);font-size:12.5px}.q{font-weight:600}ol.st li .q{color:var(--fg)}ol.st li.failed .q,ol.st li.skipped .q{color:inherit}
         .owner{display:inline-flex;align-items:center;gap:6px}.avatar{width:20px;height:20px;border-radius:50%;background:var(--dim);color:var(--onfg);font-size:10px;display:inline-flex;align-items:center;justify-content:center;font-weight:600}
         .btns{display:flex;gap:8px;flex-wrap:wrap}.btn{flex:1;text-align:center;padding:7px 10px;border-radius:6px;border:1px solid var(--line2);background:var(--card);color:var(--fg);font-size:13px;text-decoration:none;cursor:pointer;white-space:nowrap}.btn.primary{border-color:var(--fg);background:var(--fg);color:var(--onfg);font-weight:500}
         .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--line2);flex-shrink:0}.dot.failed{background:var(--fail)}.dot.passed{background:var(--ok)}

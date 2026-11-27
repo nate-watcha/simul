@@ -57,7 +57,7 @@ object ResultJson {
     const val FILE = "result.json"
 
     /** Environment facts stamped into every result. */
-    data class Env(val appVersionName: String?, val device: String?, val androidCli: String?)
+    data class Env(val appVersionName: String?, val device: String?, val androidCli: String?, val os: String? = null)
 
     /** What the runner does not know about the scenario: where it lives and who owns it. */
     data class Meta(
@@ -74,6 +74,8 @@ object ResultJson {
         /** `YYYY-MM-DD` the trace was last recorded (git commit date, else file mtime); null without a trace. */
         val traceRecordedAt: String?,
         val env: Env,
+        /** OS of the device the trace was recorded on ("API 37"); null for a trace that does not say. */
+        val traceOs: String? = null,
         /** How the scenario is entered (its `setup:`); null when it declares none. */
         val setup: Setup? = null,
         /** The screens [description] mentions (`@화면`). */
@@ -172,6 +174,7 @@ object ResultJson {
             // the scenario's `values:` as this run picked them — absent when it declares none
             if (r.values.isNotEmpty()) put("values", buildJsonObject { r.values.forEach { (k, v) -> put(k, v) } })
             put("trace_recorded_at", meta.traceRecordedAt?.let(::JsonPrimitive) ?: JsonNull)
+            meta.traceOs?.let { put("trace_os", it) }
             put("status", if (r.setupFailed) "SKIPPED_SETUP" else r.status.name)
             val failed = r.steps.firstOrNull { it.status == StepStatus.FAILED }
             put("failed_step", failed?.index?.let(::JsonPrimitive) ?: JsonNull)
@@ -186,6 +189,7 @@ object ResultJson {
                 put("app_version", meta.env.appVersionName?.let(::JsonPrimitive) ?: JsonNull)
                 put("device", meta.env.device?.let(::JsonPrimitive) ?: JsonNull)
                 put("android_cli", meta.env.androidCli?.let(::JsonPrimitive) ?: JsonNull)
+                meta.env.os?.let { put("os", it) }
             })
             put("video", r.video?.let { v ->
                 buildJsonObject {
@@ -300,7 +304,12 @@ object ResultJson {
         val sections: List<Section> = emptyList(),
         /** How the scenario is entered; null in results written before `setup` was recorded. */
         val setup: Setup? = null,
+        /** OS of the device this ran on ("API 35"), and of the one its trace was recorded on; null where not recorded. */
+        val os: String? = null,
+        val traceOs: String? = null,
     ) {
+        /** "API 37" when this replayed a trace recorded on another OS version than the device it ran on; null otherwise. */
+        val recordedOnOtherOs: String? get() = traceOs?.takeIf { mode == "replay" && os != null && it != os }
         /** `coupon.member` / `coupon` — the directory a run of this scenario gets under a runs root (see ReportDirs). */
         val key: String get() = name + (state?.let { ".$it" } ?: "")
         /** `billing/coupon.member` — the identity an acknowledgement file keys on. */
@@ -419,6 +428,8 @@ object ResultJson {
             layoutHash = o.str("layout_hash") ?: "",
             appVersion = env?.str("app_version"),
             device = env?.str("device"),
+            os = env?.str("os"),
+            traceOs = o.str("trace_os"),
             video = o.obj("video")?.let { v -> v.str("file")?.let { Video(it, v.long("duration_ms")) } },
             llm = llmFromJson(o.obj("llm")),
             steps = o.arr("steps")?.mapNotNull { el ->

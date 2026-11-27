@@ -67,9 +67,11 @@ class RunnerTest {
             values = mapOf("name" to listOf("노을", "바다")),
         )
 
+        h.ops.os = "API 37"
         val recorded = h.runner.run(rename, trace = null, mode = RunMode.LLM)
 
         assertEquals(StepStatus.PASSED, recorded.status, recorded.steps.first().reason)
+        assertEquals("API 37", recorded.updatedTrace?.os, "a recording says which OS it ran on")
         assertEquals(listOf("\"name_field\" 필드에 \"바다\"을 입력한다"), commands, "the model is given the value, and not the one already on screen")
         assertEquals(mapOf("name" to "바다"), recorded.values)
         assertTrue("\"바다\"" in recorded.steps.first().text, "the report reads with the value in place")
@@ -727,5 +729,37 @@ class AndroidCliMismatchTest {
         assertEquals(StepStatus.PASSED, result.status)
         assertTrue(lines.any { "android CLI 1.0.15498356" in it && "1.0.16261425" in it }, lines.joinToString("\n"))
         assertTrue("\"android_cli\": \"1.0.16261425\"" in writeResult(result, "replay", ops, reportDir).readText())
+    }
+
+    private fun replayOn(deviceOs: String?, traceOs: String?): Pair<List<String>, ResultJson.Result> {
+        val screen = layout(el("로그인", id = 1, interactions = listOf("clickable")))
+        val listener = SwitchableListener()
+        val controller = DeviceController(FakeDevice(screen, screen), settleIntervalMs = 0, listener = listener)
+        val ops = FakeOps().apply { os = deviceOs }
+        val reportDir = tempDir()
+        val lines = mutableListOf<String>()
+        val runner = ScenarioRunner(controller, listener, ops, neverCalledExecutor, reportDir, app = "com.example", log = lines::add)
+        val trace = TraceFile("t", AGENT_VERSION, null, listOf(TraceStep("Verify \"로그인\" is shown", emptyList(), listOf("로그인"))), os = traceOs)
+        val result = runner.run(Scenario("t", emptyList(), null, listOf("Verify \"로그인\" is shown")), trace, RunMode.REPLAY)
+        assertEquals(StepStatus.PASSED, result.status)
+        return lines to ResultJson.read(writeResult(result, "replay", ops, reportDir, traceOs = traceOs))!!
+    }
+
+    @Test
+    fun `replay on another OS version than the recording warns, and the result keeps both`() {
+        val (lines, result) = replayOn(deviceOs = "API 35", traceOs = "API 37")
+
+        assertTrue(lines.any { "recorded on API 37" in it && "API 35" in it }, lines.joinToString("\n"))
+        assertEquals("API 35" to "API 37", result.os to result.traceOs)
+        assertEquals("API 37", result.recordedOnOtherOs)
+    }
+
+    @Test
+    fun `the same OS version, or a trace that does not say, is no warning`() {
+        for (traceOs in listOf("API 35", null)) {
+            val (lines, result) = replayOn(deviceOs = "API 35", traceOs = traceOs)
+            assertTrue(lines.none { "recorded on" in it }, lines.joinToString("\n"))
+            assertEquals(null, result.recordedOnOtherOs)
+        }
     }
 }
