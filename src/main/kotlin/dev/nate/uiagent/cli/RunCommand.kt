@@ -112,7 +112,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
         else -> return err("nothing to run: give a scenario path, --tag <tag>, or --all")
     }
     if (targets.isEmpty()) return err("no scenarios matched")
-    val runs = withEntries(project, targets, mode)
+    val runs = withEntries(project, try { withHosts(project, targets) } catch (e: IllegalArgumentException) { return err(e.message ?: "setup.after") }, mode)
 
     val llm = project.config.llm.let { if (urlOverride != null) it.copy(url = urlOverride) else it }
     // The key is only needed when the LLM actually runs; replay must work without the secret.
@@ -132,7 +132,7 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
     val ops = devices.first()
     if (devices.size > 1) {
         println("devices: ${devices.size} — ${serials.joinToString(", ")}")
-        for (r in runOverDevices(project, runs, devices, mode, llm, video, runsDir, thenReplay = thenReplay)) {
+        for (r in runOverDevices(project, runs, devices, mode, llm, video, runsDir, thenReplay = thenReplay).flatMap { it.all() }) {
             outcomes += r.outcome
             r.result?.let { results += it }
             if (r.outcome.status != "SKIPPED") anyRan = true
@@ -158,19 +158,26 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
                     }
                     println("  ${idx + 1}. $s")
                 }
+                for (f in scenario.followers) {
+                    println("  then, where '## ${f.section}' ends: ${f.scenario.name} (${scenarioPath(project, f.md, f.scenario)})")
+                    f.scenario.steps.forEachIndexed { idx, s -> println("    ${idx + 1}. $s") }
+                }
                 continue
             }
-            val r = batch.run(md, scenario, mode, llm, video)
-            outcomes += r.outcome
-            r.result?.let { results += it }
-            if (r.outcome.status != "SKIPPED") anyRan = true
-            if (r.outcome.status == "FAILED" || r.outcome.status == "CRASH") anyFailed = true
-            if (thenReplay && r.outcome.passed) {
-                val replay = batch.run(md, scenario, RunMode.REPLAY, llm, video)
-                val replayed = replay.outcome
-                outcomes += replayed
-                replay.result?.let { results += it }
-                if (!replayed.passed) anyFailed = true
+            val ran = batch.run(md, scenario, mode, llm, video)
+            for (r in ran.all()) {
+                outcomes += r.outcome
+                r.result?.let { results += it }
+                if (r.outcome.status != "SKIPPED") anyRan = true
+                if (r.outcome.status == "FAILED" || r.outcome.status == "CRASH") anyFailed = true
+            }
+            // the scenarios a recording took along are replayed with it: a recording of theirs that did not pass has no trace and says so
+            if (thenReplay && ran.outcome.passed) {
+                for (replay in batch.run(md, scenario, RunMode.REPLAY, llm, video).all()) {
+                    outcomes += replay.outcome
+                    replay.result?.let { results += it }
+                    if (replay.outcome.status == "FAILED" || replay.outcome.status == "CRASH") anyFailed = true
+                }
             }
         }
     }
@@ -236,6 +243,30 @@ internal fun withEntries(project: SimulProject, targets: List<Pair<File, Scenari
 }
 
 /**
+ * [targets] with every scenario that starts after another's section ([Scenario.after]) moved into that
+ * scenario's run ([Scenario.followers]): it is run there, where the section ends, not as a run of its own. The
+ * other scenario is added when it was not asked for — the one asked for cannot be run without it — and takes
+ * along only the scenarios that were asked for.
+ */
+internal fun withHosts(project: SimulProject, targets: List<Pair<File, Scenario>>): List<Pair<File, Scenario>> {
+    val taken = targets.filter { it.second.after != null }
+    if (taken.isEmpty()) return targets
+    fun key(md: File) = Mentions.norm(md.absoluteFile.relativeTo(project.scenariosDir.absoluteFile).path)
+    val byHost = taken.groupBy { Mentions.norm(it.second.after!!.file) }
+        .mapValues { (_, fs) -> fs.map { (md, sc) -> Scenario.Follower(md, sc, sc.after!!.section) } }
+    val asked = targets.filter { it.second.after == null }.map { key(it.first) }.toSet()
+    val added = mutableSetOf<String>()
+    return targets.flatMap { (md, sc) ->
+        val after = sc.after
+        when {
+            after == null -> listOf(md to (byHost[key(md)]?.let { sc.copy(followers = it) } ?: sc))
+            Mentions.norm(after.file) in asked || !added.add(Mentions.norm(after.file)) -> emptyList()
+            else -> File(project.scenariosDir, after.file).let { host -> listOf(host to project.load(host).variants().single().copy(followers = byHost.getValue(Mentions.norm(after.file)))) }
+        }
+    }
+}
+
+/**
  * The closing lines of a run of several scenarios: the count, then every scenario that did not pass
  * with the step it stopped at, why, and where its report is — what one otherwise digs out of each
  * result.json after the live log has scrolled away.
@@ -283,6 +314,10 @@ internal fun executeScenario(
     log: (String) -> Unit = ::println,
     video: Boolean = false,
     runsDir: File? = null,
+    /** The scenario goes on from the screen another scenario's section left ([Scenario.After]): nothing is set up. */
+    continued: Boolean = false,
+    /** Called when a section of this scenario has ended, for the scenarios that start there ([BatchSession.run]). */
+    follow: (section: String, passed: Boolean, back: () -> Unit) -> Unit = { _, _, _ -> },
 ): ScenarioRunResult {
     val t0 = System.currentTimeMillis()
     val reportDir = if (runsDir != null) ReportDirs.inRuns(runsDir, project, md, scenario)
@@ -306,11 +341,11 @@ internal fun executeScenario(
         // steps are logged live by the runner — a scenario can run for minutes
         val runner = ScenarioRunner(stack.controller, listener, ops, executor, reportDir, project.config.app,
             locale = project.config.device.locale, network = project.config.device.network, stepFrames = !(video && mode == RunMode.REPLAY), log = log, onSetupDone = { recorder?.start() },
-            entries = project::entryOf)
+            entries = project::entryOf, afterSection = follow)
 
         log("── ${scenario.name} [${mode.name.lowercase()}]${ops.serial?.let { " on $it" } ?: ""} ${"─".repeat(30)}")
         try {
-            runner.run(scenario, trace, mode)
+            runner.run(scenario, trace, mode, continued)
         } finally {
             recorder?.let { recording = it.stop(File(reportDir, "replay.mp4")); recorderProblem = it.problem }
         }
@@ -346,6 +381,7 @@ internal fun executeScenario(
         screenMode = scenario.mode,
         modeData = scenario.data,
         perMode = scenario.perMode,
+        after = scenario.after?.let { a -> ResultJson.After(a.screen, a.title, a.section, File(a.file).nameWithoutExtension, handedOver(project, scenario)) },
     ), reportDir)
 
     result.updatedTrace?.let { updated ->
@@ -361,6 +397,19 @@ internal fun executeScenario(
     val timed = full.copy(wallMs = System.currentTimeMillis() - t0)
     log("  ${timeLine(timed.wallMs, listOf(timed))}")
     return timed
+}
+
+/**
+ * What the scenario [scenario] starts after had put on the screen for it: the labels both write in quotes — the
+ * section's steps to find them, this scenario's to act on them (`"치이카와"`). The report says them beside where
+ * the scenario's data came from.
+ */
+internal fun handedOver(project: SimulProject, scenario: Scenario): List<String> {
+    val after = scenario.after ?: return emptyList()
+    val host = runCatching { project.load(File(project.scenariosDir, after.file)) }.getOrNull() ?: return emptyList()
+    val section = host.sections.firstOrNull { it.title == after.section } ?: return emptyList()
+    val theirs = section.steps.flatMap { quotedLabels(host.steps[it]) }.toSet()
+    return scenario.steps.flatMap(::quotedLabels).distinct().filter { it in theirs }
 }
 
 /**

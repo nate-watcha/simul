@@ -173,6 +173,7 @@ class SimulProject(val appRoot: File) {
             .let { if (it.name == Modes.base(md.nameWithoutExtension)) it.copy(name = entryName(screenOf(md), mode)) else it }
         val scenario = parsed.copy(mode = mode ?: placeModeOf(md))
         val own = scenario.setup
+        own?.after?.let { return after(md, scenario, it, names) }
         val key = own?.entry ?: (if (own?.deeplink == null && own?.launch != true) entryFileOf(md)?.let(::entryKeyOf) else null)
         val used = scenario.written.flatMap { ModeData.used(it, names) }.distinct()
         if (used.isEmpty()) return startedFrom(scenario, key)
@@ -195,6 +196,52 @@ class SimulProject(val appRoot: File) {
             Scenario.InMode(m, its.filterKeys { it in used }, started.via, started.setup, scenario.sections.map { sec -> sec.open?.screen?.let { sec.copy(open = sec.open.copy(screen = inMode(it, m))) } ?: sec })
         }
         return startedFrom(scenario, key).copy(inModes = inModes)
+    }
+
+    /**
+     * [scenario] as it starts where a section of another scenario ended (`setup.after: <시나리오> > <구간>`,
+     * [Scenario.After]): no address and no way in of its own, and the other scenario's account. The other
+     * scenario is one run — a file with `states:`, or one that runs in each mode, has no single "there" to
+     * start from — and does not itself start after a third.
+     */
+    private fun after(md: File, scenario: Scenario, written: String, names: Set<String>): Scenario {
+        val name = "scenario '${scenario.name}'"
+        val at = written.lastIndexOfAny(charArrayOf('>', '›'))
+        require(at > 0 && written.substring(at + 1).isNotBlank()) { "$name: setup.after '$written' — write the scenario and its section: `after: 작품상세/rating > 평가 뒤 활동 탭`" }
+        val ref = written.substring(0, at).trim().removeSuffix(".md")
+        val title = written.substring(at + 1).trim()
+        val hostMd = scenarioFile(ref) ?: throw IllegalArgumentException("$name: setup.after '$written' — there is no scenario '$ref.md' under ${scenariosDir.name}/")
+        require(hostMd.absoluteFile != md.absoluteFile) { "$name: setup.after names the scenario itself" }
+        require(!isEntry(hostMd)) { "$name: setup.after '$written' — a way in ($ENTRY_FILE) is started from with `entry:`" }
+        val host = mentioned(ScenarioMd.parse(hostMd, modeDataOf(screenOf(hostMd)).values.firstOrNull()?.keys.orEmpty()))
+        require(host.setup?.after == null) { "$name: setup.after '$written' — '$ref' itself starts after another scenario; start after that one's section" }
+        val loaded = load(hostMd)
+        require(loaded.variants().size == 1) { "$name: setup.after '$written' — '$ref' runs more than once (its `states:`, or its screen's modes), so there is no one place to go on from" }
+        val section = host.sections.firstOrNull { Mentions.norm(it.title) == Mentions.norm(title) }
+            ?: throw IllegalArgumentException("$name: setup.after '$written' — '$ref' has no section '## $title' (its sections: ${host.sections.joinToString(", ") { it.title }.ifEmpty { "none" }})")
+        require(!section.preparation) { "$name: setup.after '$written' — '## ${section.title}' prepares that scenario; start after a section that confirms something" }
+        val used = scenario.written.flatMap { ModeData.used(it, names) }.distinct()
+        require(used.isEmpty()) { "$name: it starts after another scenario's section, on what that scenario wrote — it cannot name a value of its screen's modes (${used.joinToString(", ") { "\$$it" }})" }
+        val runsAs = loaded.variants().single()
+        return scenario.copy(
+            via = null,
+            setup = Scenario.Setup(deeplink = null, launch = false, appState = section.open?.appState ?: runsAs.setup?.appState, clearData = section.open?.appState == null && runsAs.setup?.clearData == true),
+            after = Scenario.After(hostMd.relativeTo(scenariosDir).path, section.title, host.title ?: host.name, screenOf(hostMd)),
+        )
+    }
+
+    /** The scenario file [ref] names — a path under the scenarios directory without `.md`, compared in one Unicode form; null when there is none. */
+    private fun scenarioFile(ref: String): File? {
+        val parts = ref.split('/').map { it.trim() }.filter { it.isNotEmpty() }
+        if (parts.isEmpty()) return null
+        val dir = if (parts.size == 1) scenariosDir else dirOf(parts.dropLast(1).joinToString("/")) ?: return null
+        return dir.listFiles { f -> f.isFile && f.extension == "md" && Mentions.norm(f.nameWithoutExtension) == Mentions.norm(parts.last()) }?.firstOrNull()
+    }
+
+    /** The scenarios that start after a section of [md] (`setup.after`), in file order — what [withHosts] attaches to a run of it. */
+    fun followersOf(md: File): List<File> = scenarios().filter { f ->
+        f.absoluteFile != md.absoluteFile && !isEntry(f) && f.name != ScreenMd.FILE &&
+            runCatching { load(f).after?.file == md.relativeTo(scenariosDir).path }.getOrDefault(false)
     }
 
     /** [scenario] as it starts from the way in [key] names ([Modes.key]) — the entry's address, and its account unless the scenario has its own; itself when [key] is null. */

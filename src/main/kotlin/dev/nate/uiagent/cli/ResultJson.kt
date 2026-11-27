@@ -86,7 +86,16 @@ object ResultJson {
         val modeData: Map<String, String> = emptyMap(),
         /** This is one of the runs of a file that runs in each mode ([Scenario.perMode]): [state] is the mode. */
         val perMode: Boolean = false,
+        /** The scenario started where a section of another one ended ([Scenario.After]): where its data came from. */
+        val after: After? = null,
     )
+
+    /**
+     * Where a scenario's data came from, when it started after another scenario's section (`setup.after`): that
+     * scenario's [screen], what the report calls it ([title]), its file's [name] and the [section] — and the
+     * [labels] it had put on the screen that this scenario acts on (`치이카와`).
+     */
+    data class After(val screen: String, val title: String, val section: String, val name: String, val labels: List<String> = emptyList())
 
     /**
      * A scenario's way in: the [deeplink] it opens or a plain [launch], from the account state [appState].
@@ -145,6 +154,12 @@ object ResultJson {
             // the same behaviour on each mode's data: the values this run was filled with, and that the file runs in each mode
             if (meta.modeData.isNotEmpty()) put("mode_data", buildJsonObject { meta.modeData.forEach { (k, v) -> put(k, v) } })
             if (meta.perMode) put("per_mode", true)
+            meta.after?.let { a ->
+                put("after", buildJsonObject {
+                    put("screen", a.screen); put("title", a.title); put("section", a.section); put("name", a.name)
+                    if (a.labels.isNotEmpty()) put("labels", buildJsonArray { a.labels.forEach { add(JsonPrimitive(it)) } })
+                })
+            }
             meta.setup?.let { s ->
                 put("setup", buildJsonObject {
                     s.deeplink?.let { put("deeplink", it) }
@@ -262,6 +277,8 @@ object ResultJson {
         val modeData: Map<String, String> = emptyMap(),
         /** One of the runs of a file that runs in each mode (`per_mode`), the one in [screenMode]: the same behaviour on that mode's data. */
         val perMode: Boolean = false,
+        /** Where its data came from, when it started after another scenario's section (`after`). */
+        val after: After? = null,
         val traceRecordedAt: String?,
         /** PASSED | FAILED | SKIPPED_SETUP */
         val status: String,
@@ -379,6 +396,7 @@ object ResultJson {
             screenMode = o.str("screen_mode"),
             modeData = o.obj("mode_data")?.entries?.mapNotNull { (k, v) -> (v as? JsonPrimitive)?.contentOrNull?.let { k to it } }?.toMap().orEmpty(),
             perMode = o.bool("per_mode") == true,
+            after = o.obj("after")?.let { a -> After(a.str("screen") ?: "", a.str("title") ?: "", a.str("section") ?: "", a.str("name") ?: "", a.strList("labels")) },
             screens = o.obj("screens")?.mapNotNull { (screen, v) ->
                 (v as? JsonArray)?.let { arr ->
                     screen to ScreenLayout(arr.mapNotNull { item ->

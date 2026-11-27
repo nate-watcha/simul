@@ -12,7 +12,23 @@ import java.io.File
  * was not run because the device could not run anything any more — a run over several devices gives such a
  * scenario to another device instead of keeping this row ([runOverDevices]).
  */
-class BatchResult(val outcome: ScenarioOutcome, val result: ScenarioRunResult?, val deviceGone: Boolean = false)
+class BatchResult(
+    val outcome: ScenarioOutcome, val result: ScenarioRunResult?, val deviceGone: Boolean = false,
+    /** The scenarios this one's run took along — the ones that start after a section of it ([Scenario.followers]) — each as its own result. */
+    val also: List<BatchResult> = emptyList(),
+) {
+    /** This result and the ones its run took along, in the order they ran. */
+    fun all(): List<BatchResult> = listOf(this) + also.flatMap { it.all() }
+}
+
+/**
+ * How a scenario that starts after another's section ([Scenario.After]) is started by that scenario's run:
+ * on the screen the section left, or — the section did not pass — not at all.
+ */
+sealed interface Continues {
+    data object Here : Continues
+    data class NotReached(val why: String) : Continues
+}
 
 /**
  * Is [scenario] written for a device with a network? Every one is, unless its setup — or, for every scenario of
@@ -114,7 +130,38 @@ class BatchSession(
         llm: LlmConfig,
         video: Boolean = false,
         scenarioLog: (String) -> Unit = log,
+        /** Set for a scenario another one's run takes along ([Scenario.followers]); null for a run of its own. */
+        from: Continues? = null,
     ): BatchResult {
+        // The scenarios that start after a section of this one run inside its run, each when its section has
+        // ended: right there when the section passed, as a row that says why not when it did not.
+        val also = mutableListOf<Pair<Scenario.Follower, BatchResult>>()
+        val follow: (String, Boolean, () -> Unit) -> Unit = { section, passed, back ->
+            scenario.followers.filter { it.section == section }.forEachIndexed { k, f ->
+                var start: Continues = if (passed) Continues.Here else Continues.NotReached("'${scenario.name} › $section', which did not pass")
+                // the one before it walked away from the screen the section left: the section's way there is gone again
+                if (passed && k > 0) runCatching { back() }.onFailure { e ->
+                    start = Continues.NotReached("'${scenario.name} › $section', which could not be gone back to: ${e.message?.lineSequence()?.firstOrNull() ?: e}")
+                }
+                also += f to run(f.md, f.scenario, mode, llm, video = false, scenarioLog = scenarioLog, from = start)
+            }
+        }
+        val r = runOne(md, scenario, mode, llm, video, scenarioLog, from, follow)
+        // a run that never got to a section (no trace, a crash, the device gone) still answers for the scenarios waiting on it
+        val unreached = scenario.followers.filter { f -> also.none { it.first === f } }.map { f ->
+            f to run(f.md, f.scenario, mode, llm, scenarioLog = scenarioLog, from = Continues.NotReached("'${scenario.name} › ${f.section}', which was not run"))
+        }
+        return if (scenario.followers.isEmpty()) r else BatchResult(r.outcome, r.result, r.deviceGone, (also + unreached).map { it.second })
+    }
+
+    private fun runOne(
+        md: File, scenario: Scenario, mode: RunMode, llm: LlmConfig, video: Boolean, scenarioLog: (String) -> Unit,
+        from: Continues?, follow: (String, Boolean, () -> Unit) -> Unit,
+    ): BatchResult {
+        if (from is Continues.NotReached) {
+            log("SKIPPED ${scenario.name}: not run — it starts after ${from.why}")
+            return BatchResult(outcomeWithout(project, md, scenario, "SKIPPED", "${Site.CAME_FROM_FAILED} ${from.why}"), null)
+        }
         val traceFile = project.traceFileFor(md, scenario)
         val trace = traceFile.takeIf { it.isFile }?.let { runCatching { TraceJson.read(it) }.getOrNull() }
         val effective = if (mode == RunMode.AUTO) (if (trace != null) RunMode.REPLAY else null) else mode
@@ -137,7 +184,8 @@ class BatchSession(
             }
         }
         // the network the scenario is written for: there, unless its setup takes it away (the runner does that, for its span)
-        if (needsNetwork(scenario, project.config)) {
+        // — one that goes on from another's screen is in that scenario's span
+        if (from == null && needsNetwork(scenario, project.config)) {
             val why = try {
                 DeviceNetwork.ensureOn(ops, { log("device: $it") }, pause)
             } catch (e: Exception) {
@@ -155,7 +203,7 @@ class BatchSession(
         // A harness/environment crash (OOM, classpath swapped under a live JVM, adb vanishing)
         // must not kill the rest of the batch — record it and move on.
         val result = try {
-            executeScenario(project, md, scenario, trace, effective, llm, traceFile, ops, scenarioLog, video, runsDir)
+            executeScenario(project, md, scenario, trace, effective, llm, traceFile, ops, scenarioLog, video, runsDir, continued = from != null, follow = follow)
         } catch (t: Throwable) {
             val crash = writeCrashLog(project.reportsDir, scenario.name, t)
             val what = "${t.javaClass.simpleName}: ${t.message ?: ""}".trim()
