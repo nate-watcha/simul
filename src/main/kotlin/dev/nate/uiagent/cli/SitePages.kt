@@ -871,10 +871,30 @@ object SitePages {
         val status = when (row.kind) { Site.Kind.FAILED -> "FAILED"; Site.Kind.PASSED -> "PASSED"; Site.Kind.SETUP -> "NONE" }
         val mark = if (row.recordFailed) chip(Site.Kind.FAILED, "녹화 실패") else if (row.kind == Site.Kind.SETUP) chip(Site.Kind.SETUP) else ""
         sb.append("<details class=\"ft ${row.kind.cls}$pair\" id=\"${attr(anchorOf(r))}\"${modeAttr(modes, row.mode)}${if (row.kind != Site.Kind.PASSED) " open" else ""}><summary>${icon(status)}<b class=fn>${esc(row.title)}</b>")
-        sb.append("<span class=fs>${if (chip) modeChip(modes, row.mode) else ""}${mentions(c.description, u, pages)}$mark${eventChips(row, u)}</span><span class=ckn>${if (c.steps.isEmpty()) "" else "${c.steps.size}스텝"}</span></summary><div class=fb>")
+        sb.append("<span class=fs>${if (chip) modeChip(modes, row.mode) else ""}${mentions(c.description, u, pages)}$mark${eventChips(row, u)}${fromLine(row, u)}</span><span class=ckn>${if (c.steps.isEmpty()) "" else "${c.steps.size}스텝"}</span></summary><div class=fb>")
         scenarioNotes(sb, row, u, pages)
         if (c.steps.isNotEmpty()) stepList(sb, c.steps)
         sb.append("${scenarioMeta(row, u)}</div></details>")
+    }
+
+    /**
+     * Where a scenario's data came from, under its sentence, when it starts after another scenario's section
+     * ([Scenario.After]): `치이카와 · 작품상세 › 평가하고 지우기에서 넣음`, the other scenario a link. One line in the
+     * grey of what a line was run on ([ranLine]), and no more: the sentence above it is what the scenario is
+     * about, this only says why the thing it acts on is there. A scenario that was not run because the other one
+     * had not passed there says that instead — the failure itself is read where it happened.
+     */
+    private fun fromLine(row: Site.Row, u: String): String {
+        row.waitsForAfter?.let { why ->
+            val where = Regex("'([^']+)'").find(why)?.groupValues?.get(1) ?: why
+            return "<span class=ran><span class=off>돌리지 못함</span> · 통과하지 못한 곳: ${esc(where)}</span>"
+        }
+        val a = row.result.after ?: return ""
+        val s = tree[Mentions.norm(a.screen)]
+        val anchor = if (s == null || s.page === s) a.name else sid(s).removePrefix("s:") + "/" + a.name
+        val where = "<a href=\"${attr(u + screenPageOf(s?.page?.feature ?: a.screen) + "#" + anchor)}\">${esc(pathName(a.screen))} › ${esc(a.title)}</a>"
+        val what = a.labels.joinToString(", ") { esc(it) }
+        return "<span class=ran>" + (if (what.isEmpty()) "${where}에서 이어짐" else "$what · ${where}에서 넣음") + "</span>"
     }
 
     /** The scenario confirms one thing: it is a line, not a group of checks. */
@@ -1565,7 +1585,7 @@ object SitePages {
         .mc{display:inline-block;font-style:normal;font-size:11px;font-weight:600;line-height:17px;padding:0 7px;border-radius:4px;white-space:nowrap;margin-right:8px;vertical-align:1px}
         .mc.m0,.sum.m0{color:var(--m0);background:var(--m0bg)}.mc.m1,.sum.m1{color:var(--m1);background:var(--m1bg)}.mc.m2,.sum.m2{color:var(--m2);background:var(--m2bg)}.mc.m3,.sum.m3{color:var(--warnfg);background:var(--warnbg)}
         .sums{display:flex;flex-wrap:wrap;gap:6px}.sum{font-size:12.5px;padding:3px 10px;border-radius:6px;background:var(--chipbg);color:var(--ink2);white-space:nowrap}.sum b{font-weight:600;font-variant-numeric:tabular-nums}
-        .ran{display:block;margin-top:2px;font-size:12.5px;color:var(--faint)}.ran .bad{font-weight:500}.ran .off{color:var(--dim)}.grp>.ran{margin-left:30px}
+        .ran{display:block;margin-top:2px;font-size:12.5px;color:var(--faint)}.ran .bad{font-weight:500}.ran .off{color:var(--dim)}.grp>.ran{margin-left:30px}.ran a{color:inherit;text-decoration:none;border-bottom:1px solid var(--line2)}.ran a:hover{color:var(--dim)}
         .doc:not([data-mode=all]) .ran .sep{display:none}.rl{font-weight:400;color:var(--faint)}
         .run{display:flex;flex-direction:column;gap:2px;min-width:0}.run+.run{margin-top:10px}.rv{font-size:12px;color:var(--faint)}
         .doc[data-mode=all] details.ft.cont{border-top:0}.doc[data-mode=all] details.ft.cont>summary{padding-top:0}.doc[data-mode=all] details.ft.cont .fn{visibility:hidden}

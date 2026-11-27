@@ -38,6 +38,12 @@ object Site {
     /** How the reason of a scenario begins that was not run because its screen's way in had failed (see BatchSession.run). */
     const val WAY_IN_FAILED = "not run — the way in to"
 
+    /**
+     * How the reason of a scenario begins that was not run because the section of another scenario it starts
+     * after ([Scenario.After]) had not passed (see BatchSession.run): the other scenario's failure is the one to read.
+     */
+    const val CAME_FROM_FAILED = "not run — it starts after"
+
     /** Where a scenario stands, in the order the report shows them. */
     enum class Kind(val label: String, val cls: String) {
         FAILED("실패", "failed"),
@@ -294,6 +300,8 @@ object Site {
         /** What the pages call it: its title — `진입` for a way in that was given none. */
         val title: String get() = if (isEntry && (result.title == result.name || result.title == ENTRY_NAME ||
                 result.title == SimulProject.entryName(result.feature) || result.title == SimulProject.entryName(result.feature, mode))) "진입" else result.title
+        /** It was not run because the scenario it starts after had not passed there: what it says of that scenario (`'평가하고 지우기 › 평가 뒤 활동 탭', which did not pass`), else null. */
+        val waitsForAfter: String? get() = result.reason?.takeIf { kind == Kind.SETUP && it.startsWith(CAME_FROM_FAILED) }?.removePrefix(CAME_FROM_FAILED)?.trim()
         /** It was not run because its screen's way in had failed: the entry's failure is the one to read. */
         val waitsForEntry get() = kind == Kind.SETUP && result.reason?.startsWith(WAY_IN_FAILED) == true
         /** The run the pages tell this scenario by: tonight's recording when it failed and left its steps, else the replay. */

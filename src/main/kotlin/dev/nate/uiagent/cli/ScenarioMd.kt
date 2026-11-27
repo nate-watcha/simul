@@ -53,6 +53,15 @@ import java.io.File
  * ```
  *
  * `@화면` in the prose or a section's sentence is a mention ([Mentions]) — the report's, not the runner's.
+ *
+ * A scenario may start where a section of another scenario ended, on what that scenario wrote
+ * (`setup.after`, see [After]): the row a rating lands in is checked by the rating scenario, and what
+ * tapping the rated title in that row does is the row's own scenario, started right there —
+ *
+ * ```
+ * setup:
+ *   after: 작품상세/rating > 평가 뒤 활동 탭
+ * ```
  */
 data class Scenario(
     val name: String,
@@ -103,6 +112,10 @@ data class Scenario(
     val inModes: List<InMode> = emptyList(),
     /** This instance is one of those runs, the one in [mode]. */
     val perMode: Boolean = false,
+    /** Where this scenario starts when that is the end of another scenario's section ([SimulProject.load] resolves `setup.after`). */
+    val after: After? = null,
+    /** The scenarios that start where a section of this one ends, as a run takes them along ([withHosts]); not part of the file. */
+    val followers: List<Follower> = emptyList(),
 ) {
     /** The app state this scenario requires: appState name, "guest" for clearData, or null
      *  (undeclared — runs against whatever state the device happens to be in). */
@@ -181,7 +194,29 @@ data class Scenario(
          * one ([SimulProject.load] resolves either into [Scenario.via] and the entry's address).
          */
         val entry: String? = null,
+        /**
+         * `after: <시나리오> > <구간>` — start on the screen that section of another scenario ended on, with what
+         * that scenario had written by then, instead of opening the app ([After]). It takes the place of
+         * `entry`, `deeplink`, `launch` and the account: all of those are the other scenario's.
+         */
+        val after: String? = null,
     )
+
+    /**
+     * A scenario that starts where the section [section] of the scenario [file] ended. It is run inside that
+     * scenario's run, right after the section — on the same device, on the screen the section left, before the
+     * sections that follow put back what the scenario wrote. What it taps is then something that scenario put
+     * there, by a name both of them write, not whatever the account happened to hold (stone 나의 왓챠 활동,
+     * 2026-11: the first poster of a row was "재혼 황후" when recorded and "애프터 썬셋" three weeks later).
+     * When the section does not pass, this scenario is not run: the failure is the other scenario's, once.
+     *
+     * [file] is the other scenario's path under the scenarios directory; [title] what the report calls it and
+     * [screen] the screen it is of.
+     */
+    data class After(val file: String, val section: String, val title: String, val screen: String)
+
+    /** A scenario taken along by the run of the one it starts from: its file, itself as it runs, and the section it follows. */
+    data class Follower(val md: File, val scenario: Scenario, val section: String)
 
     /** One numbered step: the command and its `::` criteria, each optionally bound to a state. */
     data class StepDef(val command: String, val criteria: List<Criterion> = emptyList()) {
@@ -302,10 +337,20 @@ object ScenarioMd {
                 appState = setupMap["appState"] as? String,
                 device = DevicePins.parse(setupMap["device"], "scenario '$name' setup"),
                 entry = (setupMap["entry"] as? String)?.let(Mentions::norm)?.takeIf { it.isNotEmpty() },
+                after = (setupMap["after"] as? String)?.trim()?.takeIf { it.isNotEmpty() },
             )
         } else null
         require(setup?.entry == null || (setup.deeplink == null && !setup.launch)) {
             "scenario '$name': setup takes one of `entry`, `deeplink`, `launch` — `entry: ${setup?.entry}` already says where it starts"
+        }
+        if (setup?.after != null) {
+            // where it starts, and as whom, is all the other scenario's
+            require(setup.entry == null && setup.deeplink == null && !setup.launch && setup.appState == null && !setup.clearData) {
+                "scenario '$name': `after: ${setup.after}` already says where it starts and as whom — drop setup.entry/deeplink/launch/appState/clearData"
+            }
+            require(states.isEmpty()) { "scenario '$name': it starts after another scenario's section, in that scenario's account — it takes no `states:`" }
+            // a section starts the app over, and this scenario starts where another one stood
+            require(sections.isEmpty()) { "scenario '$name': it starts after another scenario's section and goes on from that screen — it takes no `##` sections of its own" }
         }
         if (states.isNotEmpty()) {
             // the state IS the precondition — a second one in setup would be contradictory
