@@ -31,6 +31,8 @@ internal class FakeDevice(vararg initial: LogicalLayout) : Device {
     val queue = ArrayDeque(initial.toList())
     var last: LogicalLayout = queue.first()
     val gestures = mutableListOf<String>()
+    /** Every swipe as "x1,y1 -> x2,y2 in Nms", for tests that care where the finger went. */
+    val swipes = mutableListOf<String>()
     var observeCount = 0
 
     override fun observe(): LogicalLayout {
@@ -40,7 +42,10 @@ internal class FakeDevice(vararg initial: LogicalLayout) : Device {
     }
 
     override fun tap(x: Int, y: Int) { gestures += "tap $x $y" }
-    override fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int) { gestures += "swipe" }
+    override fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int) {
+        gestures += "swipe"
+        swipes += "$x1,$y1 -> $x2,$y2 in ${durationMs}ms"
+    }
     override fun inputText(text: String, resourceId: String?) { gestures += "text $text" + (resourceId?.let { " into $it" } ?: "") }
     override fun keyBack() { gestures += "back" }
     override fun sleep(ms: Long) {}

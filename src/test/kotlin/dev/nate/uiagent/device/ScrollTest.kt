@@ -77,6 +77,20 @@ class ScrollTest {
     }
 
     @Test
+    fun `a drag moves content by the distance asked, slowly enough not to fling`() {
+        val region = Bounds(0, 248, 720, 1120) // h=872
+        // up: the finger goes down on the scroll gesture's start line and travels the distance
+        assertEquals(listOf(360, 248 + 872 * 68 / 100, 360, 248 + 872 * 68 / 100 - 300), SwipeGeometry.dragCoords(region, true, 300).toList())
+        // down: from the middle, away from the top edge
+        assertEquals(listOf(360, 684, 360, 984), SwipeGeometry.dragCoords(region, true, -300).toList())
+        // sideways, the same along x
+        assertEquals(listOf(0 + 720 * 68 / 100, 684, 0 + 720 * 68 / 100 - 200, 684), SwipeGeometry.dragCoords(region, false, 200).toList())
+        assertEquals(750, SwipeGeometry.dragDurationMs(300))
+        assertEquals(750, SwipeGeometry.dragDurationMs(-300))
+        assertEquals(SwipeGeometry.DRAG_MIN_MS, SwipeGeometry.dragDurationMs(40))
+    }
+
+    @Test
     fun `element without bounds falls back to synthetic region`() {
         val noBounds = LayoutAdapter.adapt(
             """[{"interactions":["scrollable"],"center":"[360,600]"}]"""

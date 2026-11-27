@@ -276,7 +276,7 @@ class DeviceControllerTest {
 
         val result = c.scrollToFind("@x360y696", "링크", "down")
 
-        assertEquals(listOf("swipe"), dev.gestures)
+        assertEquals(listOf("swipe", "swipe"), dev.gestures) // the scroll, then the drag to the middle
         assertContains(result, "FOUND after 1 scroll(s) down")
     }
 
@@ -311,9 +311,122 @@ class DeviceControllerTest {
 
             val result = c.scrollToFind("@x360y696", target, dir)
 
-            assertTrue(dev.gestures.isEmpty(), "$target $dir")
-            assertContains(result, "FOUND without scrolling")
+            // found where it was: no scroll round went looking for it (a drag to the middle may follow)
+            assertContains(result, "FOUND without scrolling", message = "$target $dir")
+            assertTrue(dev.swipes.none { it.endsWith("in ${SwipeGeometry.SWIPE_DURATION_MS}ms") }, "$target $dir: ${dev.swipes}")
         }
+    }
+
+    // ---------------------------------------------------------------- a found target is brought to the middle
+
+    /** stone 나의 왓챠 활동 탭: the tab's list under the pinned bars, and a row heading inside it. */
+    private val tabList = el(interactions = listOf("scrollable"), center = Point(360, 684), bounds = Bounds(0, 248, 720, 1120))
+    private fun heading(y: Int) = el("평가 전체 보기", interactions = listOf("clickable"),
+        center = Point(360, y), bounds = Bounds(30, y - 50, 690, y + 49), parentId = 0)
+
+    @Test
+    fun `scrollToFind brings a target found at the bottom to the middle of the scroll area`() {
+        val page1 = layout(tabList, el("보는중 전체 보기", parentId = 0))
+        val page2 = layout(tabList, heading(1040))
+        val page3 = layout(tabList, heading(690), el("재혼 황후", interactions = listOf("clickable"), center = Point(81, 900), parentId = 0))
+        val dev = FakeDevice(page1, page1, page2, page2, page3, page3)
+        val c = controller(dev)
+        c.fullLayout()
+
+        val result = c.scrollToFind("@x360y684", "평가 전체 보기", "down")
+
+        // middle of [248,1120] is 684: the heading at 1040 has 356px to go, at 400px/s
+        assertEquals(listOf("360,840 -> 360,335 in 500ms", "360,840 -> 360,484 in 890ms"), dev.swipes)
+        assertContains(result, "FOUND after 1 scroll(s) down")
+        assertTrue(c.currentElements.any { it.label == "재혼 황후" }, "the row under the heading is on screen for the next step")
+    }
+
+    @Test
+    fun `scrollToFind does not pull back a target that is already past the middle`() {
+        // high up on a list that may be at its top: a drag down there closes a sheet or starts a refresh
+        val page = layout(tabList, heading(300))
+        val dev = FakeDevice(page, page)
+        val c = controller(dev)
+        c.fullLayout()
+
+        val result = c.scrollToFind("@x360y684", "평가 전체 보기", "down")
+
+        assertTrue(dev.gestures.isEmpty())
+        assertContains(result, "FOUND without scrolling")
+    }
+
+    @Test
+    fun `scrollToFind searching up brings a target found at the top down to the middle`() {
+        val page1 = layout(tabList, el("코멘트 전체 보기", parentId = 0))
+        val page2 = layout(tabList, heading(300))
+        val page3 = layout(tabList, heading(684))
+        val dev = FakeDevice(page1, page1, page2, page2, page3, page3)
+        val c = controller(dev)
+        c.fullLayout()
+
+        c.scrollToFind("@x360y684", "평가 전체 보기", "up")
+
+        // the finger goes down in the middle of the area, not at its top where a pinned bar lies over it
+        assertEquals("360,684 -> 360,1068 in 960ms", dev.swipes.last())
+        assertEquals(2, dev.swipes.size)
+    }
+
+    @Test
+    fun `scrollToFind leaves a target near the middle where it is`() {
+        val page = layout(tabList, heading(760)) // 76px off, within an eighth of the area
+        val dev = FakeDevice(page, page)
+        val c = controller(dev)
+        c.fullLayout()
+
+        c.scrollToFind("@x360y684", "평가 전체 보기", "down")
+
+        assertTrue(dev.gestures.isEmpty())
+    }
+
+    @Test
+    fun `scrollToFind stops dragging when the list ends before the target reaches the middle`() {
+        val page = layout(tabList, heading(1000))
+        val dev = FakeDevice(page, page) // the drag changes nothing: this is the end of the list
+        val c = controller(dev)
+        c.fullLayout()
+
+        val result = c.scrollToFind("@x360y684", "평가 전체 보기", "down")
+
+        assertEquals(1, dev.swipes.size)
+        assertContains(result, "FOUND without scrolling")
+    }
+
+    @Test
+    fun `scrollToFind brings the match inside the list to the middle, not a chip of the same name pinned above it`() {
+        // the selected chip of the real screen: focusable, not clickable — so neither match is "the" control
+        val chip = el("장르", interactions = listOf("focusable"), state = listOf("selected"), center = Point(656, 211), bounds = Bounds(608, 165, 704, 257))
+        fun section(y: Int) = el("장르", kind = "label", center = Point(54, y), bounds = Bounds(30, y - 19, 78, y + 19), parentId = 0)
+        val page1 = layout(tabList, section(1050), chip)
+        val page2 = layout(tabList, section(684), chip)
+        val dev = FakeDevice(page1, page1, page2, page2)
+        val c = controller(dev)
+        c.fullLayout()
+
+        c.scrollToFind("@x360y684", "장르", "down")
+
+        assertEquals(listOf("360,840 -> 360,474 in 915ms"), dev.swipes)
+    }
+
+    @Test
+    fun `scrollToFind reports the target where the drag left it`() {
+        val a = el("오늘", interactions = listOf("clickable"), center = Point(100, 1000), bounds = Bounds(60, 980, 140, 1020), parentId = 0)
+        val b = el("오늘", interactions = listOf("clickable"), center = Point(500, 1060), bounds = Bounds(460, 1040, 540, 1080), parentId = 0)
+        val page1 = layout(tabList, a, b)
+        val page2 = layout(tabList, a.copy(center = Point(100, 684)), b.copy(center = Point(500, 744)))
+        val dev = FakeDevice(page1, page1, page2, page2)
+        val c = controller(dev)
+        c.fullLayout()
+
+        val result = c.scrollToFind("@x360y684", "오늘", "down")
+
+        assertContains(result, "- @x100y684 ") // the first match is the one brought to the middle
+        assertContains(result, "- @x500y744 ")
+        assertFalse(result.contains("y1000"))
     }
 
     @Test

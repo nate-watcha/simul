@@ -6,6 +6,7 @@ import dev.nate.uiagent.ProcessFailure
 import dev.nate.uiagent.Trace
 import dev.nate.uiagent.LogicalElement
 import dev.nate.uiagent.LogicalLayout
+import kotlin.math.abs
 
 /**
  * The harness core. Owns the grounding map (label -> element -> coordinates), executes
@@ -356,6 +357,9 @@ class DeviceController(
      * the field under it not on screen, answered "FOUND without scrolling" and the type that
      * followed had nothing to type into (실측 2026-11-12, stone 프로필 수정 "링크"). When the
      * container cannot scroll further, the cut element is all there is and it is found.
+     *
+     * A found target is then brought on to the middle of the scroll area ([centre]), so that what
+     * the next step acts on — the target, or what sits under it — is on screen too.
      */
     fun scrollToFind(scrollable: String, target: String, direction: String): String =
         traced("scrollToFind", "scrollable" to scrollable, "target" to target, "direction" to direction) {
@@ -365,13 +369,19 @@ class DeviceController(
                 is Resolution.NotFound -> null
             }
             fun inView(found: List<LogicalElement>): Boolean {
-                val box = (resolveScrollable(scrollable) as? Resolution.Match)?.element
+                val box = boxOf(scrollable)
                 return found.any { !cutOff(it, box, direction) }
             }
             fun after(rounds: Int) = if (rounds == 0) "without scrolling" else "after $rounds scroll(s) $direction"
 
+            /** [found] brought to the middle, as it is on screen now. */
+            fun settled(found: List<LogicalElement>): List<LogicalElement> {
+                centre(scrollable, direction, ::seen)
+                return seen() ?: found
+            }
+
             var found = seen()
-            if (found != null && inView(found)) return@traced foundMsg(after(0), target, found)
+            if (found != null && inView(found)) return@traced foundMsg(after(0), target, settled(found))
             var rounds = 0
             var stalled = false
             while (rounds < maxScrollRounds) {
@@ -385,13 +395,63 @@ class DeviceController(
                 }
                 rounds++
                 found = seen()
-                if (found != null && inView(found)) return@traced foundMsg(after(rounds), target, found)
+                if (found != null && inView(found)) return@traced foundMsg(after(rounds), target, settled(found))
             }
             found?.let { return@traced foundMsg(after(rounds), target, it) }
             val why = if (stalled) "the layout stopped changing (end reached)" else "scroll limit reached"
             "NOT_FOUND: '$target' did not appear scrolling $direction in '$scrollable' — $why. " +
                 "Try a different direction or scrollable once, or report FAILED."
         }
+
+    private fun boxOf(scrollable: String): LogicalElement? = (resolveScrollable(scrollable) as? Resolution.Match)?.element
+
+    /** Is [e] inside the scroll container [box] — does scrolling [box] move it? */
+    private fun inside(e: LogicalElement, box: LogicalElement): Boolean {
+        val byId = grounding?.elements.orEmpty().associateBy { it.id }
+        return generateSequence(e.parentId?.let(byId::get)) { it.parentId?.let(byId::get) }.any { it.id == box.id }
+    }
+
+    /**
+     * Drag the scroll area until [target] sits in its middle. A search ends the moment the
+     * target clears the edge, and that is where the next step found it: at the bottom with the
+     * row it heads still below the fold, or under a bar pinned over the top — the dump clips an
+     * element to its scroll container and knows nothing of what is drawn over it, so a tap went
+     * to the bar. Scenarios worked around it by searching for the *next* row to push the one they
+     * wanted into view (stone 나의 왓챠, 2026-11: 19 of 35 searches before a tap looked for
+     * something other than what was tapped). The middle is the one place a row has room on both
+     * sides and no bar reaches.
+     *
+     * The drag is slow enough to end without a fling ([SwipeGeometry.DRAG_PX_PER_SEC]: within
+     * 10px of the distance asked, emulator 2026-11-27), so one is enough; a second covers a
+     * list that grew under the first. A target already near the middle is left where it is, as
+     * is one the area cannot move there (the list ends first). Of several matches ([seen]) the
+     * first inside the area is the one: a tab chip of the same name pinned above the list does
+     * not move, the heading in the list does.
+     *
+     * The drag only carries on the way the search was going — a target that is already past the
+     * middle is not pulled back. Pulling a list down that is at its top is another gesture
+     * altogether: it closed the bottom sheet the list was in (stone 필터 시트, emulator
+     * 2026-11-27), and it is how a pull-to-refresh starts.
+     */
+    private fun centre(scrollable: String, direction: String, seen: () -> List<LogicalElement>?) {
+        val vertical = direction == "up" || direction == "down"
+        repeat(CENTRE_DRAGS) {
+            val box = boxOf(scrollable) ?: return
+            val movable = seen()?.filter { inside(it, box) } ?: return
+            val e = movable.firstOrNull { !cutOff(it, box, direction) } ?: movable.firstOrNull() ?: return
+            val before = grounding?.elements ?: return
+            val region = SwipeGeometry.region(box, vertical, before)
+            val off = if (vertical) e.center.y - region.centerY else e.center.x - region.centerX
+            val onward = if (direction == "down" || direction == "left") off > 0 else off < 0
+            if (!onward || abs(off) <= (if (vertical) region.height else region.width) / CENTRE_SLACK) return
+            val c = SwipeGeometry.dragCoords(region, vertical, off)
+            gesture { device.swipe(c[0], c[1], c[2], c[3], SwipeGeometry.dragDurationMs(off)) }
+            val after = stabilize()
+            grounding = after
+            trace.event("centre") { it["off"] = off.toString() }
+            if (signature(after.elements) == signature(before)) return // the list ends here
+        }
+    }
 
     /**
      * Is [e] cut by the edge of the scroll container [box] that scrolling [direction] brings
@@ -403,8 +463,7 @@ class DeviceController(
         val s = box?.bounds ?: return false
         val all = grounding?.elements.orEmpty()
         if (all.any { it.parentId == e.id }) return false
-        val byId = all.associateBy { it.id }
-        if (generateSequence(e.parentId?.let(byId::get)) { it.parentId?.let(byId::get) }.none { it.id == box.id }) return false
+        if (!inside(e, box)) return false
         return when (direction) {
             "down" -> b.y1 >= s.y1
             "up" -> b.y0 <= s.y0
@@ -474,6 +533,13 @@ class DeviceController(
             return@traced "ERROR: status must be PASSED or FAILED."
         verdict = Verdict(s, reason)
         "Verdict recorded: $s."
+    }
+
+    private companion object {
+        /** Drags [centre] spends on one target. */
+        const val CENTRE_DRAGS = 2
+        /** A target within this fraction (1/n) of the scroll area's size from its middle is in the middle. */
+        const val CENTRE_SLACK = 8
     }
 
     // ---------------------------------------------------------------- plumbing
