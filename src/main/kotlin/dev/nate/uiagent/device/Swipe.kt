@@ -29,24 +29,30 @@ object SwipeGeometry {
     // Swipe duration (ms). Longer reads as a controlled scroll; shorter as a fling.
     const val SWIPE_DURATION_MS = 500
 
+    /**
+     * The area a scroll gesture on [target] works in: for a vertical scroll the tallest focusable
+     * scrollable under the picked element's centre (see the class comment), for a horizontal one
+     * the picked rail itself.
+     */
+    fun region(target: LogicalElement, vertical: Boolean, all: List<LogicalElement>): Bounds =
+        if (vertical) {
+            all.filter { "scrollable" in it.interactions && it.bounds?.let { b -> target.center in b } == true }
+                .maxWithOrNull(
+                    compareBy(
+                        { if ("focusable" in it.interactions) 1 else 0 },
+                        { it.bounds!!.height },
+                    )
+                )?.bounds
+                ?: target.bounds
+                ?: synthetic(target.center)
+        } else {
+            target.bounds ?: synthetic(target.center)
+        }
+
     /** Swipe endpoints [x1, y1, x2, y2] for scrolling [dir] with [target] as the picked element. */
     fun swipeCoords(target: LogicalElement, dir: String, all: List<LogicalElement>): IntArray {
         val vertical = dir == "up" || dir == "down"
-
-        val region: Bounds =
-            if (vertical) {
-                all.filter { "scrollable" in it.interactions && it.bounds?.let { b -> target.center in b } == true }
-                    .maxWithOrNull(
-                        compareBy(
-                            { if ("focusable" in it.interactions) 1 else 0 },
-                            { it.bounds!!.height },
-                        )
-                    )?.bounds
-                    ?: target.bounds
-                    ?: synthetic(target.center)
-            } else {
-                target.bounds ?: synthetic(target.center)
-            }
+        val region = region(target, vertical, all)
 
         if (vertical) {
             val cx = region.centerX
@@ -64,6 +70,29 @@ object SwipeGeometry {
             return if (dir == "left") intArrayOf(hi, cy, lo, cy) else intArrayOf(lo, cy, hi, cy)
         }
     }
+
+    // A drag that moves content by a set distance has to end without a fling: `input swipe` moves at
+    // a constant speed and lifts at that speed, so the speed is what is left over as a fling. At this
+    // speed the fling adds about as much as the touch slop takes away at the start.
+    const val DRAG_PX_PER_SEC = 400
+    const val DRAG_MIN_MS = 400
+
+    /**
+     * Endpoints [x1, y1, x2, y2] of a drag in [region] that moves its content by [off] px along the
+     * axis: positive brings what is below (right of) the middle up (left) by that much. The finger
+     * goes down where a scroll gesture's does — the [SWIPE_START_PCT] line, clear of a bottom
+     * overlay — when it travels up, and in the middle when it travels down: the far end of the
+     * region is where a pinned bar lies over the content.
+     */
+    fun dragCoords(region: Bounds, vertical: Boolean, off: Int): IntArray {
+        val (lo, size) = if (vertical) region.y0 to region.height else region.x0 to region.width
+        val from = if (off > 0) lo + size * SWIPE_START_PCT / 100 else lo + size / 2
+        val to = from - off
+        return if (vertical) intArrayOf(region.centerX, from, region.centerX, to)
+        else intArrayOf(from, region.centerY, to, region.centerY)
+    }
+
+    fun dragDurationMs(off: Int): Int = maxOf(DRAG_MIN_MS, kotlin.math.abs(off) * 1000 / DRAG_PX_PER_SEC)
 
     private fun synthetic(c: Point) = Bounds(maxOf(0, c.x - 300), maxOf(0, c.y - 500), c.x + 300, c.y + 500)
 }
