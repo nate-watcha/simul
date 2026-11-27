@@ -23,14 +23,14 @@ interface StepExecutor {
     /**
      * The next step starts a conversation of its own: a scenario's section begins from a fresh setup,
      * and what the model saw of the screens before it no longer describes the app. [preparation] makes
-     * it the conversation of the scenario's `## 준비` section, which prepares the app instead of testing it.
+     * it the conversation that asks whether the scenario's `setup: ensure` holds — a question about the screen, not a step of the test.
      * [account] is the account state the section runs as when that is not the scenario's (its `setup.appState`).
      */
     fun newSession(preparation: Boolean = false, account: String? = null) {}
 
     /**
      * Why the model cannot be consulted at all (no key in this environment); null when it can. A replay
-     * asks before a `## 준비` section — the one part of it that needs the model.
+     * asks before a scenario's `setup: ensure` — the one part of it that needs the model.
      */
     fun unavailable(): String? = null
 }

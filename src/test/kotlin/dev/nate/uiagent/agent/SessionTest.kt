@@ -104,18 +104,18 @@ class SessionTest {
     }
 
     @Test
-    fun `a preparation's conversation runs under its own rules, the test rules untouched`() {
+    fun `the question whether a state holds runs under its own rules, the test rules untouched`() {
         val dev = StaticDevice(screen())
         val llm = FakeExecutor(reportCall())
         val session = ScenarioSession(llm, controller(dev), accountState = "member", preparation = true)
-        // nothing to do is a pass here: a report with no action before it is dispatched, not deflected
-        val v = session.runStep("팔로우하고 있지 않으면 \"팔로우\"를 눌러 팔로우한다", "[LAYOUT]")
+        // an answer is all that is asked: a report with no action before it is dispatched, not deflected
+        val v = session.runStep("이 유저를 팔로우하고 있다", "[LAYOUT]")
 
         assertTrue(v.passed, v.reason)
         assertTrue(dev.gestures.isEmpty())
         val system = llm.requests[0][0].textContent()
         assertTrue(system.startsWith(PREPARATION_PROMPT) && system.endsWith("ACCOUNT STATE of this session: member"), system)
-        assertTrue("do nothing and report PASSED" in PREPARATION_PROMPT && "do nothing and report PASSED" !in SYSTEM_PROMPT)
+        assertTrue("Change nothing" in PREPARATION_PROMPT && "Change nothing" !in SYSTEM_PROMPT)
     }
 
     @Test

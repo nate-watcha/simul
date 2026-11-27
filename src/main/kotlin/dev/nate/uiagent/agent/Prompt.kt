@@ -41,40 +41,44 @@ Failure is an acceptable and often expected outcome. Reporting it accurately is 
 """.trimIndent()
 
 /**
- * The rules of a scenario's `## 준비` section — a conversation of its own, before the test. The test rules above would
- * fail it: a preparation that finds the app already in the state it asks for names an element that is not there and
- * has no diff to show, and both are FAILED to a test executor. Here "nothing to do" is the usual, correct outcome.
- * NOT eval-verified yet (written 2026-11-09 with the feature; no eval case runs a preparation).
+ * The rules of the question a scenario's `setup: ensure` asks before its sections: does the state hold? The test
+ * rules above would have the model act on a sentence that is not a command, and would call "it does not hold" a
+ * failure of the app; here it is only the answer — the runner then does the scenario's `by` steps, as test steps,
+ * and asks again.
+ *
+ * Until 2026-11-28 the model did the whole preparation from one sentence (`## 준비`: "상태에 checked가 있으면 눌러서
+ * 취소한다. 상태가 비어 있으면 …"). On stone's CI that was read wrong one run in two — `checkable` taken for checked, an
+ * event banner taken for "my comment" — and shorter sentences did not help what takes several steps: asked only for
+ * the state it would not act, asked to delete it went through the wrong screen's menu. What it did every time was
+ * say whether a state holds, and do one named action. So that is all it is asked: this, and the `by` steps.
+ * Tried on the emulator on two of stone's scenarios, not on an eval set.
  */
 val PREPARATION_PROMPT = """
-You are preparing an Android app for a UI test. You control a device through tools.
+You are looking at an Android app before a UI test starts. You are given tools, but here you only read the screen.
 
-Each COMMAND describes the state the app has to be in before the test starts, or what to do to bring it there.
-This is preparation, not the test: nothing is judged here, the app only has to end up in that state.
+Each COMMAND is a STATE: one sentence about the app as it has to be before the test.
+Say whether it holds on the current screen. Change nothing: no tap, no typing, no scrolling, no going back.
 
 ## Input
 
-- The first command comes with the INITIAL LAYOUT: one element per line with label, resourceId, interactions, state. An indented line is nested inside the nearest less-indented line above it (e.g. a list item's texts and buttons). `"kind":"label"` marks plain text that is not a control.
-- After each action, the tool returns the LAYOUT DIFF: elements that appeared (+), disappeared (-) or changed state (~) because of your action. On web content the tool returns the full observation instead of a diff.
+- The command comes with the LAYOUT: one element per line with label, resourceId, interactions, state. An indented line is nested inside the nearest less-indented line above it (e.g. a list item's texts and buttons). `"kind":"label"` marks plain text that is not a control.
+- `state` is what is true of an element now: a button is on (liked, added, followed) only when its state has `checked` or `selected`. `checkable` among the interactions only says it can be turned on — an element with no `state` is off.
 
-## Preparing
+## Judging
 
-- Read the current layout first. If the app is already in the state the command asks for, do nothing and report PASSED.
-- A command with a condition ("… 이면 …", "if …, …") applies only when its condition holds on the current screen. When it does not hold, do nothing and report PASSED.
-- Otherwise take the fewest actions that bring the app to that state, using the elements the command names. Do not explore, and do not change anything the command does not mention.
-- If an element the command needs is not on screen, use scrollToFind on a scrollable element once. If it is still not there, report FAILED.
-- A tap that returns "NO CHANGE" did not work. Do not repeat it; report FAILED.
-- If the app crashes or closes, report FAILED immediately.
+- Judge from the layout you were given. What is not on screen is not there.
+- Only what the sentence names counts. A banner, a recommendation or someone else's content is not it, however similar it looks.
+- That the state does not hold is not an error and not yours to fix: the app is brought to it after you answer.
 
 ## Reporting
 
-- Finish EVERY command by calling report() exactly once, as your last action.
-- PASSED: the app is in the requested state — it already was, or the diff shows your action put it there.
-- FAILED: you could not bring the app to that state.
-- Keep every reason under 15 words: the state the app is in, and whether you changed it.
+- Answer by calling report() exactly once, as your only action.
+- PASSED: the state holds.
+- FAILED: it does not.
+- Keep the reason under 15 words: what the screen shows.
 """.trimIndent()
 
-/** The session's system prompt: the rules ([PREPARATION_PROMPT] for a `## 준비` section's conversation), then what the config says about the app and the account. */
+/** The session's system prompt: the rules ([PREPARATION_PROMPT] for the question a `setup: ensure` asks), then what the config says about the app and the account. */
 fun systemPrompt(appContext: String? = null, accountState: String? = null, preparation: Boolean = false): String = buildString {
     append(if (preparation) PREPARATION_PROMPT else SYSTEM_PROMPT)
     if (appContext != null) append("\n\nAPP UNDER TEST (background facts, not expected results):\n").append(appContext.trim())

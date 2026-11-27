@@ -150,13 +150,17 @@ internal fun runCommand(args: List<String>, cwd: File): Int {
                 scenario.via?.let { println("  starts from the way in to '$it' (${project.entryOf(it)?.file ?: SimulProject.ENTRY_FILE})") }
                 scenario.steps.forEachIndexed { idx, s ->
                     scenario.sections.firstOrNull { it.first == idx }?.let { sec ->
-                        println("  ## ${sec.title}" + (if (sec.preparation) " — by the model, in every mode" else "") +
+                        println((if (sec.preparation) "  setup — asked of the model in every mode; `by` is done only when the state does not hold" else "  ## ${sec.title}") +
                             (sec.open?.let { o ->
                                 " — starts" + (o.appState?.let { " as '$it'" } ?: "") +
                                     (if (o.elsewhere) " at ${o.deeplink ?: "the way in to '${o.screen}'"}" else "")
                             } ?: ""))
                     }
-                    println("  ${idx + 1}. $s")
+                    // the state it starts from is not a step of the test: said as it is written
+                    if (scenario.ensure != null && idx == 0) {
+                        println("  ${idx + 1}. ensure: $s")
+                        scenario.ensure.by.forEach { println("     by: $it") }
+                    } else println("  ${idx + 1}. $s")
                 }
                 for (f in scenario.followers) {
                     println("  then, where '## ${f.section}' ends: ${f.scenario.name} (${scenarioPath(project, f.md, f.scenario)})")

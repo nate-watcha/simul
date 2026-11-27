@@ -8,10 +8,14 @@ import dev.nate.uiagent.device.DeviceOps
 import dev.nate.uiagent.Point
 import dev.nate.uiagent.ProcessError
 import dev.nate.uiagent.agent.LlmStats
+import dev.nate.uiagent.agent.ScenarioSession
 import dev.nate.uiagent.secs
 import dev.nate.uiagent.device.DeviceController
 import dev.nate.uiagent.device.DeviceCost
 import java.io.File
+
+/** How many times the `by` steps of a scenario's [Scenario.Ensure] are done before the state is given up on: one round removes one of what is there. */
+private const val ENSURE_ROUNDS = 5
 
 enum class RunMode { LLM, REPLAY, AUTO }
 
@@ -50,7 +54,7 @@ data class StepReport(
 
 /**
  * How one `## title` section of a scenario went: PASSED/FAILED by its steps, SKIPPED when an earlier
- * section had already failed. [steps] are the step numbers it owns; [preparation] marks the `## 준비`
+ * section had already failed. [steps] are the step numbers it owns; [preparation] marks the scenario's `setup: ensure`
  * section, whose steps the model performed whatever the run's mode.
  */
 data class SectionReport(
@@ -107,7 +111,7 @@ data class ScenarioRunResult(
  * is never consulted; a broken step is a FAILED result).
  *
  * A scenario with `## title` sections runs them in file order, each from the app started over at the
- * scenario's entry (stopped and opened again, its data kept; the model's conversation is new too). Its `## 준비` section, when it has one, goes first and
+ * scenario's entry (stopped and opened again, its data kept; the model's conversation is new too). Its preparation (`setup: ensure`) section, when it has one, goes first and
  * to the model in every mode: a replay cannot tell what state the last run left on the server, so
  * bringing the app to the state the other sections start from is the one thing a replay asks the
  * model for. Its steps are never traced; everything after it replays without a model as before.
@@ -288,6 +292,8 @@ class ScenarioRunner(
         val newSteps = mutableListOf<TraceStep>()
         /** Did the part before this one touch the device? A preparation that found nothing to do leaves the entry screen as it was. */
         var touched = true
+        /** The gesture count when the preparation last started the app over: nothing after it means the entry screen is as a section needs it. */
+        var freshAt: Int? = null
         /** The account the app is in: the scenario's, until a section with an `appState` of its own restores another. */
         var account = scenario.precondition
 
@@ -327,9 +333,10 @@ class ScenarioRunner(
                         entryFailure = "setup failed: ${ex.message?.lineSequence()?.firstOrNull() ?: ex.toString()}"
                     }
                     setupMs += System.currentTimeMillis() - s
-                } else log("  setup: kept — the preparation changed nothing, the app is still on its entry screen")
+                } else log("  setup: kept — the app is on its entry screen, as the preparation left it")
             }
-            llm.newSession(preparation = part.preparation, account = part.open?.appState)
+            // the preparation opens its own conversations: one to ask about the state, one for each round of `by`
+            if (!part.preparation) llm.newSession(account = part.open?.appState)
             // the one part of a replay that needs the model — say so instead of crashing on the missing key
             if (entryFailure == null && part.preparation) llm.unavailable()?.let { entryFailure = "the preparation needs the model — $it" }
 
@@ -351,7 +358,19 @@ class ScenarioRunner(
                     when {
                         // the section never got to its steps: the app did not come up again, or there is no model to prepare it
                         entryFailure != null -> StepReport(n, picks.fill(text), StepStatus.FAILED, if (part.preparation) "llm" else modeName, emptyList(), emptyList(), entryFailure, 0, emptyList())
-                        part.preparation -> runPreparationStep(n, text, mode)
+                        part.preparation -> runEnsure(n, scenario.ensure!!, mode) {
+                            // as a section starts: stopped and opened again at the entry, its data kept
+                            controller.forget()
+                            val s = System.currentTimeMillis()
+                            try {
+                                val (setup, via) = startOf(scenario, part)
+                                setup?.let { enter(it, wantLocale, again = true) }
+                                via?.let { walkIn(it, runsAs) }
+                            } finally {
+                                setupMs += System.currentTimeMillis() - s
+                            }
+                            freshAt = controller.meter.cost.gestures
+                        }
                         mode == RunMode.LLM -> runLlmStep(n, text)
                         else -> runReplayStep(n, text, old.getOrNull(i - part.first))
                     }
@@ -386,7 +405,7 @@ class ScenarioRunner(
                     newSteps += picks.template(TraceStep(text, done.actions, done.evidence, done.stateEvidence, section = part.title.takeIf { sectioned }))
                 }
             }
-            touched = !part.preparation || controller.meter.cost.gestures > gestures0
+            touched = !part.preparation || controller.meter.cost.gestures > (freshAt ?: gestures0)
             close(if (broke) StepStatus.FAILED else StepStatus.PASSED)
             if (sectioned && !part.preparation) {
                 val g = controller.meter.cost.gestures
@@ -575,22 +594,50 @@ class ScenarioRunner(
     }
 
     /**
-     * One step of the scenario's `## 준비` section: the model brings the app to the state the sentence
-     * describes — or finds it already there and does nothing — whatever the run's mode. Nothing of it
-     * goes to the trace: what a preparation has to do depends on what the last run left behind, which is
-     * exactly what a trace cannot know. A recording keeps the before/after frame of each action as for
-     * any step of its own; a replay keeps the step-end frame only.
+     * The state the scenario starts from ([Scenario.Ensure]), whatever the run's mode: the model is asked whether the
+     * sentence holds on the screen — nothing more, it touches nothing — and when it does the app is left as it is.
+     * When it does not, the `by` steps are done as a section's are, one action each, the app is started over at the
+     * scenario's entry ([startOver]) and the question is asked again there — what the steps changed has to be saved, not
+     * just drawn, and a screen left behind by them may not have caught up (stone 캘린더 2026-11-28: the day's cell still read
+     * "기록 1개" after its record was deleted and the list closed). A round deletes one of what is there, so it takes as
+     * many as there are, up to [ENSURE_ROUNDS]. Nothing of it
+     * goes to the trace: what there is to do depends on what the last run left behind, which is exactly what a trace
+     * cannot know. One step in the result — the sentence, and in its reason whether the app was left or changed.
      */
-    private fun runPreparationStep(n: Int, written: String, mode: RunMode): StepReport {
-        val initial = if (controller.currentElements.isEmpty()) firstObservation() else null
-        val text = filled(written, controller.currentElements)
-        val spec = StepSpec.parse(text)
+    private fun runEnsure(n: Int, ensure: Scenario.Ensure, mode: RunMode, startOver: () -> Unit): StepReport {
         val recorder = if (mode == RunMode.LLM) StepRecorder(n, ::shoot) else StepRecorder(n)
         listener.delegate = recorder
-        val verdict = llm.runStep(spec.command, initial, spec.criterion)
-        listener.delegate = null
-        return StepReport(n, text, if (verdict.passed) StepStatus.PASSED else StepStatus.FAILED, "llm", recorder.actions.toList(), emptyList(),
-            verdict.reason, 0, recorder.screenshots.toList(), llm = verdict.llm, marks = recorder.marks.toList())
+        var spent: LlmStats? = null
+        fun asked(v: ScenarioSession.Verdict) = v.also { spent = listOfNotNull(spent, it.llm).reduceOrNull(LlmStats::plus) }
+        var state = ensure.state
+        fun report(status: StepStatus, reason: String) = StepReport(n, state, status, "llm", recorder.actions.toList(), emptyList(),
+            reason, 0, recorder.screenshots.toList(), llm = spent, marks = recorder.marks.toList())
+        try {
+            var rounds = 0
+            while (true) {
+                // each question is a conversation of its own, on the screen as it is now
+                llm.newSession(preparation = true)
+                val layout = firstObservation()
+                state = filled(ensure.state, controller.currentElements)
+                val holds = asked(llm.runStep(state, layout))
+                if (holds.passed) return report(StepStatus.PASSED, if (rounds == 0) holds.reason else "${holds.reason} — after `by` ×$rounds")
+                if (rounds == ENSURE_ROUNDS) return report(StepStatus.FAILED, "still not so after `by` ×$rounds: ${holds.reason}")
+                rounds++
+                log("    ensure: not so (${holds.reason}) — by${if (rounds > 1) ", round $rounds" else ""}")
+                llm.newSession()
+                ensure.by.forEachIndexed { k, written ->
+                    val step = filled(written, controller.currentElements)
+                    log("    by ${k + 1}/${ensure.by.size}: $step")
+                    val did = asked(llm.runStep(step, if (k == 0) controller.fullLayout() else null))
+                    if (!did.passed) return report(StepStatus.FAILED, "by ${k + 1} ($step): ${did.reason}")
+                }
+                try { startOver() } catch (ex: Exception) {
+                    return report(StepStatus.FAILED, "the app did not start over after `by`: ${ex.message?.lineSequence()?.firstOrNull() ?: ex.toString()}")
+                }
+            }
+        } finally {
+            listener.delegate = null
+        }
     }
 
     /**

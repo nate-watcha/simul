@@ -58,7 +58,7 @@ class ScenarioSession(
     appContext: String? = null,
     /** Who this scenario runs as (`setup.appState` + its config.yaml `states:` line), appended likewise. */
     accountState: String? = null,
-    /** The conversation of a scenario's `## 준비` section: it brings the app to a state instead of testing it ([PREPARATION_PROMPT]). */
+    /** The conversation that asks whether a scenario's `setup: ensure` holds: it reads the screen and answers, instead of testing ([PREPARATION_PROMPT]). */
     preparation: Boolean = false,
 ) {
     /** [llm]: what the step cost in model calls, time and tokens; null for executors that never consult the model. */

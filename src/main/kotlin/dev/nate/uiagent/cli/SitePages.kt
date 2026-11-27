@@ -25,7 +25,7 @@ import javax.imageio.ImageIO
  *     recording failed, the page is about *that* timeline (the agent's steps, the failed one with its
  *     actions and their frames, `record/NN.jpg`) with the recording's own mp4, and the replay of the committed
  *     trace is folded under it. A scenario with `## title` sections shows its steps under them — one foldable,
- *     numbered block per section in the order they ran, with its prose and status, the `## 준비` section ahead
+ *     numbered block per section in the order they ran, with its prose and status, the preparation (`setup: ensure`) ahead
  *     of them with what the model found or did; each block has a player of its own, playing that section's part
  *     of the run's one recording.
  *
@@ -1168,7 +1168,7 @@ object SitePages {
     /**
      * The steps of a run. A scenario with sections gets one block per section, in the order they ran: its number
      * in that order, title, status, how long, its prose, then its steps numbered as the scenario numbers them.
-     * The `## 준비` section stands ahead of them unnumbered — it tests nothing — with what the model found or
+     * The preparation (`setup: ensure`) stands ahead of them unnumbered — it tests nothing — with what the model found or
      * did, folded when there was nothing to do. A section an earlier failure kept from running is folded too.
      */
     private fun timeline(sb: StringBuilder, r: ResultJson.Result, interactive: Boolean = true, filmAt: Int? = null, film: List<Frame> = emptyList(), players: Players? = null) {
